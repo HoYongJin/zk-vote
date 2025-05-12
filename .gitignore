@@ -1,5 +1,10 @@
 node_modules
 .env
+zkp/build/
+zkp/input/
+zkp/circomlib/
+*.zkey
+*.ptau
 
 # Hardhat files
 /cache
