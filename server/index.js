@@ -19,5 +19,5 @@ app.use("/secret", secretRouter);
 //app.use("/submit", submitRouter);
 
 app.listen(process.env.PORT, () => {
-    console.log(`SERVER RUNNING ON http://localhost:${process.env.PORT}`);
+    console.log(`SERVER RUNNING ON http://localhost:${process.env.PORT} & ${process.env.DEPLOY_URL}`);
 });
