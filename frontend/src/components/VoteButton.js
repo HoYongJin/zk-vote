@@ -58,7 +58,7 @@ export default function VoteButton({ jwt, setUserSecret }) {
         min="0"
         max="2"
       />
-      <button onClick={vote}>3️⃣ 투표 입력 생성 (/secret → /proof)</button>
+      <button onClick={vote}> 투표 입력 생성 (/secret → /proof)</button>
     </div>
   );
 }

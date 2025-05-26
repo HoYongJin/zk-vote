@@ -1,8 +1,8 @@
 node_modules
 .env
-zkp/build/
-zkp/input/
-zkp/circomlib/
+server/zkp/build/
+server/zkp/input/
+server/zkp/circomlib/
 *.zkey
 *.ptau
 
