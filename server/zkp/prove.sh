@@ -68,10 +68,14 @@ node $BUILD_DIR/${CIRCUIT}_js/generate_witness.js \
   $INPUT_FILE \
   $WITNESS_FILE
 
+echo "1차 완료"
+
 npx snarkjs groth16 prove \
   $BUILD_DIR/circuit_final.zkey \
   $WITNESS_FILE \
   $PROOF_FILE \
   $PUBLIC_FILE
+
+echo "2차 완료"
 
 echo "증명 완료: $SESSION_ID"

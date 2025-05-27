@@ -3,7 +3,7 @@ node_modules
 server/zkp/tmp/
 server/zkp/input/
 server/zkp/circomlib/
-*.zkey
+#*.zkey
 *.ptau
 
 # Hardhat files
