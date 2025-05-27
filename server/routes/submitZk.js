@@ -14,7 +14,7 @@ const ABI_PATH = path.join(__dirname, "../../artifacts/contracts/VotingTally.sol
 const abi = JSON.parse(fs.readFileSync(ABI_PATH, "utf8")).abi;
 const contractAddress = process.env.VOTINGTALLY_CONTRACT_ADDRESS;
 
-const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
+const provider = new ethers.providers.JsonRpcProvider(process.env.ZKEVM_RPC_URL);
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 const votingTally = new ethers.Contract(contractAddress, abi, wallet);
 
