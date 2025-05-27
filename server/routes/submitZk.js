@@ -39,6 +39,8 @@ router.post("/", async (req, res) => {
     return res.status(403).json({ error: "NOT REGISTERED VOTER" });
   }
 
+  console.log("인증성공");
+
   try {
     const inputData = req.body;
 
@@ -47,9 +49,13 @@ router.post("/", async (req, res) => {
     const sessionDir = path.join(__dirname, `../zkp/tmp/${sessionId}`);
     fs.mkdirSync(sessionDir, { recursive: true });
 
+    console.log("UUID 생성 성공");
+
     // input.json 저장
     const inputPath = path.join(sessionDir, "input.json");
     fs.writeFileSync(inputPath, JSON.stringify(inputData, null, 2));
+
+    console.log("input.json 저장 성공");
 
     // prove.sh 실행
     await runCommand("bash", ["prove.sh", sessionId]);
