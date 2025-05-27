@@ -8,7 +8,7 @@ server/zkp/circomlib/
 
 # Hardhat files
 /cache
-/artifacts
+#/artifacts
 
 # TypeChain files
 /typechain
