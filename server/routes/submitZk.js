@@ -64,10 +64,15 @@ router.post("/", async (req, res) => {
     const proof = JSON.parse(fs.readFileSync(path.join(sessionDir, "proof.json")));
     const publicSignals = JSON.parse(fs.readFileSync(path.join(sessionDir, "public.json")));
 
-    const a = proof.pi_a;
+    //const a = proof.pi_a;
+    const a = proof.pi_a.slice(0, 2);
     const b = proof.pi_b;
     const c = proof.pi_c;
-    const input = publicSignals.map(x => x.toString());
+    const merkleRoot = publicSignals[0];
+    const voteIndex = publicSignals[1];
+    const input = [merkleRoot.toString(), voteIndex.toString()];
+
+    //const input = publicSignals.map(x => x.toString());
 
     // submitTally 호출
     const tx = await votingTally.submitTally(a, b, c, input);
