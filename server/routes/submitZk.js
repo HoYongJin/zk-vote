@@ -12,7 +12,7 @@ require("dotenv").config();
 // ABI
 const ABI_PATH = path.join(__dirname, "../../artifacts/contracts/VotingTally.sol/VotingTally.json");
 const abi = JSON.parse(fs.readFileSync(ABI_PATH, "utf8")).abi;
-const contractAddress = process.env.VOTING_CONTRACT_ADDRESS;
+const contractAddress = process.env.VOTINGTALLY_CONTRACT_ADDRESS;
 
 const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
