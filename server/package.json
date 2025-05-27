@@ -19,6 +19,7 @@
     "express": "^5.1.0",
     "fixed-merkle-tree": "^0.7.3",
     "fs-extra": "^11.3.0",
-    "snarkjs": "^0.7.5"
+    "snarkjs": "^0.7.5",
+    "uuid": "^11.1.0"
   }
 }

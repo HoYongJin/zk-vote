@@ -9,6 +9,7 @@ export default function VoteButton({ jwt, setUserSecret }) {
     const idx = parseInt(voteIndex);
     if (![0, 1, 2].includes(idx)) return alert("0, 1, 2 중 하나를 입력하세요");
 
+    // 1. user_secret
     const sec = await axios.post(
       `${process.env.REACT_APP_API_BASE_URL}/secret`,
       {},
@@ -17,15 +18,18 @@ export default function VoteButton({ jwt, setUserSecret }) {
     const user_secret = sec.data.user_secret;
     setUserSecret(user_secret);
 
+    // 2. Merkle proof
     const proof = await axios.post(
       `${process.env.REACT_APP_API_BASE_URL}/proof`,
       { user_secret },
       { headers: { Authorization: `Bearer ${jwt}` } }
     );
 
+    // 3. vote 배열 생성
     const voteArray = [0, 0, 0];
     voteArray[idx] = 1;
 
+    // 4. ZK input 생성
     const input = {
       user_secret,
       vote: voteArray,
@@ -34,18 +38,14 @@ export default function VoteButton({ jwt, setUserSecret }) {
       root: proof.data.merkle_root,
     };
 
-    const blob = new Blob(
-      [JSON.stringify(input, null, 2)],
-      { type: "application/json" }
+    // 5. submitZk로 전달 (ZK 증명 + 블록체인 제출까지)
+    const res = await axios.post(
+      `${process.env.REACT_APP_API_BASE_URL}/submitZk`,
+      input,
+      { headers: { Authorization: `Bearer ${jwt}` } }
     );
 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    //link.download = "input.json";
-    //link.click();
-
-    //alert("✅ input.json 다운로드 완료");
+    alert(`✅ 투표 완료! TX Hash: ${res.data.txHash}`);
   };
 
   return (
@@ -58,7 +58,7 @@ export default function VoteButton({ jwt, setUserSecret }) {
         min="0"
         max="2"
       />
-      <button onClick={vote}> 투표 입력 생성 (/secret → /proof)</button>
+      <button onClick={vote}>🗳️ 투표 제출</button>
     </div>
   );
 }
