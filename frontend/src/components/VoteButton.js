@@ -35,7 +35,7 @@ export default function VoteButton({ jwt, setUserSecret }) {
       vote: voteArray,
       pathElements: proof.data.path_elements,
       pathIndices: proof.data.path_index,
-      root: proof.data.merkle_root,
+      root_in: proof.data.merkle_root,
     };
 
     // 5. submitZk로 전달 (ZK 증명 + 블록체인 제출까지)
