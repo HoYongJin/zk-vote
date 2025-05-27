@@ -66,8 +66,8 @@ router.post("/", async (req, res) => {
 
     //const a = proof.pi_a;
     const a = proof.pi_a.slice(0, 2);
-    const b = proof.pi_b;
-    const c = proof.pi_c;
+    const b = proof.pi_b.slice(0, 2);
+    const c = proof.pi_c.slice(0, 2);
     const merkleRoot = publicSignals[0];
     const voteIndex = publicSignals[1];
     const input = [merkleRoot.toString(), voteIndex.toString()];
