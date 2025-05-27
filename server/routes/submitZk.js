@@ -44,7 +44,7 @@ router.post("/", async (req, res) => {
 
     // UUID 세션 생성
     const sessionId = uuidv4();
-    const sessionDir = path.join(__dirname, `../zk/tmp/${sessionId}`);
+    const sessionDir = path.join(__dirname, `../zkp/tmp/${sessionId}`);
     fs.mkdirSync(sessionDir, { recursive: true });
 
     // input.json 저장
@@ -81,7 +81,7 @@ router.post("/", async (req, res) => {
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
-      cwd: path.join(__dirname, "../zk"),
+      cwd: path.join(__dirname, "../zkp"),
       stdio: "inherit",
       env: { ...process.env, SESSION_ID: args[1] }, // uuid 전달
     });
