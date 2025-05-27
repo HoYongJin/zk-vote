@@ -72,6 +72,12 @@ router.post("/", async (req, res) => {
     const voteIndex = publicSignals[1];
     const input = [merkleRoot.toString(), voteIndex.toString()];
 
+    console.log(a);
+    console.log(b);
+    console.log(c);
+    console.log(merkleRoot);
+    console.log(voteIndex);
+
     //const input = publicSignals.map(x => x.toString());
 
     // submitTally 호출
