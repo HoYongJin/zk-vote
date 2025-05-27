@@ -44,6 +44,15 @@ router.post("/", async (req, res) => {
   try {
     const inputData = req.body;
 
+    console.log("전달된 ZK Input 데이터 =======================");
+    console.log("user_secret:", inputData.user_secret);
+    console.log("vote 배열:", inputData.vote);
+    console.log("pathElements:", inputData.pathElements);
+    console.log("pathIndices:", inputData.pathIndices);
+    console.log("Merkle Root (root_in):", inputData.root_in);
+    console.log("================================================");
+
+
     // UUID 세션 생성
     const sessionId = uuidv4();
     const sessionDir = path.join(__dirname, `../zkp/tmp/${sessionId}`);
@@ -56,6 +65,12 @@ router.post("/", async (req, res) => {
     fs.writeFileSync(inputPath, JSON.stringify(inputData, null, 2));
 
     console.log("input.json 저장 성공");
+
+
+    const savedInput = fs.readFileSync(inputPath, "utf8");
+    console.log("실제 저장된 input.json 내용 =======================");
+    console.log(savedInput);
+    console.log("=====================================================");
 
     // prove.sh 실행
     await runCommand("bash", ["prove.sh", sessionId]);
