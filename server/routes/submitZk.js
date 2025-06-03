@@ -103,10 +103,16 @@ router.post("/", async (req, res) => {
         // ZK 증명 구성 요소 분리
         const a = proof.pi_a.slice(0, 2);
         //const b = proof.pi_b.slice(0, 2);
+
+        // const b = [
+        //     proof.pi_b[0].slice(0, 2),
+        //     proof.pi_b[1].slice(0, 2)
+        //   ];
         const b = [
-            proof.pi_b[0].slice(0, 2),
-            proof.pi_b[1].slice(0, 2)
+            [proof.pi_b[0][1], proof.pi_b[0][0]],  // 좌우 바뀜
+            [proof.pi_b[1][1], proof.pi_b[1][0]],
           ];
+          
         const c = proof.pi_c.slice(0, 2);
 
         const merkleRoot = publicSignals[0];
