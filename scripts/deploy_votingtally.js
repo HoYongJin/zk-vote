@@ -1,4 +1,5 @@
 const hre = require("hardhat");
+require("dotenv").config();
 
 async function main() {
   const verifierAddress = process.env.VERIFIER_CONTRACT_ADDRESS;
