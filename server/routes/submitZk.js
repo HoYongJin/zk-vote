@@ -47,7 +47,6 @@ router.post("/", async (req, res) => {
         .from("Voter")
         .select("*")
         .eq("email", email)
-        .eq("user_secret", user_secret)
         .maybeSingle();
 
     // 서버 에러 발생 시 로그 출력 및 응답 반환
