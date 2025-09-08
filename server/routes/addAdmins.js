@@ -5,7 +5,7 @@ const authAdmin = require("../middleware/authAdmin"); // 기존 관리자 인증
 
 // POST /admins/invite
 // 역할: 새로운 관리자를 초대 명단(AdminInvitations)에 추가
-router.post("/invite", authAdmin, async (req, res) => {
+router.post("/", authAdmin, async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
