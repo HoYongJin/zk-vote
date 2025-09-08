@@ -11,12 +11,14 @@ const registerRouter = require("./routes/register");
 const registerByAdminRouter = require("./routes/registerByAdmin");
 const secretRouter = require("./routes/secret");
 const submitZkRouter = require("./routes/submitZk");
+const addAdminsRouter = require("./routes/addAdmins");
 
 app.use("/proof", proofRouter);
 app.use("/register", registerRouter);
 app.use("/registerByAdmin", registerByAdminRouter);
 app.use("/secret", secretRouter);
 app.use("/submitZk", submitZkRouter);
+app.use("/addAdmins", addAdminsRouter);
 
 app.listen(process.env.PORT, () => {
     console.log(`SERVER RUNNING ON http://localhost:${process.env.PORT} & ${process.env.DEPLOY_URL}`);

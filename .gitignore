@@ -5,6 +5,7 @@ server/zkp/input/
 server/zkp/circomlib/
 server/zkp/build/circuit_0000.zkey
 *.ptau
+zk-vote-key.pem
 
 # Hardhat files
 /cache
