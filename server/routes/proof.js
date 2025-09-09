@@ -6,6 +6,8 @@ const { generateMerkleProof } = require("../utils/merkle");
 // [수정됨] Merkle Proof를 생성하여 클라이언트에 반환하는 API
 // 이제 클라이언트로부터 user_secret을 받지 않습니다.
 router.post("/", async (req, res) => {
+    console.log("[1] /proof API handler started.");
+
     // 1. JWT 토큰으로 사용자 인증
     const authHeader = req.headers.authorization || "";
     const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -25,6 +27,8 @@ router.post("/", async (req, res) => {
     }
 
     try {
+        console.log("[2] Attempting to fetch user_secret from DB...");
+
         // 2. 'Voters' 테이블에서 인증된 사용자의 user_secret을 직접 조회
         const { data: voter, error } = await supabase
             .from("Voters")
@@ -39,6 +43,8 @@ router.post("/", async (req, res) => {
             return res.status(403).json({ error: "Voter has not completed registration." });
         }
         
+        console.log("[3] Attempting to generate Merkle proof...");
+
         // 3. DB에서 가져온 user_secret으로 바로 Merkle 증명 생성
         const proofData = await generateMerkleProof(voter.user_secret);
 
