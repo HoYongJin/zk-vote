@@ -5,6 +5,7 @@ require("dotenv").config();
 const redis = new Redis({
     host: process.env.REDIS_HOST,
     port: process.env.REDIS_PORT,
+    tls: {},
     maxRetriesPerRequest: 3 // 연결 실패 시 재시도 횟수
 });
 
