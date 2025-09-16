@@ -156,11 +156,11 @@ async function generateMerkleProof(user_secret) {
 
     // 생성된 Merkle proof 반환
     return {
-        leaf,                                   // user_secret으로부터 생성된 해시 leaf
-        root: tree.root,                        // merkle_data(leaves)로 만들어진 Merkle Tree의 최상위 루트 해시
-        path_elements: proof.pathElements,      // pathElements: 해당 leaf에서 root까지 올라가는 경로에 있는 형제 노드들의 값
-        path_index: proof.pathIndices           // pathIndices: 각 레벨에서 본인이 왼쪽(0)인지 오른쪽(1)인지 표시
-    };
+        leaf,                                                            // user_secret으로부터 생성된 해시 leaf
+        root: tree.root.toString(),                                      // merkle_data(leaves)로 만들어진 Merkle Tree의 최상위 루트 해시
+        path_elements: proof.pathElements.map(el => el.toString()),      // pathElements: 해당 leaf에서 root까지 올라가는 경로에 있는 형제 노드들의 값
+        path_index: proof.pathIndices                                    // pathIndices: 각 레벨에서 본인이 왼쪽(0)인지 오른쪽(1)인지 표시
+    };// root: toString / path_elements: map~~
 }
 
 module.exports = {
