@@ -3,13 +3,20 @@
 const hre = require("hardhat");
 const { ethers } = require("ethers");
 const supabase = require("../server/supabaseClient"); // 서버의 Supabase 클라이언트를 가져옵니다.
+require("dotenv").config();
 
 async function main() {
     // 1. 터미널에서 배포할 선거의 UUID를 인자로 받습니다.
-    const electionUUID = process.argv[2];
+    // const electionUUID = process.argv[2];
+    // if (!electionUUID) {
+    //     console.error("오류: 배포할 선거의 UUID를 인자로 전달해야 합니다.");
+    //     console.log("사용법: npx hardhat run scripts/deployAll.js <election-uuid> --network sepolia");
+    //     process.exit(1);
+    // }
+    const electionUUID = process.env.ELECTION_UUID;
     if (!electionUUID) {
-        console.error("오류: 배포할 선거의 UUID를 인자로 전달해야 합니다.");
-        console.log("사용법: npx hardhat run scripts/deployAll.js <election-uuid> --network sepolia");
+        console.error("오류: ELECTION_UUID 환경 변수를 설정해야 합니다.");
+        console.log("사용법: ELECTION_UUID=<your-uuid> npx hardhat run scripts/deployAll.js --network sepolia");
         process.exit(1);
     }
     console.log(`선거 UUID [${electionUUID}]의 컨트랙트를 배포합니다.`);
@@ -21,14 +28,19 @@ async function main() {
         .eq("id", electionUUID)
         .single();
 
-    if (error || !election) {
+    if (error) {
+        console.error("Supabase 쿼리 실패! 상세 오류:", error);
+        return;
+    }
+
+    if(!election) {
         console.error("DB에서 해당 선거를 찾을 수 없습니다.");
         return;
     }
 
     // --- UUID를 uint256으로 변환 ---
     const hexUUID = "0x" + election.id.replace(/-/g, "");
-    const electionId = ethers.BigNumber.from(hexUUID);
+    const electionId = BigInt(hexUUID);
 
     // 3. DB에서 가져온 merkle_tree_depth에 맞는 Verifier를 배포합니다.
     const verifierContractName = `Groth16Verifier_${election.merkle_tree_depth}`;
