@@ -33,3 +33,5 @@ router.get("/", async (req, res) => {
         res.status(500).json({ error: "서버 오류가 발생했습니다." });
     }
 });
+
+module.exports = router;
