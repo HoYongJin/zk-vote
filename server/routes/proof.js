@@ -26,6 +26,11 @@ router.post("/", async (req, res) => {
         return res.status(401).json({ error: "INVALID_TOKEN", details: authError.message });
     }
 
+    const { election_id } = req.body;
+    if(!election_id) {
+        return res.status(400).json({ error: "Need election_id"});
+    }
+
     try {
         console.log("[2] Attempting to fetch user_secret from DB...");
 
@@ -34,19 +39,20 @@ router.post("/", async (req, res) => {
             .from("Voters")
             .select("user_secret")
             .eq("user_id", user.id) // email 대신 user_id로 조회하는 것이 더 정확
+            .eq("election_id", election_id)
             .single(); // .single()은 결과가 없거나 1개 이상이면 오류를 반환
 
         if (error) throw error;
 
         // 2-1. user_secret이 없는 경우 (최종 등록을 완료하지 않음)
-        if (!voter.user_secret) {
+        if (error || !voter || !voter.user_secret) {
             return res.status(403).json({ error: "Voter has not completed registration." });
         }
         
         console.log("[3] Attempting to generate Merkle proof...");
 
         // 3. DB에서 가져온 user_secret으로 바로 Merkle 증명 생성
-        const proofData = await generateMerkleProof(voter.user_secret);
+        const proofData = await generateMerkleProof(election_id, voter.user_secret);
 
         // 4. 클라이언트에 Merkle 증명 반환
         return res.status(200).json({

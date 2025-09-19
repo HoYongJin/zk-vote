@@ -7,8 +7,8 @@ require("dotenv").config();
 const TREE_HEIGHT = parseInt(process.env.MERKLE_TREE_HEIGHT, 10) || 3;
 const SINGLETON_ID = "singleton";                   // DB에서 고정 ID를 사용하는 단일 인스턴스
 
-const MERKLE_LOCK_KEY = "merkle_update_lock";       // 분산 잠금을 위한 키
-const MERKLE_TREE_CACHE_KEY = "merkle_tree_cache";  // 캐싱을 위한 키
+// const MERKLE_LOCK_KEY = "merkle_update_lock";       // 분산 잠금을 위한 키
+// const MERKLE_TREE_CACHE_KEY = "merkle_tree_cache";  // 캐싱을 위한 키
 const LOCK_TIMEOUT = 10;                            // 잠금은 10초 후에 자동으로 풀림 (초 단위)
 const POLLING_INTERVAL = 100;                       // 100ms 간격으로 잠금 획득 재시도
 const POLLING_TIMEOUT = 5000;                       // 최대 5초까지만 대기
@@ -26,16 +26,16 @@ async function getPoseidon() {
 
 // DB에서 MerkleState의 merkle_data(leaves) 정보 불러오기
 // merkle_data: { leaves: [...] }
-async function loadLeavesFromDB() {
+async function loadLeavesFromDB(election_id) {
     const { data, error } = await supabase
         .from("MerkleState")
         .select("merkle_data")
-        .eq("id", SINGLETON_ID)
-        .maybeSingle();
+        .eq("election_id", election_id)
+        .single();
 
-    if (error) {
+    if (error && error.code !== 'PGRST116') {
         console.error("MERKLESTATE LOAD FAIL: ", error.message);
-        return [];
+        throw error;
     }
 
     // merkle_data.leaves 배열 반환
@@ -44,12 +44,15 @@ async function loadLeavesFromDB() {
 
 // user_secret을 Poseidon 해시하여 merkle_data에 추가하여 업데이트하는 함수
 // Redis 분산 잠금을 사용하여 동시성 문제를 해결하고, 작업 후 캐시를 무효화
-async function addUserSecret(user_secret) {
+async function addUserSecret(election_id, user_secret) {
     // Poseidon 해시 함수 로딩
     const poseidon = await getPoseidon();
 
     // user_secret을 Poseidon 해시로 변환
     const newLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
+
+    const MERKLE_LOCK_KEY = `merkle_lock_${election_id}`;            // 분산 잠금을 위한 키
+    const MERKLE_TREE_CACHE_KEY = `merkle_cache_${election_id}`;     // 캐싱을 위한 키
 
     const startTime = Date.now();
 
@@ -76,7 +79,7 @@ async function addUserSecret(user_secret) {
 
     try {
         // --- 잠금을 획득한 동안 안전하게 작업 수행 ---
-        const existingLeaves = await loadLeavesFromDB();
+        const existingLeaves = await loadLeavesFromDB(election_id);
 
         // newLeaf 기존 leaf에 존재하는지 중복 검사
         if (existingLeaves.includes(newLeaf)) {
@@ -86,7 +89,7 @@ async function addUserSecret(user_secret) {
 
         // 새로운 leaf 포함한 merkle_data 생성
         const updated = {
-            id: SINGLETON_ID,
+            election_id: election_id,
             merkle_data: { leaves: [...existingLeaves, newLeaf] },
             updated_at: new Date()
         };
@@ -103,6 +106,7 @@ async function addUserSecret(user_secret) {
 
         // DB 업데이트 성공 시, Redis 캐시를 삭제하여 데이터 일관성 유지
         await redis.del(MERKLE_TREE_CACHE_KEY);
+        console.log(`Merkle Tree for election ${election_id} updated and cache invalidated.`);
         console.log("Merkle Tree cache invalidated due to new leaf addition.");
         console.log("MERKLESTATE UPDATE SUCCESS: ", newLeaf);
     } finally {
@@ -113,14 +117,15 @@ async function addUserSecret(user_secret) {
 
 // user_secret을 받아 merkle_data에 해당 정보(Leaf)가 있으면 Merkle Proof 생성 후 반환하는 함수
 // Redis 캐싱을 사용하여 DB 조회를 최소화하고 성능을 향상
-async function generateMerkleProof(user_secret) {
+async function generateMerkleProof(election_id, user_secret) {
     // Poseidon 해시 함수 로딩
     const poseidon = await getPoseidon();
 
     // 입력된 user_secret을 해싱하여 Merkle Tree의 leaf 값으로 사용
     const leaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
 
-    let tree;
+    const MERKLE_TREE_CACHE_KEY = `merkle_cache_${election_id}`;     // 캐싱을 위한 키
+
     let rawLeaves;
 
     // Redis 캐시에서 leaf 목록 조회 시도
@@ -133,14 +138,14 @@ async function generateMerkleProof(user_secret) {
     } else {
         // Cache Miss: Redis에 데이터가 없으면 DB에서 조회
         console.log("Merkle Tree cache miss. Loading from DB");
-        rawLeaves = await loadLeavesFromDB();
+        rawLeaves = await loadLeavesFromDB(election_id);
         
         // DB에서 가져온 정보를 다음번을 위해 Redis 캐시에 저장
         await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(rawLeaves));
     }
 
     // 가져온 leaf 목록으로 메모리에서 Merkle Tree 구성
-    tree = new MerkleTree(TREE_HEIGHT, rawLeaves.map(BigInt), {
+    const tree = new MerkleTree(TREE_HEIGHT, rawLeaves.map(BigInt), {
         hashFunction: (a, b) => poseidon.F.toString(poseidon([BigInt(a), BigInt(b)])),
         zeroElement: "0"
     });
@@ -160,7 +165,7 @@ async function generateMerkleProof(user_secret) {
         root: tree.root.toString(),                                      // merkle_data(leaves)로 만들어진 Merkle Tree의 최상위 루트 해시
         path_elements: proof.pathElements.map(el => el.toString()),      // pathElements: 해당 leaf에서 root까지 올라가는 경로에 있는 형제 노드들의 값
         path_index: proof.pathIndices                                    // pathIndices: 각 레벨에서 본인이 왼쪽(0)인지 오른쪽(1)인지 표시
-    };// root: toString / path_elements: map~~
+    };
 }
 
 module.exports = {

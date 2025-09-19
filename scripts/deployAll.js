@@ -1,0 +1,64 @@
+// scripts/deployAll.js
+
+const hre = require("hardhat");
+const { ethers } = require("ethers");
+const supabase = require("../server/supabaseClient"); // 서버의 Supabase 클라이언트를 가져옵니다.
+
+async function main() {
+    // 1. 터미널에서 배포할 선거의 UUID를 인자로 받습니다.
+    const electionUUID = process.argv[2];
+    if (!electionUUID) {
+        console.error("오류: 배포할 선거의 UUID를 인자로 전달해야 합니다.");
+        console.log("사용법: npx hardhat run scripts/deployAll.js <election-uuid> --network sepolia");
+        process.exit(1);
+    }
+    console.log(`선거 UUID [${electionUUID}]의 컨트랙트를 배포합니다.`);
+
+    // 2. DB에서 해당 선거 정보를 조회합니다.
+    const { data: election, error } = await supabase
+        .from("Elections")
+        .select("id, merkle_tree_depth")
+        .eq("id", electionUUID)
+        .single();
+
+    if (error || !election) {
+        console.error("DB에서 해당 선거를 찾을 수 없습니다.");
+        return;
+    }
+
+    // --- UUID를 uint256으로 변환 ---
+    const hexUUID = "0x" + election.id.replace(/-/g, "");
+    const electionId = ethers.BigNumber.from(hexUUID);
+
+    // 3. DB에서 가져온 merkle_tree_depth에 맞는 Verifier를 배포합니다.
+    const verifierContractName = `Groth16Verifier_${election.merkle_tree_depth}`;
+    const Verifier = await hre.ethers.getContractFactory(verifierContractName);
+    const verifier = await Verifier.deploy();
+    await verifier.waitForDeployment();
+    const verifierAddress = await verifier.getAddress();
+    console.log(`✅ ${verifierContractName} 배포 완료: ${verifierAddress}`);
+
+    // 4. VotingTally 컨트랙트를 배포합니다.
+    const VotingTally = await hre.ethers.getContractFactory("VotingTally");
+    const votingTally = await VotingTally.deploy(verifierAddress, electionId);
+    await votingTally.waitForDeployment();
+    const votingTallyAddress = await votingTally.getAddress();
+    console.log(`✅ VotingTally 배포 완료: ${votingTallyAddress}`);
+
+    // 5. 배포된 컨트랙트 주소를 다시 DB에 업데이트합니다. (매우 중요)
+    const { error: updateError } = await supabase
+        .from("Elections")
+        .update({ contract_address: votingTallyAddress })
+        .eq("id", electionUUID);
+
+    if (updateError) {
+        console.error("DB에 컨트랙트 주소 업데이트 실패:", updateError);
+    } else {
+        console.log("✅ DB에 컨트랙트 주소가 성공적으로 업데이트되었습니다.");
+    }
+}
+
+main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

@@ -1,12 +1,20 @@
 #!/bin/bash
 set -e      # 오류 발생 시 즉시 종료
 
-CIRCUIT=VoteCheck                                   # 회로 파일 이름 (VoteCheck.circom)
+DEPTH=$1
+
+if [ -z "$DEPTH" ]; then
+    echo "오류: Merkle Tree 높이를 인자로 제공해야 합니다"
+    exit 1
+fi
+
+CIRCUIT="VoteCheck_${DEPTH}"                        # 회로 파일 이름 (VoteCheck_depth.circom)
 CIRCUIT_FILE="./circuits/${CIRCUIT}.circom"         # Circom 회로 경로
-BUILD_DIR="./build"                                 # 생성파일 저장 폴더
+BUILD_DIR="./build_${DEPTH}"                         # 생성파일 저장 폴더
+VERIFIER_FILE="Groth16Verifier_${DEPTH}.sol"        # 검증 스마트 컨트랙트
 POT_FILE="powersOfTau28_hez_final_12.ptau"          # zk-SNARKs 회로를 컴파일하고 증명을 생성하기 위해 필요한 초기 파라미터 파일
 
-echo "Starting ZKP circuit compilation and verifier generation"
+echo "Starting ZKP circuit compilation and verifier generation(Depth: ${DEPTH})"
 echo "=========================================="
 
 # 0. build 디렉토리 생성
@@ -56,15 +64,20 @@ snarkjs zkey contribute \
 # verification_key.json: zk-SNARKs 증명을 검증할 때 필요한 공개 키
 echo "Exporting verification key"
 snarkjs zkey export verificationkey \
-  $BUILD_DIR/circuit_final.zkey \
-  $BUILD_DIR/verification_key.json
+    $BUILD_DIR/circuit_final.zkey \
+    $BUILD_DIR/verification_key.json
 
 
 # 6. Verifier.sol 생성
 # Verifier.sol: Solidity 기반 zk-SNARK 증명 검증 컨트랙트
-echo "Exporting Verifier.sol"
+echo "Exporting Verifier"
 snarkjs zkey export solidityverifier \
-  $BUILD_DIR/circuit_final.zkey \
-  $BUILD_DIR/Verifier.sol
+    $BUILD_DIR/circuit_final.zkey \
+    $BUILD_DIR/$VERIFIER_FILE
+
+sed -i.bak "s/contract Groth16Verifier/contract ${VERIFIER_FILE%.sol}/g" "$BUILD_DIR/$VERIFIER_FILE"
+rm "$BUILD_DIR/$VERIFIER_FILE.bak" 
+
+mv "$BUILD_DIR/$VERIFIER_FILE" "../../contracts/"
 
 echo "Compilation and setup complete!"

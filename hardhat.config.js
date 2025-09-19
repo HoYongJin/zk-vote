@@ -3,26 +3,15 @@ require("dotenv").config();
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
+    solidity: "0.8.20",
     networks: {
-        zkevm: {
-        url: process.env.ZKEVM_RPC_URL, 
-        accounts: [process.env.PRIVATE_KEY],
-        },
+      sepolia: {
+        url: process.env.SEPOLIA_RPC_URL || "", // Infura나 Alchemy에서 받은 RPC URL
+        accounts:
+          process.env.PRIVATE_KEY !== undefined ? [process.env.PRIVATE_KEY] : [],
+      },
     },
-    solidity: "0.8.28",
     etherscan: {
-        apiKey: {
-            polygonZkEVMTestnet: "HRAKGS66KPZJ248PTC5F4IXWBMK28VVIKW", // Etherscan 계정에서 발급
-        },
-        customChains: [
-            {
-                network: "zkevm",
-                chainId: 1442, // Cardona 테스트넷 체인 ID
-                urls: {
-                apiURL: "https://api-cardona-zkevm.polygonscan.com/api",
-                browserURL: "https://cardona-zkevm.polygonscan.com",
-                },
-            },
-        ],
+        apiKey: process.env.ETHERSCAN_API_KEY,
     },
-};
+  };
