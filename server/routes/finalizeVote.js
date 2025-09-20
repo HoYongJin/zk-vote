@@ -22,18 +22,6 @@ router.post("/:election_id", authAdmin, async (req, res) => {
     }
 
     try {
-
-        // --- ▼ [디버깅 코드 추가] ▼ ---
-        const registrationEndTime = new Date(election.registration_end_time);
-        const currentTime = new Date();
-
-        console.log("=============================================");
-        console.log("DB에 저장된 등록 마감 시간 (서버가 인식):", registrationEndTime.toString());
-        console.log("서버의 현재 시간:", currentTime.toString());
-        console.log("등록 기간이 종료되었는가? (현재시간 >= 마감시간):", currentTime >= registrationEndTime);
-        console.log("=============================================");
-        // --- ▲ [디버깅 코드 추가] ▲ ---
-
         // 2. 등록 기간이 실제로 종료되었는지 확인
         // if (new Date() < new Date(election.registration_end_time)) {
         if (currentTime < registrationEndTime) { // 디버깅을 위해 변수로 변경
@@ -49,6 +37,19 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         if (electionError || !election) {
             return res.status(404).json({ error: "Election not found." });
         }
+
+        //========================================================================
+
+        const registrationEndTime = new Date(election.registration_end_time);
+        const currentTime = new Date();
+
+        console.log("=============================================");
+        console.log("DB 등록 마감 시간:", registrationEndTime.toString());
+        console.log("서버 현재 시간:", currentTime.toString());
+        console.log("등록 기간 종료 여부:", currentTime >= registrationEndTime);
+        console.log("=============================================");
+
+        //========================================================================
 
         // 2. Validate conditions for finalization
         if (new Date() < new Date(election.registration_end_time)) {
