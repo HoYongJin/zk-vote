@@ -32,7 +32,7 @@ router.post("/", authAdmin, async (req, res) => {
                 registration_end_time: regEndTime,
                 voting_start_time: voteStartTime,
                 voting_end_time: voteEndTime,
-                contract_address: contractAddress
+                //contract_address: contractAddress
             }])
             .select();
 
