@@ -44,9 +44,9 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         console.log("등록 기간 종료 여부:", currentTime >= registrationEndTime);
         console.log("=============================================");
 
-        if (currentTime < registrationEndTime) { // 디버깅을 위해 변수로 변경
-            return res.status(403).json({ error: "아직 등록 기간이 종료되지 않았습니다." });
-        }
+        // if (currentTime < registrationEndTime) { // 디버깅을 위해 변수로 변경
+        //     return res.status(403).json({ error: "아직 등록 기간이 종료되지 않았습니다." });
+        // }
 
         //========================================================================
 
