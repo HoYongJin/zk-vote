@@ -38,6 +38,16 @@ router.post("/", authAdmin, async (req, res) => {
 
         if (error) throw error;
 
+        // MerkleState 테이블에 해당 선거를 위한 빈 상태(state)를 미리 생성합니다.
+        const { error: merkleError } = await supabase
+        .from("MerkleState")
+        .insert({
+            election_id: data[0].id,
+            merkle_data: { leaves: [] }
+        });
+
+        if (merkleError) throw merkleError;
+
         // 3. (선택적) 스마트 컨트랙트의 시간 설정 함수도 여기서 호출 가능
         // const tx = await votingTallyContract.setVotingPeriod(voteStartTime, voteEndTime);
         // await tx.wait();

@@ -5,7 +5,6 @@ const redis = require('../redisClient');
 require("dotenv").config();
 
 const TREE_HEIGHT = parseInt(process.env.MERKLE_TREE_HEIGHT, 10) || 3;
-const SINGLETON_ID = "singleton";                   // DB에서 고정 ID를 사용하는 단일 인스턴스
 
 // const MERKLE_LOCK_KEY = "merkle_update_lock";       // 분산 잠금을 위한 키
 // const MERKLE_TREE_CACHE_KEY = "merkle_tree_cache";  // 캐싱을 위한 키
