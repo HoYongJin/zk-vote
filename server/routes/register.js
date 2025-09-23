@@ -56,7 +56,7 @@ router.post("/", async (req, res) => {
         }
 
         const now = new Date();
-        if(now < new Date(election.registration_start_time && now > new Date(election.registration_end_time))) {
+        if((now < new Date(election.registration_start_time)) && (now > new Date(election.registration_end_time))) {
             return res.status(403).json({ error: "Not registeraion period"});
         }
 

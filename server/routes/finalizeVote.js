@@ -25,7 +25,7 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         // 1. Fetch election details
         const { data: election, error: electionError } = await supabase
             .from("Elections")
-            .select("registration_end_time, contract_address, merkle_tree_depth, merkle_root")
+            .select("registration_end_time, contract_address, merkle_tree_depth, merkle_root, voting_start_time, voting_end_time")
             .eq("id", election_id)
             .single();
 
@@ -90,14 +90,30 @@ router.post("/:election_id", authAdmin, async (req, res) => {
 
         if (updateDbError) throw updateDbError;
 
-        // 6. Call the setMerkleRoot function on the smart contract
-        const provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-        const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-        const votingTally = new ethers.Contract(election.contract_address, votingTallyAbi, wallet);
+        // // 6. Call the setMerkleRoot function on the smart contract
+        // const provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
+        // const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+        // const votingTally = new ethers.Contract(election.contract_address, votingTallyAbi, wallet);
         
-        console.log(`Submitting Merkle Root ${finalMerkleRoot} to contract ${election.contract_address}...`);
-        const tx = await votingTally.setMerkleRoot(finalMerkleRoot);
-        const receipt = await tx.wait();
+        // console.log(`Submitting Merkle Root ${finalMerkleRoot} to contract ${election.contract_address}...`);
+        // const tx = await votingTally.setMerkleRoot(finalMerkleRoot);
+        // const receipt = await tx.wait();
+
+        // 1. Merkle Root 설정
+        console.log(`Submitting Merkle Root ${finalMerkleRoot} to contract...`);
+        const txRoot = await votingTally.setMerkleRoot(finalMerkleRoot);
+        await txRoot.wait();
+        console.log("Merkle Root set successfully. Tx hash:", txRoot.hash);
+
+        // 2. 투표 기간 설정
+        // DB에서 가져온 시간 문자열을 Unix timestamp (초 단위)로 변환합니다.
+        const startTime = Math.floor(new Date(election.voting_start_time).getTime() / 1000);
+        const endTime = Math.floor(new Date(election.voting_end_time).getTime() / 1000);
+
+        console.log(`Setting voting period from ${startTime} to ${endTime}...`);
+        const txPeriod = await votingTally.setVotingPeriod(startTime, endTime);
+        await txPeriod.wait();
+        console.log("Voting period set successfully. Tx hash:", txPeriod.hash);
 
         return res.status(200).json({
             success: true,
