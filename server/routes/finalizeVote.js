@@ -91,9 +91,9 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         if (updateDbError) throw updateDbError;
 
         // // 6. Call the setMerkleRoot function on the smart contract
-        // const provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-        // const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-        // const votingTally = new ethers.Contract(election.contract_address, votingTallyAbi, wallet);
+        const provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
+        const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+        const votingTally = new ethers.Contract(election.contract_address, votingTallyAbi, wallet);
         
         // console.log(`Submitting Merkle Root ${finalMerkleRoot} to contract ${election.contract_address}...`);
         // const tx = await votingTally.setMerkleRoot(finalMerkleRoot);
