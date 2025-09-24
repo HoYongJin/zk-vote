@@ -107,8 +107,7 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Election finalized and voting has started successfully.",
-            merkleRoot: finalMerkleRoot,
-            transactionHash: receipt.transactionHash
+            merkleRoot: finalMerkleRoot
         });
 
     } catch (err) {
