@@ -14,4 +14,7 @@ module.exports = {
     etherscan: {
         apiKey: process.env.ETHERSCAN_API_KEY,
     },
+    sourcify: {
+        enabled: false
+    },
   };

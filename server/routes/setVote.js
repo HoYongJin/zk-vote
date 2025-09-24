@@ -70,13 +70,10 @@ router.post("/", authAdmin, async (req, res) => {
         name,
         merkleTreeDepth,
         candidates,
-        regStartTime,
-        regEndTime,
-        voteStartTime,
-        voteEndTime
+        regEndTime
     } = req.body;
 
-    if (!name || !merkleTreeDepth || !candidates) {
+    if (!name || !merkleTreeDepth || !candidates || !regEndTime) {
         return res.status(400).json({ error: "필수 정보가 누락되었습니다." });
     }
 
@@ -88,10 +85,8 @@ router.post("/", authAdmin, async (req, res) => {
                 name: name,
                 merkle_tree_depth: merkleTreeDepth,
                 candidates: candidates,
-                registration_start_time: regStartTime,
+                registration_start_time: new Date().toISOString(),
                 registration_end_time: regEndTime,
-                voting_start_time: voteStartTime,
-                voting_end_time: voteEndTime,
             }])
             .select()
             .single(); // .single()을 사용하여 결과를 배열이 아닌 단일 객체로 받습니다.

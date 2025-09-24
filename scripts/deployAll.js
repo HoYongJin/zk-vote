@@ -68,6 +68,45 @@ async function main() {
     } else {
         console.log("✅ DB에 컨트랙트 주소가 성공적으로 업데이트되었습니다.");
     }
+
+    console.log("\nEtherscan에 컨트랙트 인증을 시작합니다. (약 30초 소요)");
+    
+    // Etherscan이 트랜잭션을 인덱싱할 시간을 주기 위해 잠시 대기합니다.
+    await new Promise(resolve => setTimeout(resolve, 30000)); 
+
+    try {
+        // Verifier 컨트랙트 인증
+        await hre.run("verify:verify", {
+            address: verifierAddress,
+            constructorArguments: [], // 생성자 인자 없음
+        });
+        console.log(`✅ ${verifierContractName} 인증 성공!`);
+    } catch (e) {
+        if (e.message.toLowerCase().includes("already verified")) {
+            console.log("ℹ️ Verifier 컨트랙트는 이미 인증되었습니다.");
+        } else {
+            console.error("Verifier 컨트랙트 인증 실패:", e);
+        }
+    }
+
+    try {
+        // VotingTally 컨트랙트 인증
+        await hre.run("verify:verify", {
+            address: votingTallyAddress,
+            constructorArguments: [ // 생성자 인자를 배열로 전달
+                verifierAddress,
+                electionId.toString(),
+            ],
+        });
+        console.log("✅ VotingTally 인증 성공!");
+    } catch (e) {
+        if (e.message.toLowerCase().includes("already verified")) {
+            console.log("ℹ️ VotingTally 컨트랙트는 이미 인증되었습니다.");
+        } else {
+            console.error("VotingTally 컨트랙트 인증 실패:", e);
+        }
+    }
+    
 }
 
 main().catch((error) => {
