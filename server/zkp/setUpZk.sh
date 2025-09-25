@@ -1,83 +1,97 @@
 #!/bin/bash
-set -e      # 오류 발생 시 즉시 종료
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
+# --- 1. SCRIPT ARGUMENT VALIDATION ---
 DEPTH=$1
+CANDIDATES=$2
 
-if [ -z "$DEPTH" ]; then
-    echo "오류: Merkle Tree 높이를 인자로 제공해야 합니다"
+# Check if both arguments are provided.
+if [ -z "$DEPTH" ] || [ -z "$CANDIDATES" ]; then
+    echo "Error: You must provide both Merkle Tree Depth and the Number of Candidates."
+    echo "Usage: ./setUpZk.sh <depth> <candidates>"
     exit 1
 fi
 
-CIRCUIT="VoteCheck_${DEPTH}"                        # 회로 파일 이름 (VoteCheck_depth.circom)
-CIRCUIT_FILE="./circuits/${CIRCUIT}.circom"         # Circom 회로 경로
-BUILD_DIR="./build_${DEPTH}"                         # 생성파일 저장 폴더
-VERIFIER_FILE="Groth16Verifier_${DEPTH}.sol"        # 검증 스마트 컨트랙트
-POT_FILE="powersOfTau28_hez_final_12.ptau"          # zk-SNARKs 회로를 컴파일하고 증명을 생성하기 위해 필요한 초기 파라미터 파일
+# --- 2. DEFINE VARIABLES BASED ON ARGUMENTS ---
+# A single template file is now used, making the system more maintainable.
+CIRCUIT_TEMPLATE_FILE="./circuits/VoteCheck.circom"
+# Dynamically create names for build artifacts.
+BUILD_DIR="./build_${DEPTH}_${CANDIDATES}"
+VERIFIER_CONTRACT_NAME="Groth16Verifier_${DEPTH}_${CANDIDATES}"
+VERIFIER_FILE="${VERIFIER_CONTRACT_NAME}.sol"
+# The Powers of Tau file is a constant for a given curve and constraint size.
+POT_FILE="powersOfTau28_hez_final_12.ptau"
 
-echo "Starting ZKP circuit compilation and verifier generation(Depth: ${DEPTH})"
-echo "=========================================="
+echo "=========================================================="
+echo "Starting ZKP setup for Depth: ${DEPTH}, Candidates: ${CANDIDATES}"
+echo "=========================================================="
 
-# 0. build 디렉토리 생성
+# --- 3. CREATE BUILD DIRECTORY ---
 if [ ! -d "$BUILD_DIR" ]; then
-    echo "Creating build directory"
+    echo "-> Creating build directory: ${BUILD_DIR}"
     mkdir -p $BUILD_DIR
 fi
 
+# --- 4. DYNAMICALLY CONFIGURE AND COMPILE THE CIRCUIT ---
+# This is a critical step for automation.
+# It modifies the last line of the template to instantiate the circuit with the correct parameters.
+echo "-> Configuring circuit template..."
+# Create a temporary copy of the circuit to modify.
+TEMP_CIRCUIT_FILE="${BUILD_DIR}/VoteCheck_temp.circom"
+cp $CIRCUIT_TEMPLATE_FILE $TEMP_CIRCUIT_FILE
+# Use `sed` to replace the main component instantiation line.
+sed -i.bak "s/component main = .*/component main = Main(${DEPTH}, ${CANDIDATES});/g" $TEMP_CIRCUIT_FILE
 
-# 1. Circom 컴파일
-# - VoteCheck.r1cs: 회로의 제약 조건을 압축한 바이너리 파일
-# - VoteCheck.wasm: witness를 생성하기 위한 WebAssembly 코드
-# - VoteCheck.sym: Circom 변수 이름과 R1CS 인덱스 매핑 파일
-echo "Compiling Circom circuit..."
-circom $CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR
+echo "-> Compiling Circom circuit..."
+# Compile the dynamically configured temporary circuit file.
+circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR
 
-
-# 2. ptau 파일 확인(zk-SNARKs의 "trusted setup" 중 1단계 결과물 (Phase 1))
+# --- 5. PREPARE FOR TRUSTED SETUP (PHASE 2) ---
 if [ ! -f "$POT_FILE" ]; then
-    echo "ptau file ($POT_FILE) is missing. Please place it in the project root"
+    echo "Error: Powers of Tau file ($POT_FILE) is missing. Please download it and place it in the zkp directory."
     exit 1
 else
-    echo "ptau file found"
-    cp $POT_FILE $BUILD_DIR/$POT_FILE
+    echo "-> Found Powers of Tau file."
 fi
 
-
-# 3. proving key 생성 (Phase 2 시작: proving key(.zkey) 파일 생성)
-# circuit_0000.zkey: proving/verifying key의 초기 상태
-echo "Generating proving key..."
+# --- 6. GENERATE PROVING KEY (.zkey) ---
+echo "-> Generating proving key (zkey)..."
 snarkjs groth16 setup \
-    $BUILD_DIR/${CIRCUIT}.r1cs \
-    $BUILD_DIR/$POT_FILE \
-    $BUILD_DIR/circuit_0000.zkey
+    "${BUILD_DIR}/VoteCheck_temp.r1cs" \
+    "$POT_FILE" \
+    "${BUILD_DIR}/circuit_0000.zkey"
 
-
-# 4. phase 2 기여(.zkey에 서명하여 신뢰된 환경에서 만든 것을 보장)
-# circuit_final.zkey: 실제 증명에 사용하는 최종 proving key(생성자가 누구인지, 랜덤 기여가 적용됐는지 포함)
-echo "Contributing to phase 2"
+# --- 7. CONTRIBUTE TO PHASE 2 CEREMONY ---
+echo "-> Contributing to the ceremony..."
+# In a real production environment, this would involve multiple independent contributors.
 snarkjs zkey contribute \
-    $BUILD_DIR/circuit_0000.zkey \
-    $BUILD_DIR/circuit_final.zkey \
-    --name="1st Contributor" -v
+    "${BUILD_DIR}/circuit_0000.zkey" \
+    "${BUILD_DIR}/circuit_final.zkey" \
+    --name="1st Contributor" -v -e="$(head -n 4096 /dev/urandom | openssl sha1)"
 
-
-# 5. verification key
-# verification_key.json: zk-SNARKs 증명을 검증할 때 필요한 공개 키
-echo "Exporting verification key"
+# --- 8. EXPORT VERIFICATION KEY ---
+echo "-> Exporting verification key to JSON..."
 snarkjs zkey export verificationkey \
-    $BUILD_DIR/circuit_final.zkey \
-    $BUILD_DIR/verification_key.json
+    "${BUILD_DIR}/circuit_final.zkey" \
+    "${BUILD_DIR}/verification_key.json"
 
-
-# 6. Verifier.sol 생성
-# Verifier.sol: Solidity 기반 zk-SNARK 증명 검증 컨트랙트
-echo "Exporting Verifier"
+# --- 9. EXPORT VERIFIER SMART CONTRACT ---
+echo "-> Exporting Verifier contract..."
 snarkjs zkey export solidityverifier \
-    $BUILD_DIR/circuit_final.zkey \
-    $BUILD_DIR/$VERIFIER_FILE
+    "${BUILD_DIR}/circuit_final.zkey" \
+    "${BUILD_DIR}/${VERIFIER_FILE}"
 
-sed -i.bak "s/contract Groth16Verifier/contract ${VERIFIER_FILE%.sol}/g" "$BUILD_DIR/$VERIFIER_FILE"
-rm "$BUILD_DIR/$VERIFIER_FILE.bak" 
+# --- 10. FINALIZE AND MOVE THE VERIFIER CONTRACT ---
+echo "-> Renaming contract inside the .sol file..."
+# `snarkjs` always names the contract `Groth16Verifier`. This renames it to match our unique filename.
+sed -i.bak "s/contract Groth16Verifier/contract ${VERIFIER_CONTRACT_NAME}/g" "${BUILD_DIR}/${VERIFIER_FILE}"
+rm "${BUILD_DIR}/${VERIFIER_FILE}.bak" 
 
-mv "$BUILD_DIR/$VERIFIER_FILE" "../../contracts/"
+echo "-> Moving Verifier contract to the contracts directory..."
+# Move the finalized contract to the main contracts folder for Hardhat to use.
+mv "${BUILD_DIR}/${VERIFIER_FILE}" "../../contracts/"
 
-echo "Compilation and setup complete!"
+echo "=========================================================="
+echo "ZKP setup complete for ${VERIFIER_CONTRACT_NAME}!"
+echo "=========================================================="

@@ -17,6 +17,7 @@
     "dotenv": "^16.5.0",
     "ethers": "^5.7.2",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
     "fixed-merkle-tree": "^0.7.3",
     "fs-extra": "^11.3.0",
     "ioredis": "^5.7.0",

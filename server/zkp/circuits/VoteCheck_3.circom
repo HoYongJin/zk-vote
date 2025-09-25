@@ -1,155 +1,181 @@
 pragma circom 2.0.0;
 
+// Imports the Poseidon hash function from the circomlib library.
 include "../circomlib/circuits/poseidon.circom";
 
-// =====================================
-// MerkleProof 회로 템플릿(입력받은 merkle_data를 이용해서 root 계산 후 제공된 root와 일치하는지 확인)
-// =====================================
+/*
+==========================================================================
+ Template: MerkleProof
+==========================================================================
+* @purpose: Proves that a given `leaf` is a member of a Merkle tree with a given `root`.
+* @principle: It reconstructs the Merkle root starting from the `leaf` using the provided `pathElements` 
+             and `pathIndices`. The circuit constrains the calculated root to be equal to the public `root`.
+* @param depth: The depth of the Merkle tree.
+*/
 template MerkleProof(depth) {
-    // 입력 신호 정의
-    signal input leaf;                          // Merkle Tree에서 검증할 leaf 해시값
-    signal input root;                          // 기대하는 Merkle Root
-    signal input pathElements[depth];           // Merkle path: 형제 노드들
-    signal input pathIndices[depth];            // Merkle path: 각 단계에서의 방향 정보(0: 왼쪽, 1: 오른쪽)
+    // === INPUT SIGNALS ===
+    // Private signals are known only to the prover. 
+    // Public signals are known to both prover and verifier.
+    signal input leaf;                          // Private: The hash of the user's secret, which is a leaf in the tree.
+    signal input root;                          // Public: The known public root of the Merkle tree of registered voters.
+    signal input pathElements[depth];           // Private: An array of sibling nodes along the path from the leaf to the root.
+    signal input pathIndices[depth];            // Private: An array of 0s and 1s indicating if the node at each level is on the left (0) or right (1).
 
-    // 내부 계산용 신호
-    signal left[depth];                         // 각 단계에서 왼쪽 자식 노드
-    signal right[depth];                        // 각 단계에서 오른쪽 자식 노드
-    signal a1[depth];                           // left 계산용 분기
-    signal a2[depth];                           // left 계산용 분기
-    signal b1[depth];                           // right 계산용 분기
-    signal b2[depth];                           // right 계산용 분기
-    signal cur[depth + 1];                      // 각 단계에서의 결과 해시값
+    // === INTERNAL SIGNALS ===
+    // These signals are used for intermediate calculations within the circuit.
+    signal left[depth];                         // Represents the left-child input for the hash at each level.
+    signal right[depth];                        // Represents the right-child input for the hash at each level.
 
-    // Poseidon 해시 컴포넌트 배열
+     // An array of hash components, one for each level of the tree.
     component hashers[depth];
 
-    // 초기 노드 설정 (leaf부터 시작)
+    // An array to store the computed hash at each level, from the leaf up to the root.
+    signal cur[depth + 1];
+
+    // === LOGIC ===
+    // 1. Start the computation from the leaf.
     cur[0] <== leaf;
 
-    // 각 단계마다 Merkle hash 계산
+    // 2. Iteratively compute the parent hash for each level of the tree.
     for (var i = 0; i < depth; i++) {
-        // left[i] 결정
-        // pathIndices = 0 --> a1 = 0, a2 = myLeaf          --> left = a1 + a2 = myLeaf
-        // pathIndices = 1 --> a1 = pathElements, a2 = 0    --> left = a1 + a2 = pathElements
-        a1[i] <== pathIndices[i] * pathElements[i];
-        a2[i] <== (1 - pathIndices[i]) * cur[i];
-        left[i] <== a1[i] + a2[i];
+        // Determine the order of hashing based on `pathIndices[i]`.
+        // If pathIndices[i] is 0, the current node `cur[i]` is the left child.
+        // If pathIndices[i] is 1, the current node `cur[i]` is the right child.
+        // The following lines implement this logic using arithmetic constraints, which are more efficient for circuits.
+        left[i] <== (1 - pathIndices[i]) * cur[i] + pathIndices[i] * pathElements[i];
+        right[i] <== pathIndices[i] * cur[i] + (1 - pathIndices[i]) * pathElements[i];
 
-        // right[i] 결정:
-        // pathIndices = 0 --> b1 = 0, b2 = pathElements    --> right = b1 + b2 = pathElements
-        // pathIndices = 1 --> b1 = myLeaf, b2 = 0          --> right = b1 + b2 = myLeaf
-        b1[i] <== pathIndices[i] * cur[i];
-        b2[i] <== (1 - pathIndices[i]) * pathElements[i];
-        right[i] <== b1[i] + b2[i];
-
-        // Poseidon 해싱 수행
+        // Initialize the Poseidon hasher for this level, configured for 2 inputs.
         hashers[i] = Poseidon(2);
         hashers[i].inputs[0] <== left[i];
         hashers[i].inputs[1] <== right[i];
 
-        // 다음 단계 해시 결과 저장
+        // The output of the hash becomes the input for the next level up.
         cur[i + 1] <== hashers[i].out;
     }
-    // 최종 계산 결과가 주어진 root와 일치해야 함
+    // 3. Final Constraint: The final computed hash `cur[depth]` must equal the public `root`.
     cur[depth] === root;
 }
 
-// =====================================
-// VoteProof 템플릿
-// =====================================
-template VoteProof(treeHeight, numOptions) {
-    signal input user_secret;                   // 사용자 user_secret
-    signal input vote[numOptions];              // 투표 배열
-    signal input pathElements[treeHeight];      // Merkle path: 형제 노드들
-    signal input pathIndices[treeHeight];       // Merkle path: 각 단계에서의 방향 정보(0: 왼쪽, 1: 오른쪽)
-    signal input root;                          // 기대하는 Merkle Root
-    signal input election_id;                   // 각 선거를 구분하는 고유한 공개 ID
+/*
+=====================================
+ Template: VoteProof
+=====================================
+* @purpose: A comprehensive circuit that validates an entire voting action. It combines:
+           1. Voter eligibility check (using MerkleProof).
+           2. Vote format validation (ensuring a valid, single choice).
+           3. Double-voting prevention (by generating a unique nullifier).
+* @param depth: The depth of the voter Merkle tree.
+* @param numOptions: The number of candidates or options in the election.
+*/
+template VoteProof(depth, numOptions) {
+    // === INPUT SIGNALS ===
+    signal input user_secret;               // Private: The voter's unique secret value.
+    signal input vote[numOptions];          // Private: The vote cast, as a 1-hot encoded array (e.g., [0, 1, 0]).
+    signal input pathElements[depth];       // Private: Merkle path elements for the voter's leaf.
+    signal input pathIndices[depth];        // Private: Merkle path indices for the voter's leaf.
+    signal input root;                      // Public: The Merkle root of the voter list.
+    signal input election_id;               // Public: A unique identifier for the specific election.
 
-    signal output vote_index;                   // 선택된 후보 인덱스
-    signal output nullifier_hash;               // "사용된 투표권" 역할을 할 공개 널리파이어
+    // === OUTPUT SIGNALS ===
+    signal output vote_index;                // Public: The index of the candidate the user voted for.
+    signal output nullifier_hash;            // Public: A unique value to prevent double-voting.
 
-    // 1. user_secret을 해시하여 leaf 생성
+    // --- 1. PROVE VOTER ELIGIBILITY (using MerkleProof) ---
+
+    // 1a. Generate the Merkle leaf by hashing the `user_secret`.
+    // This proves membership without revealing the secret itself.
     component hasher = Poseidon(1);
     hasher.inputs[0] <== user_secret;
     signal leaf;
     leaf <== hasher.out;
 
-    // 2. Merkle 증명 회로 구성(MerkleProof 템플릿을 활용)
-    component mp = MerkleProof(treeHeight);
+    // 1b. Instantiate the MerkleProof circuit and connect its signals.
+    // This enforces the constraint that the generated `leaf` belongs to the tree defined by `root`.
+    component mp = MerkleProof(depth);
     mp.leaf <== leaf;
     mp.root <== root;
-
-    // Merkle 경로 연결
-    for (var i = 0; i < treeHeight; i++) {
+    for (var i = 0; i < depth; i++) {
         mp.pathElements[i] <== pathElements[i];
         mp.pathIndices[i] <== pathIndices[i];
     }
 
-    // 3. 투표 배열 검증: 전체 합이 1이어야 함
-    signal sum[numOptions + 1];
-    sum[0] <== 0;
+    // --- 2. VALIDATE THE VOTE FORMAT ---
 
+    // 2a. Enforce that each element in the `vote` array is either 0 or 1.
+    // The quadratic constraint `x * (1 - x) === 0` is satisfied only if x is 0 or 1.
+    signal sum = 0;
     for (var i = 0; i < numOptions; i++) {
-        vote[i] * (1 - vote[i]) === 0;          // vote[i] ∈ {0, 1} 강제
-        sum[i + 1] <== sum[i] + vote[i];        // 누적합 계산
+        vote[i] * (1 - vote[i]) === 0;
+        sum += vote[i];
     }
-    sum[numOptions] === 1;                      // 총합이 1이어야 유효한 1-hot
 
-    // 4. 투표배열에서 선택된 인덱스 계산
-    signal tmp[numOptions + 1];
-    tmp[0] <== 0;
+    // 2b. Enforce that the sum of the `vote` array is exactly 1.
+    // This ensures the voter has selected exactly one option (1-hot encoding).
+    sum === 1;
 
+    // --- 3. CALCULATE THE VOTE INDEX ---
+    // Derives the chosen candidate's index from the 1-hot encoded array.
+    signal temp_sum = 0;
     for (var i = 0; i < numOptions; i++) {
-        tmp[i + 1] <== tmp[i] + vote[i] * i;
+        temp_sum += vote[i] * i;
     }
-    vote_index <== tmp[numOptions];
+    vote_index <== temp_sum;
 
-    // 5. 널리파이어 생성
+    // --- 4. GENERATE THE NULLIFIER FOR DOUBLE-VOTING PREVENTION ---
+    // The nullifier is a unique hash generated from the `user_secret` and the `election_id`.
+    // The contract will store this public value and reject any transaction with a previously used nullifier.
     component nullifierHasher = Poseidon(2);
     nullifierHasher.inputs[0] <== user_secret;
     nullifierHasher.inputs[1] <== election_id;
     nullifier_hash <== nullifierHasher.out;
 }
 
-// =====================================
-// Main 템플릿
-// =====================================
-template Main(treeHeight, numOptions) {
-    // 입력 정의
-    signal input root_in;               // 공개 Merkle Root
-    signal input user_secret;           // 사용자 user_secret
-    signal input vote[3];               // 투표 배열
-    signal input pathElements[3];       // Merkle path: 형제 노드들
-    signal input pathIndices[3];        // Merkle path: 각 단계에서의 방향 정보(0: 왼쪽, 1: 오른쪽)
-    signal input election_id;           // 선거 ID
+/*
+=====================================
+ Template: Main
+=====================================
+* @purpose: The top-level component for the entire circuit. It defines the final public inputs
+           and outputs for the ZK-SNARK proof and connects the `VoteProof` sub-circuit.
+*/
+template Main(depth, numOptions) {
+    // === PUBLIC INPUTS (used by the on-chain verifier contract) ===
+    signal input root_in;                   // Public: The Merkle root to verify against.
 
-    signal output root_out;             // 검증된 공개 Merkle Root
-    signal output vote_index;           // 선택된 후보 인덱스
-    signal output nullifier_hash;       // 널리파이어
+    // === PRIVATE INPUTS (known only to the prover) ===
+    signal input user_secret;
+    signal input vote[numOptions];
+    signal input pathElements[depth];
+    signal input pathIndices[depth];
+    signal input election_id;
 
-    // VoteProof 하위 회로 구성
-    component voteProof = VoteProof(treeHeight, numOptions);
+    // === PUBLIC OUTPUTS (values revealed with the proof, verified by the contract) ===
+    signal output root_out;                  // Public: The same Merkle root, passed through as a public output.
+    signal output vote_index;                // Public: The index for the chosen candidate.
+    signal output nullifier_hash;            // Public: The unique nullifier to prevent double-voting.
 
-    // 모든 입력 연결
+    // Instantiate the main `VoteProof` circuit.
+    component voteProof = VoteProof(depth, numOptions);
+
+    // Connect all inputs from the Main template to the `voteProof` sub-component.
     voteProof.root <== root_in;
     voteProof.user_secret <== user_secret;
     voteProof.election_id <== election_id;
-
-    for (var i = 0; i < treeHeight; i++) {
+    for (var i = 0; i < depth; i++) {
         voteProof.pathElements[i] <== pathElements[i];
         voteProof.pathIndices[i] <== pathIndices[i];
     }
-
     for (var i = 0; i < numOptions; i++) {
         voteProof.vote[i] <== vote[i];
     }
 
-    // 출력 연결
-    root_out <== root_in;                   // root_in(검증완료)을 public output으로 넘긴다
-    vote_index <== voteProof.vote_index;    // vote_index(검증완료)를 public output으로 넘긴다
+    // Connect the outputs from `voteProof` to the final outputs of the Main template.
+    root_out <== root_in;
+    vote_index <== voteProof.vote_index;
     nullifier_hash <== voteProof.nullifier_hash;
 }
 
-// 컴파일 대상 인스턴스 정의 (트리 높이 3, 후보 3명)
+// === CIRCUIT INSTANTIATION ===
+// Creates an instance of the Main circuit with specific parameters.
+// To change the system's configuration, you would modify these values and re-run the entire ZKP setup.
 component main = Main(3, 3);

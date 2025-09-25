@@ -1,112 +1,124 @@
-// scripts/deployAll.js
-
 const hre = require("hardhat");
-const { ethers } = require("ethers");
-const supabase = require("../server/supabaseClient"); // 서버의 Supabase 클라이언트를 가져옵니다.
+const supabase = require("../server/supabaseClient"); // Import Supabase client from the server directory.
 require("dotenv").config();
 
 async function main() {
-    // 1. 터미널에서 배포할 선거의 UUID를 인자로 받습니다.
-    // const electionUUID = process.argv[2];
-    // if (!electionUUID) {
-    //     console.error("오류: 배포할 선거의 UUID를 인자로 전달해야 합니다.");
-    //     console.log("사용법: npx hardhat run scripts/deployAll.js <election-uuid> --network sepolia");
-    //     process.exit(1);
-    // }
+    // --- 1. Get Election UUID ---
     const electionUUID = process.env.ELECTION_UUID;
     if (!electionUUID) {
-        console.error("오류: ELECTION_UUID 환경 변수를 설정해야 합니다.");
-        console.log("사용법: ELECTION_UUID=<your-uuid> npx hardhat run scripts/deployAll.js --network sepolia");
+        console.error("Error: ELECTION_UUID environment variable must be set.");
+        console.log("Usage: ELECTION_UUID=<your-uuid> npx hardhat run scripts/deployAll.js --network sepolia");
         process.exit(1);
     }
-    console.log(`선거 UUID [${electionUUID}]의 컨트랙트를 배포합니다.`);
+    console.log(`Deploying contracts for Election UUID: [${electionUUID}]`);
 
-    // 2. DB에서 해당 선거 정보를 조회합니다.
+    // --- 2. Fetch Election Details from Database ---
+    // MODIFIED: Also select `num_candidates` to pass to the VotingTally constructor and find the correct Verifier.
     const { data: election, error } = await supabase
         .from("Elections")
-        .select("id, merkle_tree_depth")
+        .select("id, merkle_tree_depth, num_candidates") // Added `num_candidates`
         .eq("id", electionUUID)
         .single();
 
     if (error) {
-        console.error("Supabase 쿼리 실패! 상세 오류:", error);
+        console.error("Supabase query failed! Details:", error);
+        return;
+    }
+    if (!election) {
+        console.error("Could not find the specified election in the database.");
+        return;
+    }
+    // MODIFIED: Add a validation check for `num_candidates`.
+    if (typeof election.num_candidates !== 'number' || election.num_candidates <= 0) {
+        console.error("Error: `num_candidates` for the election is not set or is invalid in the database.");
         return;
     }
 
-    if(!election) {
-        console.error("DB에서 해당 선거를 찾을 수 없습니다.");
-        return;
-    }
-
-    // --- UUID를 uint256으로 변환 ---
+    // --- Convert UUID to uint256 for the contract ---
     const hexUUID = "0x" + election.id.replace(/-/g, "");
     const electionId = BigInt(hexUUID);
 
-    // 3. DB에서 가져온 merkle_tree_depth에 맞는 Verifier를 배포합니다.
-    const verifierContractName = `Groth16Verifier_${election.merkle_tree_depth}`;
-    const Verifier = await hre.ethers.getContractFactory(verifierContractName);
+    // --- 3. Deploy the Correct Verifier Contract ---
+    // MODIFIED: The verifier name now includes both depth and number of candidates for precision.
+    const verifierContractName = `Groth16Verifier_${election.merkle_tree_depth}_${election.num_candidates}`;
+    console.log(`Attempting to deploy Verifier: ${verifierContractName}...`);
+    
+    let Verifier;
+    try {
+        Verifier = await hre.ethers.getContractFactory(verifierContractName);
+    } catch (e) {
+        console.error(`\nError: Could not find the contract factory for "${verifierContractName}".`);
+        console.error("Please ensure you have run the `setUpZk.sh` script for this specific depth and candidate count.");
+        console.error(`Example: bash server/zkp/setUpZk.sh ${election.merkle_tree_depth} ${election.num_candidates}\n`);
+        process.exit(1);
+    }
+
     const verifier = await Verifier.deploy();
     await verifier.waitForDeployment();
     const verifierAddress = await verifier.getAddress();
-    console.log(`✅ ${verifierContractName} 배포 완료: ${verifierAddress}`);
+    console.log(`${verifierContractName} deployed to: ${verifierAddress}`);
 
-    // 4. VotingTally 컨트랙트를 배포합니다.
+    // --- 4. Deploy the VotingTally Contract ---
+    // MODIFIED: Pass all three required arguments to the constructor.
     const VotingTally = await hre.ethers.getContractFactory("VotingTally");
-    const votingTally = await VotingTally.deploy(verifierAddress, electionId);
+    const votingTally = await VotingTally.deploy(
+        verifierAddress,
+        electionId,
+        election.num_candidates // Pass the number of candidates
+    );
     await votingTally.waitForDeployment();
     const votingTallyAddress = await votingTally.getAddress();
-    console.log(`✅ VotingTally 배포 완료: ${votingTallyAddress}`);
+    console.log(`VotingTally deployed to: ${votingTallyAddress}`);
 
-    // 5. 배포된 컨트랙트 주소를 다시 DB에 업데이트합니다. (매우 중요)
+    // --- 5. Update the Database with the Deployed Contract Address ---
     const { error: updateError } = await supabase
         .from("Elections")
         .update({ contract_address: votingTallyAddress })
         .eq("id", electionUUID);
 
     if (updateError) {
-        console.error("DB에 컨트랙트 주소 업데이트 실패:", updateError);
+        console.error("Failed to update contract address in DB:", updateError);
     } else {
-        console.log("✅ DB에 컨트랙트 주소가 성공적으로 업데이트되었습니다.");
+        console.log("Successfully updated the contract address in the database.");
     }
 
-    console.log("\nEtherscan에 컨트랙트 인증을 시작합니다. (약 30초 소요)");
+    // --- 6. Verify Contracts on Etherscan ---
+    console.log("\nStarting contract verification on Etherscan (will wait 30s)...");
     
-    // Etherscan이 트랜잭션을 인덱싱할 시간을 주기 위해 잠시 대기합니다.
-    await new Promise(resolve => setTimeout(resolve, 30000)); 
+    await new Promise(resolve => setTimeout(resolve, 30000)); // Wait for Etherscan to index the transaction.
 
     try {
-        // Verifier 컨트랙트 인증
         await hre.run("verify:verify", {
             address: verifierAddress,
-            constructorArguments: [], // 생성자 인자 없음
+            constructorArguments: [],
         });
-        console.log(`✅ ${verifierContractName} 인증 성공!`);
+        console.log(`Verification successful for ${verifierContractName}`);
     } catch (e) {
         if (e.message.toLowerCase().includes("already verified")) {
-            console.log("ℹ️ Verifier 컨트랙트는 이미 인증되었습니다.");
+            console.log(`${verifierContractName} is already verified.`);
         } else {
-            console.error("Verifier 컨트랙트 인증 실패:", e);
+            console.error(`Failed to verify ${verifierContractName}:`, e.message);
         }
     }
 
     try {
-        // VotingTally 컨트랙트 인증
         await hre.run("verify:verify", {
             address: votingTallyAddress,
-            constructorArguments: [ // 생성자 인자를 배열로 전달
+            // MODIFIED: Provide the correct constructor arguments for verification.
+            constructorArguments: [
                 verifierAddress,
                 electionId.toString(),
+                election.num_candidates,
             ],
         });
-        console.log("✅ VotingTally 인증 성공!");
+        console.log("Verification successful for VotingTally");
     } catch (e) {
         if (e.message.toLowerCase().includes("already verified")) {
-            console.log("ℹ️ VotingTally 컨트랙트는 이미 인증되었습니다.");
+            console.log("VotingTally is already verified.");
         } else {
-            console.error("VotingTally 컨트랙트 인증 실패:", e);
+            console.error("Failed to verify VotingTally:", e.message);
         }
     }
-    
 }
 
 main().catch((error) => {
