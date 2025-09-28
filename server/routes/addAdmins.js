@@ -1,17 +1,27 @@
 const express = require("express");
 const router = express.Router();
+const validator = require('validator');
 const supabase = require("../supabaseClient");
-const authAdmin = require("../middleware/authAdmin"); // 기존 관리자 인증 미들웨어
+const authAdmin = require("../middleware/authAdmin");
 
-// POST /admins/invite
-// 역할: 새로운 관리자를 초대 명단(AdminInvitations)에 추가
+/**
+ * @route   POST /admins
+ * @desc    Adds a user's email to the admin invitation list.
+ * @access  Private (Admin Only)
+ */
 router.post("/", authAdmin, async (req, res) => {
     const { email } = req.body;
+    const inviterAdminId = req.admin.id; // Assume `authAdmin` middleware attaches admin info to req.admin
 
+    // --- 1. Input Validation ---
     if (!email) {
         return res.status(400).json({ error: "Email is required." });
     }
+    if (!validator.isEmail(email)) {
+        return res.status(400).json({ error: "Invalid email format provided." });
+    }
 
+    // --- 2. Add to Invitation List ---
     try {
         // 초대 명단에 이메일 추가 (이미 존재하면 무시)
         const { error } = await supabase
@@ -20,11 +30,14 @@ router.post("/", authAdmin, async (req, res) => {
 
         if (error) throw error;
 
-        return res.status(201).json({ success: true, message: `Successfully invited ${email} to become an admin.` });
+        return res.status(201).json({ 
+            success: true, 
+            message: `Successfully added ${email} to the admin invitation list.` 
+        });
 
     } catch (err) {
-        console.error("Admin invitation failed:", err.message);
-        return res.status(500).json({ error: "Failed to invite admin.", details: err.message });
+        console.error("Admin invitation failed: ", err.message);
+        return res.status(500).json({ error: "Failed to process admin invitation.", details: err.message });
     }
 });
 

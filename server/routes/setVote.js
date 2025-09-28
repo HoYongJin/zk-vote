@@ -1,71 +1,16 @@
-// const express = require("express");
-// const router = express.Router();
-// const supabase = require("../supabaseClient");
-// const authAdmin = require("../middleware/authAdmin");
-
-// router.post("/", authAdmin, async (req, res) => {
-//     const {
-//         name,
-//         merkleTreeDepth,
-//         candidates,
-//         regStartTime,
-//         regEndTime,
-//         voteStartTime,
-//         voteEndTime
-//     } = req.body;
-
-//     // 1. 입력 값 유효성 검사 (생략)
-//     if (!name || !merkleTreeDepth || !candidates) {
-//         return res.status(400).json({ error: "필수 정보가 누락되었습니다." });
-//     }
-
-//     try {
-//         // 2. DB에 새로운 선거 정보 저장
-//         const { data, error } = await supabase
-//             .from("Elections")
-//             .insert([{
-//                 name: name,
-//                 merkle_tree_depth: merkleTreeDepth,
-//                 candidates: candidates,
-//                 registration_start_time: regStartTime,
-//                 registration_end_time: regEndTime,
-//                 voting_start_time: voteStartTime,
-//                 voting_end_time: voteEndTime,
-//             }])
-//             .select();
-
-//         if (error) throw error;
-
-//         // MerkleState 테이블에 해당 선거를 위한 빈 상태(state)를 미리 생성합니다.
-//         const { error: merkleError } = await supabase
-//         .from("MerkleState")
-//         .insert({
-//             election_id: data.id,
-//             merkle_data: { leaves: [] }
-//         });
-
-//         if (merkleError) throw merkleError;
-
-//         res.status(201).json({
-//             success: true,
-//             message: "새로운 선거가 성공적으로 생성되었습니다.",
-//             election: data[0]
-//         });
-
-//     } catch (err) {
-//         console.error("선거 생성 오류:", err.message);
-//         return res.status(500).json({ error: "서버 오류가 발생했습니다." });
-//     }
-// });
-
-// module.exports = router;
-
 const express = require("express");
 const router = express.Router();
+const validator = require('validator');
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
 
+/**
+ * @route   POST /setVote
+ * @desc    Creates a new election with its initial configuration.
+ * @access  Private (Admin Only)
+ */
 router.post("/", authAdmin, async (req, res) => {
+    // --- 1. Input Destructuring and Validation ---
     const {
         name,
         merkleTreeDepth,
@@ -73,18 +18,39 @@ router.post("/", authAdmin, async (req, res) => {
         regEndTime
     } = req.body;
 
+    // presence check
     if (!name || !merkleTreeDepth || !candidates || !regEndTime) {
-        return res.status(400).json({ error: "필수 정보가 누락되었습니다." });
+        return res.status(400).json({ 
+            error: "Missing required fields.",
+            details: "Fields `name`, `merkleTreeDepth`, `candidates`, and `regEndTime` are all required."
+        });
+    }
+
+    // Detailed validation
+    if (typeof name !== 'string' || name.trim() === '') {
+        return res.status(400).json({ error: "Validation Error", details: "`name` must be a non-empty string." });
+    }
+    if (!Number.isInteger(merkleTreeDepth) || merkleTreeDepth <= 0) {
+        return res.status(400).json({ error: "Validation Error", details: "`merkleTreeDepth` must be a positive integer." });
+    }
+    if (!Array.isArray(candidates) || candidates.length === 0 || !candidates.every(c => typeof c === 'string' && c.trim() !== '')) {
+        return res.status(400).json({ error: "Validation Error", details: "`candidates` must be a non-empty array of strings." });
+    }
+    if (!validator.isISO8601(regEndTime) || new Date(regEndTime) <= new Date()) {
+        return res.status(400).json({ error: "Validation Error", details: "`regEndTime` must be a valid ISO 8601 date string set in the future." });
     }
 
     try {
-        // 1. DB에 새로운 선거 정보 저장하고, 결과를 단일 객체로 받음
+        // --- 2. Insert New Election into the Database ---
+        const numCandidates = candidates.length;
+
         const { data: electionData, error: electionError } = await supabase
             .from("Elections")
             .insert([{
-                name: name,
+                name: name.trim(),
                 merkle_tree_depth: merkleTreeDepth,
                 candidates: candidates,
+                num_candidates: numCandidates,
                 registration_start_time: new Date().toISOString(),
                 registration_end_time: regEndTime,
             }])
@@ -93,32 +59,34 @@ router.post("/", authAdmin, async (req, res) => {
 
         if (electionError) throw electionError;
 
-        // --- ▼ [핵심 수정] 반환된 데이터가 유효한지 확인 ▼ ---
         if (!electionData || !electionData.id) {
-            console.error("Elections 테이블 insert 후 데이터 반환 실패. RLS 정책을 확인하세요.");
-            return res.status(500).json({ error: "선거를 생성했지만, 생성된 정보를 가져올 수 없습니다." });
+            console.error("Failed to retrieve data after inserting into Elections table. Check RLS policies.");
+            return res.status(500).json({ error: "Failed to create the election.", details: "Could not retrieve election details after creation." });
         }
-        // --- ▲ [핵심 수정] 여기까지 ▲ ---
 
-        // 2. MerkleState 테이블에 빈 상태를 미리 생성
+        // --- 3. Create Initial State in MerkleState Table ---
+        // This ensures every election has a corresponding Merkle tree record from the start.
         const { error: merkleError } = await supabase
             .from("MerkleState")
             .insert({
-                election_id: electionData.id, // 이제 electionData.id는 유효한 UUID 값임
+                election_id: electionData.id,
                 merkle_data: { leaves: [] }
             });
 
         if (merkleError) throw merkleError;
 
-        res.status(201).json({
+        return res.status(201).json({
             success: true,
-            message: "새로운 선거가 성공적으로 생성되었습니다.",
+            message: "New election created successfully.",
             election: electionData
         });
 
     } catch (err) {
-        console.error("선거 생성 오류:", err.message);
-        return res.status(500).json({ error: "서버 오류가 발생했습니다." });
+        console.error("Error creating election:", err.message);
+        if (err.code === '23505') { // PostgreSQL unique violation code
+            return res.status(409).json({ error: "Conflict", details: "An election with this name or ID might already exist." });
+        }
+        return res.status(500).json({ error: "An internal server error occurred.", details: err.message });
     }
 });
 
