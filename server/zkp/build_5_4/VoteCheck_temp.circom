@@ -182,4 +182,4 @@ template Main(depth, numOptions) {
 // === CIRCUIT INSTANTIATION ===
 // Creates an instance of the Main circuit with specific parameters.
 // To change the system's configuration, you would modify these values and re-run the entire ZKP setup.
-component main = Main(3, 3);
+component main = Main(5, 4);
