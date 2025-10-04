@@ -16,7 +16,7 @@ async function main() {
     // MODIFIED: Also select `candidates` to pass to the VotingTally constructor and find the correct Verifier.
     const { data: election, error } = await supabase
         .from("Elections")
-        .select("id, merkle_tree_depth, candidates") // Added `candidates`
+        .select("id, merkle_tree_depth, num_candidates") 
         .eq("id", electionUUID)
         .single();
 
@@ -28,9 +28,9 @@ async function main() {
         console.error("Could not find the specified election in the database.");
         return;
     }
-    // MODIFIED: Add a validation check for `candidates`.
-    if (typeof election.candidates !== 'number' || election.candidates <= 0) {
-        console.error("Error: `candidates` for the election is not set or is invalid in the database.");
+    // MODIFIED: Add a validation check for `num_candidates`.
+    if (typeof election.num_candidates !== 'number' || election.num_candidates <= 0) {
+        console.error("Error: `num_candidates` for the election is not set or is invalid in the database.");
         return;
     }
 
@@ -39,8 +39,8 @@ async function main() {
     const electionId = BigInt(hexUUID);
 
     // --- 3. Deploy the Correct Verifier Contract ---
-    // MODIFIED: The verifier name now includes both depth and number of candidates for precision.
-    const verifierContractName = `Groth16Verifier_${election.merkle_tree_depth}_${election.candidates}`;
+    // MODIFIED: The verifier name now includes both depth and number of num_candidates for precision.
+    const verifierContractName = `Groth16Verifier_${election.merkle_tree_depth}_${election.num_candidates}`;
     console.log(`Attempting to deploy Verifier: ${verifierContractName}...`);
     
     let Verifier;
@@ -49,7 +49,7 @@ async function main() {
     } catch (e) {
         console.error(`\nError: Could not find the contract factory for "${verifierContractName}".`);
         console.error("Please ensure you have run the `setUpZk.sh` script for this specific depth and candidate count.");
-        console.error(`Example: bash server/zkp/setUpZk.sh ${election.merkle_tree_depth} ${election.candidates}\n`);
+        console.error(`Example: bash server/zkp/setUpZk.sh ${election.merkle_tree_depth} ${election.num_candidates}\n`);
         process.exit(1);
     }
 
@@ -64,7 +64,7 @@ async function main() {
     const votingTally = await VotingTally.deploy(
         verifierAddress,
         electionId,
-        election.candidates // Pass the number of candidates
+        election.num_candidates // Pass the number of num_candidates
     );
     await votingTally.waitForDeployment();
     const votingTallyAddress = await votingTally.getAddress();
@@ -108,7 +108,7 @@ async function main() {
             constructorArguments: [
                 verifierAddress,
                 electionId.toString(),
-                election.candidates,
+                election.num_candidates,
             ],
         });
         console.log("Verification successful for VotingTally");

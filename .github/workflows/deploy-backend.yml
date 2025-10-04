@@ -41,9 +41,6 @@ jobs:
             # 3. 서버(백엔드) 폴더로 이동합니다.
             cd server
 
-            # 4. GitHub Secret에 저장된 내용으로 .env 파일을 생성(덮어쓰기)합니다.
-            echo "${{ secrets.ENV_FILE }}" > .env
-
             # 5. 변경된 package.json에 맞춰 라이브러리를 설치합니다.
             npm install
 
