@@ -15,7 +15,7 @@ router.get("/", async (req, res) => {
         // 모든 선거를 조회합니다.
         const { data, error } = await supabase
             .from("Elections")
-            .select("id, name, registration_end_time") // 프론트엔드에 필요한 정보만 선택 (id, 이름, 등록 마감일 등)
+            .select("id, name, candidates") // 프론트엔드에 필요한 정보만 선택 (id, 이름, 등록 마감일 등)
             .lt('registration_start_time', now.toISOString()) // 등록 시작 시간이 현재보다 과거이고
             .gt('registration_end_time', now.toISOString());  // 등록 종료 시간이 현재보다 미래인
 
