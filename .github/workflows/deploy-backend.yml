@@ -2,7 +2,6 @@
 name: Deploy Backend to AWS EC2
 
 # 이 워크플로우가 언제 실행될지를 정의합니다.
-# -> 'main' 브랜치에 'push' 이벤트가 발생했을 때
 on:
   push:
     branches:
@@ -10,26 +9,23 @@ on:
 
 # 수행할 작업(job)들을 정의합니다.
 jobs:
-  # 'deploy'라는 이름의 작업을 정의합니다.
   deploy:
-    # 이 작업이 실행될 가상 환경을 지정합니다. -> 최신 우분투
+    # 이 작업이 실행될 가상 환경을 지정합니다.
     runs-on: ubuntu-latest
 
     # 작업이 수행할 단계(step)들을 순서대로 나열합니다.
     steps:
       # 1단계: EC2에 접속하여 배포 스크립트를 실행
       - name: Deploy to EC2
-        # SSH 접속 및 명령어 실행을 쉽게 해주는 유명한 GitHub Action을 사용합니다.
         uses: appleboy/ssh-action@master
-        # 이 Action에 필요한 값들을 전달합니다.
         with:
-          # host, username, key는 1단계에서 GitHub Secrets에 저장한 값을 사용합니다.
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.AWS_USER }}
           key: ${{ secrets.AWS_KEY }}
           
           # EC2 서버에 접속해서 실행할 명령어들을 순서대로 적습니다.
           script: |
+            # 셸 환경을 zsh로 설정합니다.
             source ~/.zshrc
 
             # 1. 프로젝트 폴더로 이동합니다.
@@ -38,11 +34,30 @@ jobs:
             # 2. GitHub 저장소에서 최신 코드를 내려받습니다.
             git pull origin main
 
-            # 3. 서버(백엔드) 폴더로 이동합니다.
-            cd server
-
-            # 5. 변경된 package.json에 맞춰 라이브러리를 설치합니다.
+            # 3. [추가] 프로젝트 루트의 의존성을 설치합니다. (hardhat 등)
             npm install
 
-            # 6. PM2로 실행 중인 서버를 최신 코드로 다시 시작합니다.
-            pm2 restart zk-vote-api
+            # 4. [핵심 추가] Hardhat을 이용해 스마트 컨트랙트를 컴파일합니다.
+            #    -> 이 명령어가 서버에 'artifacts' 디렉터리를 생성합니다.
+            npx hardhat compile
+
+            # 5. 서버(백엔드) 폴더로 이동합니다.
+            cd server
+
+            # 6. 서버의 의존성을 설치합니다.
+            npm install
+            
+            # 7. [수정] .env 파일을 GitHub Secrets를 이용해 생성합니다.
+            echo "SEPOLIA_RPC_URL=${{ secrets.SEPOLIA_RPC_URL }}" >> .env
+            echo "PRIVATE_KEY=${{ secrets.PRIVATE_KEY }}" >> .env
+            echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
+            echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+            echo "SECRET_SALT=${{ secrets.SECRET_SALT }}" >> .env
+            echo "REDIS_HOST=${{ secrets.REDIS_HOST }}" >> .env
+            echo "REDIS_PORT=${{ secrets.REDIS_PORT }}" >> .env
+            echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> .env
+            # 필요한 다른 모든 환경 변수를 이와 같이 추가합니다.
+
+            # 8. PM2로 실행 중인 서버를 최신 코드로 다시 시작합니다.
+            #    만약 실행 중이 아니었다면 새로 시작합니다.
+            pm2 reload zk-vote-api || pm2 start index.js --name zk-vote-api
