@@ -169,7 +169,8 @@ async function generateMerkleProof(election_id, user_secret) {
     // 가져온 leaf 목록으로 메모리에서 Merkle Tree 구성
     const tree = new MerkleTree(election.merkle_tree_depth, rawLeaves.map(BigInt), {
         hashFunction: (a, b) => poseidon.F.toString(poseidon([BigInt(a), BigInt(b)])),
-        zeroElement: "21663839004416932945382355908790599225266501822907911457504D8515578255421292"
+        // derived from keccak256("tornado") to ensure compatibility with circomlib.(tornado-core/contracts/MerkleTreeWithHistory.sol)
+        zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
     });
 
     // Tree에서 증명 생성
