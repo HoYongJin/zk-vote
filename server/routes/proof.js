@@ -57,7 +57,7 @@ router.post("/", async (req, res) => {
         const { data: voter, error: voterError } = await supabase
             .from("Voters")
             .select("user_secret")
-            .eq("id", user.id)
+            .eq("user_id", user.id)
             .eq("election_id", election_id)
             .single(); 
 

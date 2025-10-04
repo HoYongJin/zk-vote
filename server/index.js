@@ -12,8 +12,8 @@ const registerByAdminRouter = require("./routes/registerByAdmin");
 const registerRouter = require("./routes/register");
 const finalizeVoteRouter = require("./routes/finalizeVote");
 const proofRouter = require("./routes/proof");
+const submitZkRouter = require("./routes/submitZk");
 // const secretRouter = require("./routes/secret");
-// const submitZkRouter = require("./routes/submitZk");
 // const addAdminsRouter = require("./routes/addAdmins");
 
 app.use("/setVote", setVoteRouter);
@@ -22,8 +22,8 @@ app.use("/register", registerRouter);
 app.use("/registerByAdmin", registerByAdminRouter);
 app.use("/finalizeVote", finalizeVoteRouter);
 app.use("/proof", proofRouter);
+app.use("/submitZk", submitZkRouter);
 // app.use("/secret", secretRouter);
-// app.use("/submitZk", submitZkRouter);
 // app.use("/addAdmins", addAdminsRouter);
 
 app.listen(process.env.PORT, () => {
