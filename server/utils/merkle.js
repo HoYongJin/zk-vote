@@ -62,7 +62,13 @@ async function addUserSecret(election_id, user_secret) {
         // Attempt to acquire the lock atomically.
         // 'NX': Set only if the key does not exist.
         // 'EX': Set an expiration time in seconds.
-        const lockAcquired = await redis.set(MERKLE_LOCK_KEY, 'locked', { NX: true, EX: LOCK_TIMEOUT_SECONDS });
+        const lockAcquired = await redis.set(
+            MERKLE_LOCK_KEY, 
+            'locked', 
+            'NX', // Set only if the key does not exist
+            'EX', // Set an expiration time
+            LOCK_TIMEOUT_SECONDS 
+        );
 
         if (lockAcquired) {
             console.log(`Lock acquired for election: ${election_id}.`);
@@ -144,7 +150,12 @@ async function generateMerkleProof(election_id, user_secret) {
         
         // Store the freshly loaded data in the cache for subsequent requests.
         // Set an expiration (e.g., 1 hour) to prevent stale data in case of errors.
-        await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(leaves), { EX: 3600 });
+        await redis.set(
+            MERKLE_TREE_CACHE_KEY, 
+            JSON.stringify(rawLeaves), 
+            'EX', // Set an expiration time
+            3600  // for 1 hour
+        );
     }
 
     const { data: election, error } = await supabase
