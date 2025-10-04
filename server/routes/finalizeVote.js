@@ -19,6 +19,7 @@ const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/Voting
 router.post("/:election_id", authAdmin, async (req, res) => {
     const { election_id } = req.params;
     const { voteEndTime } = req.body;
+    const now = new Date();
 
     // --- 1. Input Validation ---
     if (!election_id) {
@@ -92,7 +93,6 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         console.log("Voting period set successfully on-chain. Tx hash:", txPeriod.hash);
         
         // --- 6. Update the Database only after successful on-chain transactions ---
-        const now = new Date();
         const { error: updateDbError } = await supabase
             .from("Elections")
             .update({ 
