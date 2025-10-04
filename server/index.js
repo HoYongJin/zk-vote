@@ -12,7 +12,7 @@ const registerByAdminRouter = require("./routes/registerByAdmin");
 const registerRouter = require("./routes/register");
 const finalizeVoteRouter = require("./routes/finalizeVote");
 const proofRouter = require("./routes/proof");
-const submitZkRouter = require("./routes/submitZk");
+//const submitZkRouter = require("./routes/submitZk");
 // const secretRouter = require("./routes/secret");
 // const addAdminsRouter = require("./routes/addAdmins");
 
@@ -22,7 +22,7 @@ app.use("/register", registerRouter);
 app.use("/registerByAdmin", registerByAdminRouter);
 app.use("/finalizeVote", finalizeVoteRouter);
 app.use("/proof", proofRouter);
-app.use("/submitZk", submitZkRouter);
+//app.use("/submitZk", submitZkRouter);
 // app.use("/secret", secretRouter);
 // app.use("/addAdmins", addAdminsRouter);
 
