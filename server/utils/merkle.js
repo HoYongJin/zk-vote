@@ -23,24 +23,82 @@ async function getPoseidon() {
     return poseidon;
 }
 
-/**
- * Fetches the current list of leaves for a given election from the database.
- * @param {string} election_id - The UUID of the election.
- * @returns {Promise<string[]>} An array of leaves.
- */
-async function loadLeavesFromDB(election_id) {
-    const { data, error } = await supabase
-        .from("MerkleState")
-        .select("merkle_data")
+async function loadSecretsFromDB(election_id) {
+    const { data: voters, error } = await supabase
+        .from("Voters")
+        .select("user_secret")
         .eq("election_id", election_id)
-        .single();
+        .not("user_secret", "is", null)
+        .order('id', { ascending: true });
 
-    if (error && error.code !== 'PGRST116') {
-        console.error("Failed to load Merkle state from DB:", error.message);
+    if (error) {
+        console.error("Failed to load user secrets from DB:", error.message);
         throw error;
     }
+    return voters.map(v => v.user_secret);
+}
 
-    return data?.merkle_data?.leaves || [];
+// /**
+//  * Fetches the current list of leaves for a given election from the database.
+//  * @param {string} election_id - The UUID of the election.
+//  * @returns {Promise<string[]>} An array of leaves.
+//  */
+// async function loadLeavesFromDB(election_id) {
+//     const { data, error } = await supabase
+//         .from("MerkleState")
+//         .select("merkle_data")
+//         .eq("election_id", election_id)
+//         .single();
+
+//     if (error && error.code !== 'PGRST116') {
+//         console.error("Failed to load Merkle state from DB:", error.message);
+//         throw error;
+//     }
+
+//     return data?.merkle_data?.leaves || [];
+// }
+
+/**
+ * @param {string} election_id - The UUID of the election.
+ * @returns {Promise<MerkleTree>} The fully constructed MerkleTree object.
+ */
+async function generateMerkleTree(election_id) {
+    const poseidon = await getPoseidon();
+    const MERKLE_TREE_CACHE_KEY = `merkle_cache:secrets:${election_id}`;
+
+    let secrets;
+    const cachedSecrets = await redis.get(MERKLE_TREE_CACHE_KEY);
+
+    if (cachedSecrets) {
+        console.log(`Cache hit for election ${election_id} secrets.`);
+        secrets = JSON.parse(cachedSecrets);
+    } else {
+        console.log(`Cache miss for election ${election_id}. Loading secrets from DB.`);
+        secrets = await loadSecretsFromDB(election_id);
+        if (secrets.length > 0) {
+            await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(secrets), { EX: 3600 });
+        }
+    }
+
+    if (secrets.length === 0) {
+        // 유권자가 없는 경우에도 빈 트리를 반환할 수 있도록 처리
+        console.warn(`No registered voters found for election ${election_id}. Returning an empty tree.`);
+    }
+
+    const { data: election, error } = await supabase
+        .from("Elections")
+        .select("merkle_tree_depth")
+        .eq("id", election_id)
+        .single();
+
+    if (error || !election) throw new Error("Could not fetch election details to build Merkle tree.");
+
+    const leaves = secrets.map(secret => poseidon.F.toString(poseidon([BigInt(secret)])));
+
+    return new MerkleTree(election.merkle_tree_depth, leaves, {
+        hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
+        zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
+    });
 }
 
 /**
@@ -130,68 +188,27 @@ async function addUserSecret(election_id, user_secret) {
  */
 async function generateMerkleProof(election_id, user_secret) {
     const poseidon = await getPoseidon();
-    const leaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
+    const tree = await getMerkleTree(election_id);
 
-    const MERKLE_TREE_CACHE_KEY = `merkle_cache: ${election_id}`;     // 캐싱을 위한 키
+    const currentUserLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
+    const index = tree.leaves.indexOf(currentUserLeaf);
 
-    let rawLeaves;
-
-    // --- Cache Look-up ---
-    const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
-
-    if (cachedLeaves) {
-        // Cache Hit: Redis에 데이터가 있으면 DB 조회 없이 바로 사용
-        console.log(`Cache hit for election ${election_id} Merkle tree.`);
-        rawLeaves = JSON.parse(cachedLeaves);
-    } else {
-        // Cache Miss: Redis에 데이터가 없으면 DB에서 조회
-        console.log(`Cache miss for election ${election_id}. Loading from DB.`);
-        rawLeaves = await loadLeavesFromDB(election_id);
-        
-        // Store the freshly loaded data in the cache for subsequent requests.
-        // Set an expiration (e.g., 1 hour) to prevent stale data in case of errors.
-        await redis.set(
-            MERKLE_TREE_CACHE_KEY, 
-            JSON.stringify(rawLeaves), 
-            'EX', // Set an expiration time
-            3600  // for 1 hour
-        );
-    }
-
-    const { data: election, error } = await supabase
-        .from("Elections")
-        .select("merkle_tree_depth")
-        .eq("id", election_id)
-        .single();
-    if (error || !election) throw new Error("Could not fetch election details to build Merkle tree.");
-
-
-    // 가져온 leaf 목록으로 메모리에서 Merkle Tree 구성
-    const tree = new MerkleTree(election.merkle_tree_depth, rawLeaves.map(BigInt), {
-        hashFunction: (a, b) => poseidon.F.toString(poseidon([BigInt(a), BigInt(b)])),
-        // derived from keccak256("tornado") to ensure compatibility with circomlib.(tornado-core/contracts/MerkleTreeWithHistory.sol)
-        zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
-    });
-
-    // Tree에서 증명 생성
-    const index = rawLeaves.indexOf(leaf);
     if (index === -1) {
         throw new Error("Leaf not found in Merkle tree. The user might not be registered.");
     }
 
-    // 인덱스를 기준으로 ZKP에서 사용할 Merkle proof 경로 생성
     const proof = tree.path(index);
 
-    // 생성된 Merkle proof 반환
     return {
-        leaf,                                                            // user_secret으로부터 생성된 해시 leaf
-        root: tree.root.toString(),                                      // merkle_data(leaves)로 만들어진 Merkle Tree의 최상위 루트 해시
-        pathElements: proof.pathElements.map(el => el.toString()),      // pathElements: 해당 leaf에서 root까지 올라가는 경로에 있는 형제 노드들의 값
-        pathIndices: proof.pathIndices                                    // pathIndices: 각 레벨에서 본인이 왼쪽(0)인지 오른쪽(1)인지 표시
+        leaf: currentUserLeaf,
+        root: tree.root.toString(),
+        pathElements: proof.pathElements.map(el => el.toString()),
+        pathIndices: proof.pathIndices
     };
 }
 
 module.exports = {
-  addUserSecret,
-  generateMerkleProof
+    generateMerkleTree,
+    addUserSecret,
+    generateMerkleProof
 };

@@ -2,10 +2,11 @@ const express = require("express");
 const router = express.Router();
 const validator = require('validator');
 const supabase = require("../supabaseClient");
+const { generateMerkleTree } = require("../utils/merkle"); 
 const { ethers } = require("ethers");
-const { buildPoseidon } = require("circomlibjs");
-const { MerkleTree } = require("fixed-merkle-tree");
-const authAdmin = require("../middleware/authAdmin"); // Import your admin auth middleware
+// const { buildPoseidon } = require("circomlibjs");
+// const { MerkleTree } = require("fixed-merkle-tree");
+const authAdmin = require("../middleware/authAdmin");
 
 // VotingTally contract ABI
 const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/VotingTally.json").abi;
@@ -62,13 +63,18 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         }
         
         // --- 4. Calculate the Final Merkle Root Off-Chain ---
-        const poseidon = await buildPoseidon();
-        const leaves = voters.map(v => poseidon.F.toString(poseidon([BigInt(v.user_secret)])));
-        const tree = new MerkleTree(election.merkle_tree_depth, leaves, {
-            hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
-            // derived from keccak256("tornado") to ensure compatibility with circomlib.(tornado-core/contracts/MerkleTreeWithHistory.sol)
-            zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
-        });
+        // const poseidon = await buildPoseidon();
+        // const leaves = voters.map(v => poseidon.F.toString(poseidon([BigInt(v.user_secret)])));
+        // const tree = new MerkleTree(election.merkle_tree_depth, leaves, {
+        //     hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
+        //     // derived from keccak256("tornado") to ensure compatibility with circomlib.(tornado-core/contracts/MerkleTreeWithHistory.sol)
+        //     zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
+        // });
+        // const finalMerkleRoot = tree.root.toString();
+        const tree = await generateMerkleTree(election_id);
+        if (tree.leaves.length === 0) {
+            return res.status(400).json({ error: "NO_VOTERS_REGISTERED" });
+        }
         const finalMerkleRoot = tree.root.toString();
 
                 
