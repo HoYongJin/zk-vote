@@ -76,7 +76,12 @@ async function generateMerkleTree(election_id) {
         console.log(`Cache miss for election ${election_id}. Loading secrets from DB.`);
         secrets = await loadSecretsFromDB(election_id);
         if (secrets.length > 0) {
-            await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(secrets), { EX: 3600 });
+            await redis.set(
+                MERKLE_TREE_CACHE_KEY, 
+                JSON.stringify(secrets), 
+                'EX', // Set an expiration time
+                3600  // for 1 hour
+            );
         }
     }
 
