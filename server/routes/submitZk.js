@@ -35,12 +35,25 @@ const submitVoteLimiter = rateLimit({
     legacyHeaders: false,
 });
 
+// const limiter = rateLimit({
+//     windowMs: 15 * 60 * 1000, // 15 minutes
+//     max: 5,
+//     handler: (req, res) => {
+//         res.status(429).json({
+//             error: "Too many requests.",
+//             details: "You have exceeded the vote submission limit. Please try again later."
+//         });
+//     },
+//     standardHeaders: true,
+//     legacyHeaders: false,
+// });
+
 /**
  * @route   POST /submitZk
  * @desc    Submits the final vote with a ZK proof to the smart contract. Acts as a gas relayer.
  * @access  Private (Requires JWT Authentication)
  */
-router.post(
+router.post("/",
     // --- 3a. First Middleware: User Authentication ---
     async (req, res, next) => {
         const authHeader = req.headers.authorization || "";
