@@ -112,7 +112,7 @@ async function addUserSecret(election_id, user_secret) {
     const newLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
 
     const MERKLE_LOCK_KEY = `merkle_lock: ${election_id}`;
-    const MERKLE_TREE_CACHE_KEY = `merkle_cache: ${election_id}`;
+    const MERKLE_TREE_CACHE_KEY = `merkle_cache:secrets:${election_id}`;
     const startTime = Date.now();
 
     // --- Acquire Distributed Lock ---
@@ -143,41 +143,59 @@ async function addUserSecret(election_id, user_secret) {
     }
 
     try {
-        // --- Critical Section: Guaranteed to be executed by only one process at a time ---
-        const existingLeaves = await loadLeavesFromDB(election_id);
+        // --- [핵심 수정] 임계 영역 ---
+        // register API가 Voters 테이블에 유권자를 이미 추가했으므로,
+        // 이 함수는 오직 캐시를 무효화하는 책임만 가집니다.
+        // 따라서 DB에서 데이터를 읽거나 쓰는 로직이 모두 제거됩니다.
 
-        if (existingLeaves.includes(newLeaf)) {
-            console.log(`Leaf for election ${election_id} already exists. Skipping.`);
-            return;
-        }
-
-        // 새로운 leaf 포함한 merkle_data 생성
-        const updated = {
-            election_id: election_id,
-            merkle_data: { leaves: [...existingLeaves, newLeaf] },
-            updated_at: new Date()
-        };
-
-        const { error } = await supabase
-            .from("MerkleState")
-            .upsert([updated]);
-
-        if (error) {
-            console.error("MERKLESTATE UPDATE FAIL: ", error.message);
-        } else {
-            console.log("MERKLESTATE UPDATE SUCCESS: ", newLeaf);
-        }
-
-        // --- Cache Invalidation ---
-        // After successfully updating the source of truth (DB), invalidate the cache.
+        // --- 캐시 무효화 ---
+        // 새로운 유권자가 추가되었으므로, 이전 버전의 캐시를 삭제하여
+        // 다음번 조회 시 DB에서 최신 데이터를 가져오도록 합니다.
         await redis.del(MERKLE_TREE_CACHE_KEY);
-        console.log(`Merkle Tree for election ${election_id} updated. Cache invalidated.`);
+        console.log(`New voter added to election ${election_id}. Cache invalidated.`);
+
     } finally {
-        // --- Release Lock ---
-        // Always release the lock, whether the operation succeeded or failed.
+        // --- 락 해제 (로직 동일) ---
         await redis.del(MERKLE_LOCK_KEY);
         console.log(`Lock released for election ${election_id}.`);
     }
+
+    // try {
+    //     // --- Critical Section: Guaranteed to be executed by only one process at a time ---
+    //     const existingLeaves = await loadLeavesFromDB(election_id);
+
+    //     if (existingLeaves.includes(newLeaf)) {
+    //         console.log(`Leaf for election ${election_id} already exists. Skipping.`);
+    //         return;
+    //     }
+
+    //     // 새로운 leaf 포함한 merkle_data 생성
+    //     const updated = {
+    //         election_id: election_id,
+    //         merkle_data: { leaves: [...existingLeaves, newLeaf] },
+    //         updated_at: new Date()
+    //     };
+
+    //     const { error } = await supabase
+    //         .from("MerkleState")
+    //         .upsert([updated]);
+
+    //     if (error) {
+    //         console.error("MERKLESTATE UPDATE FAIL: ", error.message);
+    //     } else {
+    //         console.log("MERKLESTATE UPDATE SUCCESS: ", newLeaf);
+    //     }
+
+    //     // --- Cache Invalidation ---
+    //     // After successfully updating the source of truth (DB), invalidate the cache.
+    //     await redis.del(MERKLE_TREE_CACHE_KEY);
+    //     console.log(`Merkle Tree for election ${election_id} updated. Cache invalidated.`);
+    // } finally {
+    //     // --- Release Lock ---
+    //     // Always release the lock, whether the operation succeeded or failed.
+    //     await redis.del(MERKLE_LOCK_KEY);
+    //     console.log(`Lock released for election ${election_id}.`);
+    // }
 }
 
 /**

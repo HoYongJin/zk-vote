@@ -64,16 +64,16 @@ router.post("/", authAdmin, async (req, res) => {
             return res.status(500).json({ error: "Failed to create the election.", details: "Could not retrieve election details after creation." });
         }
 
-        // --- 3. Create Initial State in MerkleState Table ---
-        // This ensures every election has a corresponding Merkle tree record from the start.
-        const { error: merkleError } = await supabase
-            .from("MerkleState")
-            .insert({
-                election_id: electionData.id,
-                merkle_data: { leaves: [] }
-            });
+        // // --- 3. Create Initial State in MerkleState Table ---
+        // // This ensures every election has a corresponding Merkle tree record from the start.
+        // const { error: merkleError } = await supabase
+        //     .from("MerkleState")
+        //     .insert({
+        //         election_id: electionData.id,
+        //         merkle_data: { leaves: [] }
+        //     });
 
-        if (merkleError) throw merkleError;
+        // if (merkleError) throw merkleError;
 
         return res.status(201).json({
             success: true,
