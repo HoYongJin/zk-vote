@@ -50,17 +50,17 @@ router.post("/:election_id", authAdmin, async (req, res) => {
             return res.status(409).json({ error: "ALREADY_FINALIZED", details: "This election has already been finalized." });
         }
 
-        // --- 3. Fetch All Finalized Voters ---
-        const { data: voters, error: votersError } = await supabase
-            .from("Voters")
-            .select("user_secret")
-            .eq("election_id", election_id)
-            .not("user_secret", "is", null);
+        // // --- 3. Fetch All Finalized Voters ---
+        // const { data: voters, error: votersError } = await supabase
+        //     .from("Voters")
+        //     .select("user_secret")
+        //     .eq("election_id", election_id)
+        //     .not("user_secret", "is", null);
 
-        if (votersError) throw votersError;
-        if (voters.length === 0) {
-            return res.status(400).json({ error: "NO_VOTERS_REGISTERED", details: "No voters have completed their registration for this election." });
-        }
+        // if (votersError) throw votersError;
+        // if (voters.length === 0) {
+        //     return res.status(400).json({ error: "NO_VOTERS_REGISTERED", details: "No voters have completed their registration for this election." });
+        // }
         
         // --- 4. Calculate the Final Merkle Root Off-Chain ---
         // const poseidon = await buildPoseidon();
@@ -72,8 +72,11 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         // });
         // const finalMerkleRoot = tree.root.toString();
         const tree = await generateMerkleTree(election_id);
-        if (tree.leaves.length === 0) {
-            return res.status(400).json({ error: "NO_VOTERS_REGISTERED" });
+        if (!tree || tree.leaves.length === 0) {
+            return res.status(400).json({ 
+                error: "NO_VOTERS_REGISTERED", 
+                details: "No voters have completed their registration for this election." 
+            });
         }
         const finalMerkleRoot = tree.root.toString();
 
