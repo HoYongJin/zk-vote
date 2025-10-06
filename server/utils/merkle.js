@@ -66,28 +66,28 @@ async function generateMerkleTree(election_id) {
     const poseidon = await getPoseidon();
     const MERKLE_TREE_CACHE_KEY = `merkle_cache:secrets:${election_id}`;
 
-    let secrets;
-    const cachedSecrets = await redis.get(MERKLE_TREE_CACHE_KEY);
+    let leaves;
+    const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
 
-    if (cachedSecrets) {
-        console.log(`Cache hit for election ${election_id} secrets.`);
-        secrets = JSON.parse(cachedSecrets);
+    if(cachedLeaves) {
+        console.log(`Cache hit for election ${election_id} leaves.`);
+        leaves = JSON.parse(cachedLeaves);
     } else {
         console.log(`Cache miss for election ${election_id}. Loading secrets from DB.`);
-        secrets = await loadSecretsFromDB(election_id);
-        if (secrets.length > 0) {
+        const secrets = await loadSecretsFromDB(election_id);
+        
+        // [핵심 보안] 원본 secret이 아닌, 해시된 leaf 값을 계산합니다.
+        leaves = secrets.map(secret => poseidon.F.toString(poseidon([BigInt(secret)])));
+
+        if (leaves.length > 0) {
+            // [핵심 보안] 해시된 leaf 목록을 캐시에 저장합니다.
             await redis.set(
                 MERKLE_TREE_CACHE_KEY, 
-                JSON.stringify(secrets), 
-                'EX', // Set an expiration time
-                3600  // for 1 hour
+                JSON.stringify(leaves), 
+                'EX', // 구버전 호환 문법
+                3600  // 1 hour
             );
         }
-    }
-
-    if (secrets.length === 0) {
-        // 유권자가 없는 경우에도 빈 트리를 반환할 수 있도록 처리
-        console.warn(`No registered voters found for election ${election_id}. Returning an empty tree.`);
     }
 
     const { data: election, error } = await supabase
@@ -96,9 +96,7 @@ async function generateMerkleTree(election_id) {
         .eq("id", election_id)
         .single();
 
-    if (error || !election) throw new Error("Could not fetch election details to build Merkle tree.");
-
-    const leaves = secrets.map(secret => poseidon.F.toString(poseidon([BigInt(secret)])));
+    if (error || !election) throw new Error(`Could not fetch election details for ${election_id}`);
 
     return new MerkleTree(election.merkle_tree_depth, leaves, {
         hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
@@ -113,11 +111,11 @@ async function generateMerkleTree(election_id) {
  * @param {string} user_secret - The secret to add.
  */
 async function addUserSecret(election_id, user_secret) {
-    const poseidon = await getPoseidon();
-    const newLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
+    // const poseidon = await getPoseidon();
+    // const newLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
 
     const MERKLE_LOCK_KEY = `merkle_lock: ${election_id}`;
-    const MERKLE_TREE_CACHE_KEY = `merkle_cache:secrets:${election_id}`;
+    const MERKLE_TREE_CACHE_KEY = `merkle_cache:leaves:${election_id}`;
     const startTime = Date.now();
 
     // --- Acquire Distributed Lock ---
@@ -211,7 +209,7 @@ async function addUserSecret(election_id, user_secret) {
  */
 async function generateMerkleProof(election_id, user_secret) {
     const poseidon = await getPoseidon();
-    const tree = await getMerkleTree(election_id);
+    const tree = await generateMerkleTree(election_id);
 
     const currentUserLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
     const index = tree.leaves.indexOf(currentUserLeaf);
