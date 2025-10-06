@@ -72,6 +72,10 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         // });
         // const finalMerkleRoot = tree.root.toString();
         const tree = await generateMerkleTree(election_id);
+
+        // test
+        console.log(`tree: ${tree}, tree.length: ${tree.length}`);
+
         if (!tree || tree.leaves.length === 0) {
             return res.status(400).json({ 
                 error: "NO_VOTERS_REGISTERED", 
