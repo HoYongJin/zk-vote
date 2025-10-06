@@ -63,8 +63,25 @@ async function loadSecretsFromDB(election_id) {
  * @returns {Promise<MerkleTree>} The fully constructed MerkleTree object.
  */
 async function generateMerkleTree(election_id) {
-    const poseidon = await getPoseidon();
+    try {
+        poseidon = await getPoseidon();
+    } catch (err) {
+        console.error("Poseidon 해시 함수 초기화 실패:", err);
+        throw new Error("Cryptographic library failed to initialize.");
+    }
+
     const MERKLE_TREE_CACHE_KEY = `merkle_cache:secrets:${election_id}`;
+
+    try {
+        // Redis 연결 상태를 확인합니다.
+        if (!redis.isOpen) {
+            console.log("Redis client is not connected. Attempting to connect...");
+            await redis.connect();
+        }
+    } catch (err) {
+        // Redis 통신 오류는 캐시를 사용하지 못하는 것으로 간주하고, DB에서 계속 진행합니다.
+        console.error(`Redis에서 데이터를 가져오는 데 실패했습니다 (election: ${election_id}). DB에서 직접 조회합니다.`, err);
+    }
 
     let leaves;
     const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
