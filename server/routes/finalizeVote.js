@@ -71,7 +71,7 @@ router.post("/:election_id", authAdmin, async (req, res) => {
         //     zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
         // });
         // const finalMerkleRoot = tree.root.toString();
-        const tree = await generateMerkleTree(election_id);
+        const { tree } = await generateMerkleTree(election_id);
 
         // test
         console.log(`tree: ${tree}, tree.length: ${tree.length}`);

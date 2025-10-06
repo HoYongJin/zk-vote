@@ -118,10 +118,13 @@ async function generateMerkleTree(election_id) {
 
     if (error || !election) throw new Error(`Could not fetch election details for ${election_id}`);
 
-    return new MerkleTree(election.merkle_tree_depth, leaves, {
-        hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
-        zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
-    });
+    return {
+        tree: new MerkleTree(election.merkle_tree_depth, leaves, {
+            hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
+            zeroElement: "21663839004416932945382355908790599225266501822907911457504978515578255421292"
+        }),
+        leaves: leaves 
+    };
 }
 
 /**
@@ -229,10 +232,10 @@ async function addUserSecret(election_id, user_secret) {
  */
 async function generateMerkleProof(election_id, user_secret) {
     const poseidon = await getPoseidon();
-    const tree = await generateMerkleTree(election_id);
+    const { tree, leaves } = await generateMerkleTree(election_id);
 
     const currentUserLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
-    const index = tree.leaves.indexOf(currentUserLeaf);
+    const index = leaves.indexOf(currentUserLeaf);
 
     if (index === -1) {
         throw new Error("Leaf not found in Merkle tree. The user might not be registered.");
