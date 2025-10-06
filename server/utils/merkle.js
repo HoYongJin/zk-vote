@@ -68,6 +68,9 @@ async function generateMerkleTree(election_id) {
         if (cachedLeaves) {
             console.log(`Cache hit for election ${election_id} leaves.`);
             leaves = JSON.parse(cachedLeaves);
+
+            // test
+            console.log(leaves, leaves.length);
         } else {
             console.log(`Cache miss for election ${election_id}. Loading secrets from DB.`);
             const secrets = await loadSecretsFromDB(election_id);
