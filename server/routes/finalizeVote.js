@@ -75,8 +75,8 @@ router.post("/:election_id", authAdmin, async (req, res) => {
 
         // test
         console.log(`tree: ${tree}, tree.length: ${tree.length}`);
-
-        if (!tree || tree.leaves.length === 0) {
+        
+        if (!tree) {
             return res.status(400).json({ 
                 error: "NO_VOTERS_REGISTERED", 
                 details: "No voters have completed their registration for this election." 
