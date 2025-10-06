@@ -4,10 +4,6 @@ const supabase = require("../supabaseClient");
 const redis = require('../redisClient');
 require("dotenv").config();
 
-//const TREE_HEIGHT = parseInt(process.env.MERKLE_TREE_HEIGHT, 10) || 3;
-
-// const MERKLE_LOCK_KEY = "merkle_update_lock";       // 분산 잠금을 위한 키
-// const MERKLE_TREE_CACHE_KEY = "merkle_tree_cache";  // 캐싱을 위한 키
 const LOCK_TIMEOUT_SECONDS = 10;                            // A lock will auto-expire after 10 seconds.
 const POLLING_INTERVAL_MS = 100;                       // Wait 100ms between lock acquisition attempts.
 const POLLING_TIMEOUT_MS = 5000;                       // Give up acquiring the lock after 5 seconds.
@@ -63,47 +59,51 @@ async function loadSecretsFromDB(election_id) {
  * @returns {Promise<MerkleTree>} The fully constructed MerkleTree object.
  */
 async function generateMerkleTree(election_id) {
-    try {
-        poseidon = await getPoseidon();
-    } catch (err) {
-        console.error("Poseidon 해시 함수 초기화 실패:", err);
-        throw new Error("Cryptographic library failed to initialize.");
-    }
-
-    const MERKLE_TREE_CACHE_KEY = `merkle_cache:secrets:${election_id}`;
-
-    try {
-        // Redis 연결 상태를 확인합니다.
-        if (!redis.isOpen) {
-            console.log("Redis client is not connected. Attempting to connect...");
-            await redis.connect();
-        }
-    } catch (err) {
-        // Redis 통신 오류는 캐시를 사용하지 못하는 것으로 간주하고, DB에서 계속 진행합니다.
-        console.error(`Redis에서 데이터를 가져오는 데 실패했습니다 (election: ${election_id}). DB에서 직접 조회합니다.`, err);
-    }
+    const poseidon = await getPoseidon();
+    const MERKLE_TREE_CACHE_KEY = `merkle_cache:leaves:${election_id}`;
 
     let leaves;
-    const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
+    try{
+        const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
+        if (cachedLeaves) {
+            console.log(`Cache hit for election ${election_id} leaves.`);
+            leaves = JSON.parse(cachedLeaves);
+        } else {
+            console.log(`Cache miss for election ${election_id}. Loading secrets from DB.`);
+            const secrets = await loadSecretsFromDB(election_id);
+            
+            // [핵심 보안] 원본 secret이 아닌, 해시된 leaf 값을 계산합니다.
+            leaves = secrets.map(secret => poseidon.F.toString(poseidon([BigInt(secret)])));
+    
+            if (leaves.length > 0) {
+                // [핵심 보안] 해시된 leaf 목록을 캐시에 저장합니다.
+                await redis.set(
+                    MERKLE_TREE_CACHE_KEY, 
+                    JSON.stringify(leaves), 
+                    'EX', // 구버전 호환 문법
+                    3600  // 1 hour
+                );
+            }
+        }
+    } catch(err) {
+        // [수정] Redis 통신 실패 시(타임아웃, 인증 오류 등), 경고 로그만 남기고 DB에서 계속 진행합니다.
+        console.warn(`Redis GET command failed for election ${election_id}. Falling back to DB. Error: ${err.message}`);
+        // leaves 변수는 undefined 상태로 두어 아래 로직에서 DB를 타도록 합니다.
+    }
 
-    if(cachedLeaves) {
-        console.log(`Cache hit for election ${election_id} leaves.`);
-        leaves = JSON.parse(cachedLeaves);
-    } else {
-        console.log(`Cache miss for election ${election_id}. Loading secrets from DB.`);
+    // leaves가 아직 정의되지 않았다면 (Cache Miss 또는 Redis 오류 시) DB에서 데이터를 가져옵니다.
+    if (!leaves) {
+        console.log(`Loading secrets from DB for election ${election_id}.`);
         const secrets = await loadSecretsFromDB(election_id);
-        
-        // [핵심 보안] 원본 secret이 아닌, 해시된 leaf 값을 계산합니다.
         leaves = secrets.map(secret => poseidon.F.toString(poseidon([BigInt(secret)])));
 
         if (leaves.length > 0) {
-            // [핵심 보안] 해시된 leaf 목록을 캐시에 저장합니다.
-            await redis.set(
-                MERKLE_TREE_CACHE_KEY, 
-                JSON.stringify(leaves), 
-                'EX', // 구버전 호환 문법
-                3600  // 1 hour
-            );
+            try {
+                // [수정] ioredis는 구버전/신버전 문법 구분이 없습니다.
+                await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(leaves), 'EX', 3600);
+            } catch (err) {
+                console.warn(`Redis SET command failed for election ${election_id}. Cache will not be saved. Error: ${err.message}`);
+            }
         }
     }
 
