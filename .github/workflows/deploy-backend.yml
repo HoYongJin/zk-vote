@@ -50,7 +50,7 @@ jobs:
             npm install
             
             # 8. .env 파일을 GitHub Secrets를 이용해 생성합니다.
-            echo "SEPOLIA_RPC_URL=${{ secrets.SEPOLIA_RPC_URL }}" >> .env
+            echo "SEPOLIA_RPC_URL=${{ secrets.SEPOLIA_RPC_URL }}" > .env
             echo "PRIVATE_KEY=${{ secrets.PRIVATE_KEY }}" >> .env
             echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
             echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env

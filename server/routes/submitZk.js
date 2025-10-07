@@ -35,19 +35,6 @@ const submitVoteLimiter = rateLimit({
     legacyHeaders: false,
 });
 
-// const limiter = rateLimit({
-//     windowMs: 15 * 60 * 1000, // 15 minutes
-//     max: 5,
-//     handler: (req, res) => {
-//         res.status(429).json({
-//             error: "Too many requests.",
-//             details: "You have exceeded the vote submission limit. Please try again later."
-//         });
-//     },
-//     standardHeaders: true,
-//     legacyHeaders: false,
-// });
-
 /**
  * @route   POST /submitZk
  * @desc    Submits the final vote with a ZK proof to the smart contract. Acts as a gas relayer.
@@ -115,8 +102,19 @@ router.post("/",
             const { a, b, c } = proof;
             const tx = await votingTally.submitTally(a, b, c, publicSignals);
             const receipt = await tx.wait(); // Wait for the transaction to be mined
-
             console.log(`Vote successfully submitted. TxHash: ${receipt.transactionHash}`);
+
+            const { error: updateError } = await supabase
+                .from("Voters")
+                .update({ voted: true })
+                .eq("election_id", election_id)
+                .eq("email", user.email); // Use email to reliably identify the voter
+
+            if (updateError) {
+                // 이 오류는 투표 자체의 성공 여부에는 영향을 주지 않으므로,
+                // 에러를 로깅만 하고 클라이언트에게는 성공 응답을 보냅니다.
+                console.error("CRITICAL: On-chain vote succeeded, but failed to update 'voted' status in DB.", updateError);
+            }
 
             // --- Success Response ---
             return res.status(200).json({

@@ -5,6 +5,9 @@
     "hardhat": "^2.24.0"
   },
   "dependencies": {
+    "@reduxjs/toolkit": "^2.9.0",
+    "react-redux": "^9.2.0",
+    "react-router-dom": "^7.9.3",
     "snarkjs": "^0.7.5"
   }
 }

@@ -1,59 +1,49 @@
-import React, { useState, useEffect } from "react";
-import supabase from "./supabase";
-import LoginButton from "./components/LoginButton";
-import RegisterButton from "./components/RegisterButton";
-import VoteButton from "./components/VoteButton";
+// frontend/src/App.js
+import { useEffect } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { useDispatch } from 'react-redux';
+import { setUser, clearUser } from './store/authSlice';
+import { supabase } from './supabase';
+
+import MainPage from './pages/MainPage';
+import LoginPage from './pages/LoginPage';
+import AdminPage from './pages/AdminPage';
+import VotePage from './pages/VotePage';
 
 function App() {
-  const [jwt, setJwt] = useState(null);
-  const [userSecret, setUserSecret] = useState(null);
+  const dispatch = useDispatch();
 
-  // 로그인 상태 초기화 및 유지
+  // 앱이 처음 시작될 때 단 한 번만 실행됩니다.
   useEffect(() => {
-    // 로그인 세션이 있으면 복구
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.access_token) {
-        setJwt(session.access_token);
-        console.log("초기 세션 복구:", session.access_token);
+    // Supabase의 로그인 상태 변경을 감지하는 리스너 설정
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (event === 'SIGNED_IN' && session) {
+          // 사용자가 로그인했을 때 Redux 스토어에 정보 저장
+          dispatch(setUser({ user: session.user, session }));
+        } else if (event === 'SIGNED_OUT') {
+          // 사용자가 로그아웃했을 때 Redux 스토어 정보 삭제
+          dispatch(clearUser());
+        }
       }
-    });
+    );
 
-    // 로그인/로그아웃 실시간 반영
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.access_token) {
-        console.log("실시간 로그인 감지:", session.access_token);
-        setJwt(session.access_token);
-      } else {
-        console.log("로그아웃됨");
-        setJwt(null);
-      }
-    });
-
-    return () => listener.subscription.unsubscribe();
-  }, []);
+    // 컴포넌트가 사라질 때 리스너를 정리(clean-up)합니다.
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, [dispatch]);
 
   return (
-    <div style={{ padding: 20 }}>
-      <h1>ZK 투표 시스템 테스트</h1>
-
-      <LoginButton setJwt={setJwt} />
-
-      <br /><br />
-
-      {jwt ? (
-        <>
-          <RegisterButton jwt={jwt} />
-          <br /><br />
-          <VoteButton jwt={jwt} setUserSecret={setUserSecret} />
-        </>
-      ) : (
-        <p>먼저 로그인해야 유권자 등록 및 투표를 할 수 있습니다</p>
-      )}
-
-      {userSecret && (
-        <p>🔐 user_secret: <code>{userSecret}</code></p>
-      )}
-    </div>
+    <BrowserRouter>
+      {/* ... 기존 라우팅 코드 ... */}
+      <Routes>
+        <Route path="/" element={<MainPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/admin" element={<AdminPage />} />
+        <Route path="/vote/:id" element={<VotePage />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
