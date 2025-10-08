@@ -1,28 +1,84 @@
 // frontend/src/pages/MainPage.js
-import { useSelector, useDispatch } from 'react-redux';
+
+import React, { useState, useEffect } from 'react';
+import { useSelector } from 'react-redux';
+import { Link } from 'react-router-dom';
 import { supabase } from '../supabase';
-import { clearUser } from '../store/authSlice';
+// 'clearUser' and 'useDispatch' are removed as they are no longer used here.
+import axios from '../api/axios';
+import VoteCard from '../components/VoteCard'; // This path should now be correct.
 
 function MainPage() {
-  // Redux 스토어에서 auth 상태를 가져옵니다.
   const auth = useSelector((state) => state.auth);
-  const dispatch = useDispatch();
+  // 'dispatch' is removed.
+  
+  const [votes, setVotes] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    dispatch(clearUser()); // 스토어에서도 유저 정보 제거
   };
 
+  useEffect(() => {
+    const fetchVotes = async () => {
+      setLoading(true);
+      try {
+        const response = await axios.get('/registerableVote');
+        setVotes(response.data);
+      } catch (error) {
+        console.error('투표 목록을 불러오는 중 오류 발생:', error);
+        // It's good practice to clear the list on error.
+        setVotes([]); 
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (auth.isLoggedIn) {
+      fetchVotes();
+    } else {
+      setLoading(false);
+      // Clear votes when the user logs out.
+      setVotes([]); 
+    }
+  }, [auth.isLoggedIn]);
+
   return (
-    <div>
-      <h1>메인 페이지</h1>
-      {auth.isLoggedIn ? (
+    <div style={{ padding: '20px' }}>
+      {/* --- Header --- */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <h1>ZK-VOTE | 진행중인 투표</h1>
+        {auth.isLoggedIn ? (
+          <div>
+            <span>{auth.user.email}</span>
+
+            {auth.isAdmin && (
+              <Link to="/admin" style={{ marginLeft: '10px' }}>
+                <button>관리자 페이지</button>
+              </Link>
+            )}
+
+            <button onClick={handleLogout} style={{ marginLeft: '10px' }}>로그아웃</button>
+          </div>
+        ) : (
+          <Link to="/login"><button>로그인</button></Link>
+        )}
+      </div>
+      <hr />
+
+      {/* --- Vote List --- */}
+      {auth.isLoggedIn && (
         <div>
-          <p>{auth.user.email} 님, 환영합니다!</p>
-          <button onClick={handleLogout}>로그아웃</button>
+          {loading ? (
+            <p>투표 목록을 불러오는 중...</p>
+          ) : votes.length > 0 ? (
+            votes.map((vote) => (
+              <VoteCard key={vote.id} vote={vote} />
+            ))
+          ) : (
+            <p>참여할 수 있는 투표가 없습니다.</p>
+          )}
         </div>
-      ) : (
-        <p>로그인이 필요합니다.</p>
       )}
     </div>
   );
