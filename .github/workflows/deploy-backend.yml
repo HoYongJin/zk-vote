@@ -57,6 +57,7 @@ jobs:
             echo "SECRET_SALT=${{ secrets.SECRET_SALT }}" >> .env
             echo "REDIS_HOST=${{ secrets.REDIS_HOST }}" >> .env
             echo "REDIS_PORT=${{ secrets.REDIS_PORT }}" >> .env
+            echo "PORT=${{ secrets.PORT }}" >> .env
             # 필요한 다른 모든 환경 변수를 이와 같이 추가합니다.
 
             # 9. PM2로 서버를 다시 시작하거나 새로 시작합니다.
