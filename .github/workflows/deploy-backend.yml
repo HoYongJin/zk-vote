@@ -54,6 +54,7 @@ jobs:
             echo "PRIVATE_KEY=${{ secrets.PRIVATE_KEY }}" >> .env
             echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
             echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+            echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> .env
             echo "SECRET_SALT=${{ secrets.SECRET_SALT }}" >> .env
             echo "REDIS_HOST=${{ secrets.REDIS_HOST }}" >> .env
             echo "REDIS_PORT=${{ secrets.REDIS_PORT }}" >> .env
