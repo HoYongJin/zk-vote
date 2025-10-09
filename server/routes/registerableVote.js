@@ -59,7 +59,7 @@ router.get("/", auth, async (req, res) => {
 
         let query = supabase
             .from("Elections") // 테이블 이름이 'Elections' 또는 'Votes'인지 확인하세요.
-            .select("id, name, candidates, description") // 필요한 컬럼 선택
+            .select("id, name, candidates, registration_end_time") // 필요한 컬럼 선택
             .eq('merkle_root', null) // 마감되지 않은 투표만 조회
             .lt('registration_start_time', now.toISOString()) // 필요 시 시간 제약 조건 추가
             .gt('registration_end_time', now.toISOString());
