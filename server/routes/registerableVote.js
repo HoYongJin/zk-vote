@@ -57,8 +57,8 @@ router.get("/", auth, async (req, res) => {
             .eq('id', user.id)
             .single();
 
-        console.log(adminData);
-        console.log(user.id);        
+        console.log(`adminData: ${adminData}`);
+        console.log(`user.id: ${user.id}`);        
 
         let query = supabase
             .from("Elections") // 테이블 이름이 'Elections' 또는 'Votes'인지 확인하세요.
@@ -67,7 +67,7 @@ router.get("/", auth, async (req, res) => {
             .lt('registration_start_time', now.toISOString()) // 필요 시 시간 제약 조건 추가
             .gt('registration_end_time', now.toISOString());
 
-        console.log(query);
+        console.log(`query: ${query}`);
 
         if (!adminData) {
             // 'voters' 테이블에서 현재 유저가 등록된 모든 vote_id를 가져옵니다.
@@ -78,7 +78,7 @@ router.get("/", auth, async (req, res) => {
 
             if (voterError) throw voterError;
 
-            console.log(registeredVotes);
+            console.log(`registeredVotes: ${registeredVotes}`);
 
             // 만약 등록된 투표가 하나도 없다면, 빈 배열을 반환하고 종료
             if (!registeredVotes || registeredVotes.length === 0) {
