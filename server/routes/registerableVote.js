@@ -57,7 +57,7 @@ router.get("/", auth, async (req, res) => {
             .eq('id', user.id)
             .single();
 
-        console.log(`adminData: ${adminData}`);
+        console.log("adminData:", adminData);
         console.log(`user.id: ${user.id}`);        
 
         let query = supabase
@@ -67,7 +67,7 @@ router.get("/", auth, async (req, res) => {
             .lt('registration_start_time', now.toISOString()) // 필요 시 시간 제약 조건 추가
             .gt('registration_end_time', now.toISOString());
 
-        console.log(`query: ${query}`);
+        console.log("query: ", query);
 
         if (!adminData) {
             // 'voters' 테이블에서 현재 유저가 등록된 모든 vote_id를 가져옵니다.
