@@ -69,7 +69,7 @@ router.get("/", auth, async (req, res) => {
             const { data: registeredVotes, error: voterError } = await supabase
                 .from('Voters')
                 .select('election_id')
-                .eq('user_id', user.id);
+                .eq('eamil', user.email);
 
             if (voterError) throw voterError;
 
