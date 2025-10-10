@@ -7,6 +7,7 @@ const initialState = {
   isLoggedIn: false,
   isAdmin: false, // 👈 관리자 여부 상태 추가
   loading: true, // 👈 로딩 상태 추가
+  postLoginRedirectComplete: false,
 };
 
 const authSlice = createSlice({
@@ -24,15 +25,19 @@ const authSlice = createSlice({
       state.isAdmin = action.payload;
       state.loading = false;
     },
+    setRedirectComplete: (state, action) => {
+        state.postLoginRedirectComplete = action.payload;
+      },
     clearUser: (state) => {
       state.user = null;
       state.session = null;
       state.isLoggedIn = false;
       state.isAdmin = false; // 👈 로그아웃 시 초기화
       state.loading = false; // 👈 로딩 완료
+      state.postLoginRedirectComplete = false;
     },
   },
 });
 
-export const { setUser, setAdmin, clearUser } = authSlice.actions; // 👈 setAdmin 추가
+export const { setUser, setAdmin, clearUser, setRedirectComplete } = authSlice.actions; // 👈 setAdmin 추가
 export default authSlice.reducer;

@@ -6,7 +6,7 @@ import { supabase } from '../supabase';
 const instance = axios.create({
   // package.json의 proxy 설정 덕분에 '/api'만 적어도
   // 'http://여러분의_AWS_서버_주소:3001/api'로 요청됩니다.
-  baseURL: '/api',
+  //baseURL: '/api',
   headers: {
     'Content-Type': 'application/json',
   },
