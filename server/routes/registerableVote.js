@@ -95,6 +95,8 @@ router.get("/", auth, async (req, res) => {
         // 6. 최종 쿼리 실행
         const { data, error } = await query;
 
+        console.log("data: ", data);
+
         if (error) throw error;
 
         res.status(200).json(data);
