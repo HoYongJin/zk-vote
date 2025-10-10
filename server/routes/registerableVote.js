@@ -79,7 +79,7 @@ router.get("/", auth, async (req, res) => {
             }
 
             // [ { vote_id: 1 }, { vote_id: 3 } ] 형태의 데이터를 [1, 3] 형태로 변환
-            const voteIds = registeredVotes.map(v => v.vote_id);
+            const voteIds = registeredVotes.map(v => v.election_id);
 
             // 준비된 쿼리에 필터 조건을 추가합니다.
             query = query.in('id', voteIds);
