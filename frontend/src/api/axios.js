@@ -4,13 +4,12 @@ import { supabase } from '../supabase';
 
 // 기본 URL 및 설정을 포함한 axios 인스턴스 생성
 const instance = axios.create({
-  // package.json의 proxy 설정 덕분에 '/api'만 적어도
-  // 'http://여러분의_AWS_서버_주소:3001/api'로 요청됩니다.
-  //baseURL: '/api',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
+    // 👇 baseURL에 백엔드 서버의 전체 주소를 직접 입력합니다.
+    baseURL: process.env.REACT_APP_API_BASE_URL, 
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
 
 // 요청을 보내기 전에 토큰을 헤더에 추가하는 인터셉터
 instance.interceptors.request.use(async (config) => {

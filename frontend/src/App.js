@@ -10,9 +10,9 @@ import { store } from './store/store'; // import를 최상단으로 이동
 import MainPage from './pages/MainPage';
 import LoginPage from './pages/LoginPage';
 import VotePage from './pages/VotePage';
-import AdminDashboardPage from './pages/Admin/AdminDashboardPage';
+//import AdminDashboardPage from './pages/Admin/AdminDashboardPage';
 import CreateVotePage from './pages/Admin/CreateVotePage';
-import ManageVotesPage from './pages/Admin/ManageVotesPage';
+// import ManageVotesPage from './pages/Admin/ManageVotesPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import AdminRoute from './components/AdminRoute';
 import VoterMainPage from './pages/Voter/VoterMainPage'; // 이름 변경된 유권자 페이지
@@ -86,7 +86,7 @@ function App() {
             <Route path="/login" element={<LoginPage />} />
   
             {/* 유권자용 메인 페이지 */}
-            <Route path="/" element={<ProtectedRoute><VoterMainPage /></ProtectedRoute>} />
+            <Route path="/" element={<ProtectedRoute><VoterMainPage /></ProtectedRoute>} /> 
   
             {/* 개별 투표 페이지 (공통) */}
             <Route path="/vote/:id" element={<ProtectedRoute><VotePage /></ProtectedRoute>} />

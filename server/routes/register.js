@@ -3,6 +3,7 @@ const router = express.Router();
 const supabase = require("../supabaseClient");
 const crypto = require("crypto");
 const { addUserSecret } = require("../utils/merkle");
+const auth = require("../middleware/auth");
 require("dotenv").config();
 
 /**
@@ -25,34 +26,37 @@ const generateUserSecret = (userId) => {
  * @desc    Allows a logged-in user to complete their voter registration for a specific election.
  * @access  Private (User Authentication Required)
  */
-router.post("/", async (req, res) => {
+router.post("/", auth, async (req, res) => {
     // 1. Authenticate user via JWT from the header.
-    const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) {
-        return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
-    }
+    // const authHeader = req.headers.authorization || "";
+    // const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    // if (!token) {
+    //     return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
+    // }
 
-    // 2. Validate input from the client.
-    const { name, election_id } = req.body;
-    if (!election_id) {
-        return res.status(400).json({ error: "VALIDATION_ERROR", details: "`election_id` is a required field." });
-    }
-    if (typeof name !== 'string' || name.trim() === '') {
-        return res.status(400).json({ error: "VALIDATION_ERROR", details: "`name` must be a non-empty string." });
-    }
+    const { election_id } = req.params;
+    const user = req.user;
 
-    let user;
-    try {
-        // 3. Securely fetch user details from the auth provider using the token.
-        const { data: { user: authUser }, error } = await supabase.auth.getUser(token);
-        if (error || !authUser) {
-            throw new Error("Invalid or expired token.");
-        }
-        user = authUser;
-    } catch (authError) {
-        return res.status(401).json({ error: "INVALID_TOKEN", details: authError.message });
-    }
+    // // 2. Validate input from the client.
+    // const { name, election_id } = req.body;
+    // if (!election_id) {
+    //     return res.status(400).json({ error: "VALIDATION_ERROR", details: "`election_id` is a required field." });
+    // }
+    // if (typeof name !== 'string' || name.trim() === '') {
+    //     return res.status(400).json({ error: "VALIDATION_ERROR", details: "`name` must be a non-empty string." });
+    // }
+
+    // let user;
+    // try {
+    //     // 3. Securely fetch user details from the auth provider using the token.
+    //     const { data: { user: authUser }, error } = await supabase.auth.getUser(token);
+    //     if (error || !authUser) {
+    //         throw new Error("Invalid or expired token.");
+    //     }
+    //     user = authUser;
+    // } catch (authError) {
+    //     return res.status(401).json({ error: "INVALID_TOKEN", details: authError.message });
+    // }
 
     try {
         // 4. Check if the election exists and if the registration period is active.
@@ -94,7 +98,7 @@ router.post("/", async (req, res) => {
         const { error: updateError } = await supabase
             .from("Voters")
             .update({
-                name: name.trim(),
+                name: user.name,
                 user_id: user.id, // Link the authenticated user account.
                 user_secret: user_secret
             })
