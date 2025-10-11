@@ -1,6 +1,7 @@
 const express = require("express");
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
+const auth = require("../middleware/auth");
 const { ethers } = require("ethers");
 const rateLimit = require('express-rate-limit'); // 1. Import the rate-limit library
 const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/VotingTally.json").abi;
@@ -40,106 +41,183 @@ const submitVoteLimiter = rateLimit({
  * @desc    Submits the final vote with a ZK proof to the smart contract. Acts as a gas relayer.
  * @access  Private (Requires JWT Authentication)
  */
-router.post("/",
-    // --- 3a. First Middleware: User Authentication ---
-    async (req, res, next) => {
-        const authHeader = req.headers.authorization || "";
-        const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-        if (!token) {
-            return res.status(401).json({ error: "Authentication token is required." });
+router.post("/", auth, submitVoteLimiter, async (req, res) => {
+    try {
+        // [수정] 파라미터 및 Body에서 필요한 값을 추출합니다.
+        const { election_id } = req.params;
+        const { user } = req;
+        const { proof, publicSignals } = req.body;
+
+        // --- Input Validation ---
+        if (!proof || !publicSignals || !proof.a || !proof.b || !proof.c) {
+            return res.status(400).json({ error: "Fields 'proof' and 'publicSignals' are required." });
         }
 
-        try {
-            const { data: { user: authUser }, error } = await supabase.auth.getUser(token);
-            if (error || !authUser) throw new Error("Invalid token.");
+        // --- Fetch Election Details ---
+        const { data: election, error: electionError } = await supabase
+            .from("Elections")
+            .select("contract_address, voting_start_time, voting_end_time, merkle_root")
+            .eq("id", election_id)
+            .single();
 
-            // Attach the user object to the request for subsequent middleware
-            req.user = authUser;
-            
-            next(); // Proceed to the next middleware (rate limiter)
-        } catch (authError) {
-            return res.status(401).json({ error: "Authentication failed.", details: authError.message });
+        if (electionError || !election) {
+            return res.status(404).json({ error: "Election not found." });
         }
-    },
-    // --- 3b. Second Middleware: Rate Limiting ---
-    submitVoteLimiter,
-    // --- 3c. Main Handler: API Logic ---
-    async (req, res) => {
-        try {
-            const { user } = req; // The authenticated user from the first middleware
 
-            // --- Input Validation ---
-            const { election_id, proof, publicSignals } = req.body;
-            if (!election_id || !proof || !publicSignals || !proof.a || !proof.b || !proof.c) {
-                return res.status(400).json({ error: "Fields election_id, proof, and publicSignals are required." });
-            }
-
-            // --- Fetch Election Details ---
-            const { data: election, error: electionError } = await supabase
-                .from("Elections")
-                .select("contract_address, voting_start_time, voting_end_time, merkle_root")
-                .eq("id", election_id)
-                .single();
-
-            if (electionError || !election) {
-                return res.status(404).json({ error: "Election not found." });
-            }
-
-            // --- Off-Chain Pre-Validation (to save gas) ---
-            if (!election.contract_address || !election.merkle_root) {
-                return res.status(403).json({ error: "Voting for this election is not yet finalized by the admin." });
-            }
-            const now = new Date();
-            if (now < new Date(election.voting_start_time) || now > new Date(election.voting_end_time)) {
-                return res.status(403).json({ error: "The voting period is not active." });
-            }
-
-            // --- Smart Contract Interaction ---
-            const votingTally = getContract(election.contract_address);
-            
-            console.log(`Submitting vote for user ${user.id} to election ${election_id}...`);
-            
-            const { a, b, c } = proof;
-            const tx = await votingTally.submitTally(a, b, c, publicSignals);
-            const receipt = await tx.wait(); // Wait for the transaction to be mined
-            console.log(`Vote successfully submitted. TxHash: ${receipt.transactionHash}`);
-
-            const { error: updateError } = await supabase
-                .from("Voters")
-                .update({ voted: true })
-                .eq("election_id", election_id)
-                .eq("email", user.email); // Use email to reliably identify the voter
-
-            if (updateError) {
-                // 이 오류는 투표 자체의 성공 여부에는 영향을 주지 않으므로,
-                // 에러를 로깅만 하고 클라이언트에게는 성공 응답을 보냅니다.
-                console.error("CRITICAL: On-chain vote succeeded, but failed to update 'voted' status in DB.", updateError);
-            }
-
-            // --- Success Response ---
-            return res.status(200).json({
-                success: true,
-                message: "Your vote has been successfully cast.",
-                transactionHash: receipt.transactionHash
-            });
-
-        } catch (err) {
-            console.error(`Error submitting vote:`, err);
-
-            // --- Detailed Error Handling ---
-            let reason = "An unknown error occurred. Please try again later.";
-            if (err.reason) {
-                reason = err.reason;
-            } else if (err.data && typeof err.data === 'string') {
-                reason = err.data;
-            }
-            
-            return res.status(500).json({
-                error: "An on-chain error occurred while submitting your vote.",
-                details: reason
-            });
+        // --- Off-Chain Pre-Validation ---
+        if (!election.contract_address || !election.merkle_root) {
+            return res.status(403).json({ error: "Voting for this election is not yet finalized by the admin." });
         }
+        const now = new Date();
+        if (now < new Date(election.voting_start_time) || now > new Date(election.voting_end_time)) {
+            return res.status(403).json({ error: "The voting period is not active." });
+        }
+
+        // --- Smart Contract Interaction ---
+        const votingTally = getContract(election.contract_address);
+        
+        console.log(`Submitting vote for user ${user.id} to election ${election_id}...`);
+        
+        const { a, b, c } = proof;
+        const tx = await votingTally.submitTally(a, b, c, publicSignals);
+        const receipt = await tx.wait();
+        console.log(`Vote successfully submitted. TxHash: ${receipt.transactionHash}`);
+
+        // --- Update 'voted' status in the database ---
+        const { error: updateError } = await supabase
+            .from("Voters")
+            .update({ voted: true })
+            .eq("election_id", election_id)
+            .eq("email", user.email);
+
+        if (updateError) {
+            console.error("CRITICAL: On-chain vote succeeded, but failed to update 'voted' status in DB.", updateError);
+        }
+
+        // --- Success Response ---
+        return res.status(200).json({
+            success: true,
+            message: "Your vote has been successfully cast.",
+            transactionHash: receipt.transactionHash
+        });
+
+    } catch (err) {
+        console.error(`Error submitting vote:`, err);
+        let reason = "An unknown error occurred.";
+        if (err.reason) {
+            reason = err.reason;
+        } else if (err.data && typeof err.data === 'string') {
+            reason = err.data;
+        }
+        return res.status(500).json({
+            error: "An on-chain error occurred while submitting your vote.",
+            details: reason
+        });
     }
-);
+});
 
 module.exports = router;
+
+// router.post("/",
+//     // --- 3a. First Middleware: User Authentication ---
+//     async (req, res, next) => {
+//         const authHeader = req.headers.authorization || "";
+//         const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+//         if (!token) {
+//             return res.status(401).json({ error: "Authentication token is required." });
+//         }
+
+//         try {
+//             const { data: { user: authUser }, error } = await supabase.auth.getUser(token);
+//             if (error || !authUser) throw new Error("Invalid token.");
+
+//             // Attach the user object to the request for subsequent middleware
+//             req.user = authUser;
+            
+//             next(); // Proceed to the next middleware (rate limiter)
+//         } catch (authError) {
+//             return res.status(401).json({ error: "Authentication failed.", details: authError.message });
+//         }
+//     },
+//     // --- 3b. Second Middleware: Rate Limiting ---
+//     submitVoteLimiter,
+//     // --- 3c. Main Handler: API Logic ---
+//     async (req, res) => {
+//         try {
+//             const { user } = req; // The authenticated user from the first middleware
+
+//             // --- Input Validation ---
+//             const { election_id, proof, publicSignals } = req.body;
+//             if (!election_id || !proof || !publicSignals || !proof.a || !proof.b || !proof.c) {
+//                 return res.status(400).json({ error: "Fields election_id, proof, and publicSignals are required." });
+//             }
+
+//             // --- Fetch Election Details ---
+//             const { data: election, error: electionError } = await supabase
+//                 .from("Elections")
+//                 .select("contract_address, voting_start_time, voting_end_time, merkle_root")
+//                 .eq("id", election_id)
+//                 .single();
+
+//             if (electionError || !election) {
+//                 return res.status(404).json({ error: "Election not found." });
+//             }
+
+//             // --- Off-Chain Pre-Validation (to save gas) ---
+//             if (!election.contract_address || !election.merkle_root) {
+//                 return res.status(403).json({ error: "Voting for this election is not yet finalized by the admin." });
+//             }
+//             const now = new Date();
+//             if (now < new Date(election.voting_start_time) || now > new Date(election.voting_end_time)) {
+//                 return res.status(403).json({ error: "The voting period is not active." });
+//             }
+
+//             // --- Smart Contract Interaction ---
+//             const votingTally = getContract(election.contract_address);
+            
+//             console.log(`Submitting vote for user ${user.id} to election ${election_id}...`);
+            
+//             const { a, b, c } = proof;
+//             const tx = await votingTally.submitTally(a, b, c, publicSignals);
+//             const receipt = await tx.wait(); // Wait for the transaction to be mined
+//             console.log(`Vote successfully submitted. TxHash: ${receipt.transactionHash}`);
+
+//             const { error: updateError } = await supabase
+//                 .from("Voters")
+//                 .update({ voted: true })
+//                 .eq("election_id", election_id)
+//                 .eq("email", user.email); // Use email to reliably identify the voter
+
+//             if (updateError) {
+//                 // 이 오류는 투표 자체의 성공 여부에는 영향을 주지 않으므로,
+//                 // 에러를 로깅만 하고 클라이언트에게는 성공 응답을 보냅니다.
+//                 console.error("CRITICAL: On-chain vote succeeded, but failed to update 'voted' status in DB.", updateError);
+//             }
+
+//             // --- Success Response ---
+//             return res.status(200).json({
+//                 success: true,
+//                 message: "Your vote has been successfully cast.",
+//                 transactionHash: receipt.transactionHash
+//             });
+
+//         } catch (err) {
+//             console.error(`Error submitting vote:`, err);
+
+//             // --- Detailed Error Handling ---
+//             let reason = "An unknown error occurred. Please try again later.";
+//             if (err.reason) {
+//                 reason = err.reason;
+//             } else if (err.data && typeof err.data === 'string') {
+//                 reason = err.data;
+//             }
+            
+//             return res.status(500).json({
+//                 error: "An on-chain error occurred while submitting your vote.",
+//                 details: reason
+//             });
+//         }
+//     }
+// );
+
+// module.exports = router;

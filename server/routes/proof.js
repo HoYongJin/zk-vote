@@ -1,6 +1,7 @@
 const express = require("express");
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
+const auth = require("../middleware/auth");
 const { generateMerkleProof } = require("../utils/merkle");
 
 /**
@@ -9,28 +10,12 @@ const { generateMerkleProof } = require("../utils/merkle");
  * The user's secret is never sent from the client; it's securely retrieved from the DB.
  * @access  Private (User Authentication Required)
  */
-router.post("/", async (req, res) => {
-    // 1. Authenticate user via JWT.
-    const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) {
-        return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
-    }
+router.post("/", auth, async (req, res) => {
+    const { election_id } = req.params;
+    const user = req.user;
 
-    const { election_id } = req.body;
     if (!election_id) {
         return res.status(400).json({ error: "VALIDATION_ERROR", details: "An `election_id` must be provided." });
-    }
-
-    let user;
-    try {
-        const { data: { user: authUser }, error } = await supabase.auth.getUser(token);
-        if (error || !authUser) {
-            throw new Error("Invalid or expired token.");
-        }
-        user = authUser;
-    } catch (authError) {
-        return res.status(401).json({ error: "INVALID_TOKEN", details: authError.message });
     }
 
     try {
@@ -57,7 +42,7 @@ router.post("/", async (req, res) => {
         const { data: voter, error: voterError } = await supabase
             .from("Voters")
             .select("user_secret")
-            .eq("user_id", user.id)
+            .eq("email", user.email)
             .eq("election_id", election_id)
             .single(); 
 

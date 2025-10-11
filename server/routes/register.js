@@ -1,5 +1,5 @@
 const express = require("express");
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
 const crypto = require("crypto");
 const { addUserSecret } = require("../utils/merkle");
@@ -35,28 +35,12 @@ router.post("/", auth, async (req, res) => {
     // }
 
     const { election_id } = req.params;
+    const { name } = req.body;
     const user = req.user;
 
-    // // 2. Validate input from the client.
-    // const { name, election_id } = req.body;
-    // if (!election_id) {
-    //     return res.status(400).json({ error: "VALIDATION_ERROR", details: "`election_id` is a required field." });
-    // }
-    // if (typeof name !== 'string' || name.trim() === '') {
-    //     return res.status(400).json({ error: "VALIDATION_ERROR", details: "`name` must be a non-empty string." });
-    // }
-
-    // let user;
-    // try {
-    //     // 3. Securely fetch user details from the auth provider using the token.
-    //     const { data: { user: authUser }, error } = await supabase.auth.getUser(token);
-    //     if (error || !authUser) {
-    //         throw new Error("Invalid or expired token.");
-    //     }
-    //     user = authUser;
-    // } catch (authError) {
-    //     return res.status(401).json({ error: "INVALID_TOKEN", details: authError.message });
-    // }
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+        return res.status(400).json({ error: "VALIDATION_ERROR", details: "A non-empty 'name' must be provided in the request body." });
+    }
 
     try {
         // 4. Check if the election exists and if the registration period is active.
@@ -98,7 +82,7 @@ router.post("/", auth, async (req, res) => {
         const { error: updateError } = await supabase
             .from("Voters")
             .update({
-                name: user.name,
+                name: name,
                 user_id: user.id, // Link the authenticated user account.
                 user_secret: user_secret
             })
@@ -107,7 +91,7 @@ router.post("/", auth, async (req, res) => {
         if (updateError) throw updateError;
 
         // 9. Add the new secret to the off-chain Merkle tree state.
-        await addUserSecret(election_id, user_secret);
+        await addUserSecret(election_id);
 
         // 10. Return a success response.
         return res.status(200).json({ // Use 200 OK for updates. 201 is for new resource creation.

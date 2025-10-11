@@ -133,9 +133,7 @@ async function generateMerkleTree(election_id) {
  * @param {string} election_id - The UUID of the election.
  * @param {string} user_secret - The secret to add.
  */
-async function addUserSecret(election_id, user_secret) {
-    // const poseidon = await getPoseidon();
-    // const newLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
+async function addUserSecret(election_id) {
 
     const MERKLE_LOCK_KEY = `merkle_lock: ${election_id}`;
     const MERKLE_TREE_CACHE_KEY = `merkle_cache:leaves:${election_id}`;

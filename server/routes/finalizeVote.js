@@ -1,5 +1,5 @@
 const express = require("express");
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 const validator = require('validator');
 const supabase = require("../supabaseClient");
 const { generateMerkleTree } = require("../utils/merkle"); 
@@ -17,7 +17,7 @@ const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/Voting
  *          sets the root and voting period on the smart contract, and officially starts the vote.
  * @access  Private (Admin Only)
  */
-router.post("/:election_id", authAdmin, async (req, res) => {
+router.post("/", authAdmin, async (req, res) => {
     const { election_id } = req.params;
     const { voteEndTime } = req.body;
     const now = new Date();
