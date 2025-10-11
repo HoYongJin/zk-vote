@@ -10,7 +10,8 @@ const authAdmin = require("../middleware/authAdmin");
  * @access  Private (Admin Only)
  */
 router.post("/", authAdmin, async (req, res) => {
-    const { election_id, emails: originalEmails = [] } = req.body;  
+    const { election_id } = req.params;
+    const { emails: originalEmails = [] } = req.body;
 
     // --- 1. Basic Input Validation ---
     if (!election_id) {
