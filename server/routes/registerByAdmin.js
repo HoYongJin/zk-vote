@@ -1,5 +1,5 @@
 const express = require("express");
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 const validator = require('validator');
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
