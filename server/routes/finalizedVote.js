@@ -32,7 +32,7 @@ router.get("/", auth, async (req, res) => {
 
         // 3. 일반 유저인 경우, 자신이 등록된 선거만 보도록 필터링합니다.
         if (!adminData) {
-            const { data: registeredVotes, error: voterError } = await supabase
+            const { data: finalizedVotes, error: voterError } = await supabase
                 .from('Voters')
                 .select('election_id')
                 .eq('email', user.email);
@@ -40,11 +40,11 @@ router.get("/", auth, async (req, res) => {
             if (voterError) throw voterError;
 
             // 등록된 선거가 없으면 빈 배열을 반환합니다.
-            if (!registeredVotes || registeredVotes.length === 0) {
+            if (!finalizedVotes || finalizedVotes.length === 0) {
                 return res.status(200).json([]);
             }
 
-            const electionIds = registeredVotes.map(v => v.election_id);
+            const electionIds = finalizedVotes.map(v => v.election_id);
 
             // 기본 쿼리에 내가 등록된 선거 ID 필터를 추가합니다.
             query = query.in('id', electionIds);
