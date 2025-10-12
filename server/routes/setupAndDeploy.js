@@ -19,6 +19,22 @@ router.post("/", authAdmin, async (req, res) => {
     const { election_id } = req.params;
 
     try {
+        //
+        const circomlibPath = "/home/ubuntu/zk-vote/server/node_modules/circomlib/circuits";
+        const poseidonPath = path.join(circomlibPath, "poseidon.circom");
+
+        console.log(`[ 진단 ] circomlib 폴더 경로: ${circomlibPath}`);
+        console.log(`[ 진단 ] poseidon.circom 파일 경로: ${poseidonPath}`);
+
+        if (!fs.existsSync(poseidonPath)) {
+            console.error("[ 진단 실패 ] 해당 경로에 poseidon.circom 파일이 존재하지 않습니다!");
+            console.error("해결 방법: cd ~/zk-vote/server/ 폴더로 이동 후 'npm install circomlib'을 다시 실행해주세요.");
+            // 사용자에게 명확한 오류 메시지 반환
+            return res.status(500).json({ message: "서버 설정 오류: circomlib 라이브러리 파일을 찾을 수 없습니다. 서버 로그를 확인해주세요." });
+        }
+        console.log("[ 진단 성공 ] poseidon.circom 파일이 확인되었습니다.");
+        //
+
         const { data: election, error: dbError } = await supabase
             .from("Elections")
             .select("merkle_tree_depth, num_candidates")
