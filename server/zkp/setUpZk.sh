@@ -76,22 +76,22 @@ fi
 
 # --- 7. GENERATE PROVING KEY (.zkey) ---
 echo "-> Generating proving key (zkey)..."
-snarkjs groth16 setup \
+/home/ubuntu/zk-vote/node_modules/.bin/snarkjs groth16 setup \
     "${BUILD_DIR}/VoteCheck_temp.r1cs" \
     "$PTAU_FILE" \
     "${BUILD_DIR}/circuit_0000.zkey"
 
 # --- 8. CONTRIBUTE TO PHASE 2 CEREMONY ---
 echo "-> Contributing to the ceremony..."
-snarkjs zkey contribute \
+/home/ubuntu/zk-vote/node_modules/.bin/snarkjs zkey contribute \
     "${BUILD_DIR}/circuit_0000.zkey" \
     "${BUILD_DIR}/circuit_final.zkey" \
     --name="1st Contributor" -v -e="$(head -n 4096 /dev/urandom | openssl sha1)"
 
 # --- 9. EXPORT VERIFICATION KEY & CONTRACT ---
 echo "-> Exporting verification key and contract..."
-snarkjs zkey export verificationkey "${BUILD_DIR}/circuit_final.zkey" "${BUILD_DIR}/verification_key.json"
-snarkjs zkey export solidityverifier "${BUILD_DIR}/circuit_final.zkey" "${BUILD_DIR}/${VERIFIER_FILE}"
+/home/ubuntu/zk-vote/node_modules/.bin/snarkjs zkey export verificationkey "${BUILD_DIR}/circuit_final.zkey" "${BUILD_DIR}/verification_key.json"
+/home/ubuntu/zk-vote/node_modules/.bin/snarkjs zkey export solidityverifier "${BUILD_DIR}/circuit_final.zkey" "${BUILD_DIR}/${VERIFIER_FILE}"
 
 # --- 10. FINALIZE AND MOVE THE VERIFIER CONTRACT ---
 echo "-> Finalizing and moving the Verifier contract..."
