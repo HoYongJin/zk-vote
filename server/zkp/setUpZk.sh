@@ -12,6 +12,14 @@ if [ -z "$DEPTH" ] || [ -z "$CANDIDATES" ]; then
     exit 1
 fi
 
+# --- NEW: Dynamically determine absolute paths ---
+# Get the absolute path of the directory where this script is located.
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+# Construct the absolute path to the circomlib directory from the script's location.
+CIRCOMLIB_PATH="${SCRIPT_DIR}/../node_modules/circomlib/circuits"
+
+echo "-> Dynamically determined circomlib path: ${CIRCOMLIB_PATH}"
+
 # --- 2. DYNAMICALLY SELECT PTAU FILE BASED ON DEPTH ---
 echo "-> Selecting appropriate Powers of Tau file for depth ${DEPTH}..."
 PTAU_FILE="" # Initialize variable
@@ -57,7 +65,7 @@ sed -i.bak "s/component main = .*/component main = Main(${DEPTH}, ${CANDIDATES})
 rm "${TEMP_CIRCUIT_FILE}.bak"
 
 #/home/ubuntu/.cargo/bin/circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR -l ../node_modules/circomlib/circuits
-/home/ubuntu/.cargo/bin/circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR -l /home/ubuntu/zk-vote/server/node_modules/circomlib/circuits
+/home/ubuntu/.cargo/bin/circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR -l "$CIRCOMLIB_PATH"
 
 # --- 6. CHECK FOR AND USE THE SELECTED PTAU FILE ---
 if [ ! -f "$PTAU_FILE" ]; then
