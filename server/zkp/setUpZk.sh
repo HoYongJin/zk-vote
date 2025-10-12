@@ -56,7 +56,8 @@ cp $CIRCUIT_TEMPLATE_FILE $TEMP_CIRCUIT_FILE
 sed -i.bak "s/component main = .*/component main = Main(${DEPTH}, ${CANDIDATES});/g" $TEMP_CIRCUIT_FILE
 rm "${TEMP_CIRCUIT_FILE}.bak"
 
-/home/ubuntu/.cargo/bin/circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR -l ../node_modules/circomlib/circuits
+#/home/ubuntu/.cargo/bin/circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR -l ../node_modules/circomlib/circuits
+/home/ubuntu/.cargo/bin/circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR -l /home/ubuntu/zk-vote/server/node_modules/circomlib/circuits
 
 # --- 6. CHECK FOR AND USE THE SELECTED PTAU FILE ---
 if [ ! -f "$PTAU_FILE" ]; then
