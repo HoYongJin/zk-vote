@@ -6,90 +6,88 @@ set -e
 DEPTH=$1
 CANDIDATES=$2
 
-# Check if both arguments are provided.
 if [ -z "$DEPTH" ] || [ -z "$CANDIDATES" ]; then
     echo "Error: You must provide both Merkle Tree Depth and the Number of Candidates."
     echo "Usage: ./setUpZk.sh <depth> <candidates>"
     exit 1
 fi
 
-# --- 2. DEFINE VARIABLES BASED ON ARGUMENTS ---
-# A single template file is now used, making the system more maintainable.
+# --- 2. DYNAMICALLY SELECT PTAU FILE BASED ON DEPTH ---
+echo "-> Selecting appropriate Powers of Tau file for depth ${DEPTH}..."
+PTAU_FILE="" # Initialize variable
+
+if [ "$DEPTH" -le 5 ]; then
+    PTAU_FILE="powersOfTau28_hez_final_12.ptau"
+# depth가 6이상 10 이하일 경우, _16.ptau 파일을 사용합니다.
+elif [ "$DEPTH" -le 10 ]; then
+    PTAU_FILE="powersOfTau28_hez_final_16.ptau"
+# depth가 11 이상 20 이하일 경우, _20.ptau 파일을 사용합니다.
+elif [ "$DEPTH" -le 20 ]; then
+    PTAU_FILE="powersOfTau28_hez_final_20.ptau"
+else
+    # 20을 초과하는 경우에 대한 에러 처리
+    echo "Error: Merkle tree depth ${DEPTH} is too large for available .ptau files."
+    echo "Please download a larger Powers of Tau file and update this script."
+    exit 1
+fi
+
+echo "-> Using: ${PTAU_FILE}"
+
+# --- 3. DEFINE VARIABLES BASED ON ARGUMENTS ---
 CIRCUIT_TEMPLATE_FILE="./circuits/VoteCheck.circom"
-# Dynamically create names for build artifacts.
 BUILD_DIR="./build_${DEPTH}_${CANDIDATES}"
 VERIFIER_CONTRACT_NAME="Groth16Verifier_${DEPTH}_${CANDIDATES}"
 VERIFIER_FILE="${VERIFIER_CONTRACT_NAME}.sol"
-# The Powers of Tau file is a constant for a given curve and constraint size.
-POT_FILE="powersOfTau28_hez_final_12.ptau"
 
 echo "=========================================================="
 echo "Starting ZKP setup for Depth: ${DEPTH}, Candidates: ${CANDIDATES}"
 echo "=========================================================="
 
-# --- 3. CREATE BUILD DIRECTORY ---
+# --- 4. CREATE BUILD DIRECTORY ---
 if [ ! -d "$BUILD_DIR" ]; then
     echo "-> Creating build directory: ${BUILD_DIR}"
     mkdir -p $BUILD_DIR
 fi
 
-# --- 4. DYNAMICALLY CONFIGURE AND COMPILE THE CIRCUIT ---
-# This is a critical step for automation.
-# It modifies the last line of the template to instantiate the circuit with the correct parameters.
-echo "-> Configuring circuit template..."
-# Create a temporary copy of the circuit to modify.
+# --- 5. DYNAMICALLY CONFIGURE AND COMPILE THE CIRCUIT ---
+echo "-> Configuring and compiling circuit..."
 TEMP_CIRCUIT_FILE="${BUILD_DIR}/VoteCheck_temp.circom"
 cp $CIRCUIT_TEMPLATE_FILE $TEMP_CIRCUIT_FILE
-# Use `sed` to replace the main component instantiation line.
 sed -i.bak "s/component main = .*/component main = Main(${DEPTH}, ${CANDIDATES});/g" $TEMP_CIRCUIT_FILE
+rm "${TEMP_CIRCUIT_FILE}.bak"
 
-echo "-> Compiling Circom circuit..."
-# Compile the dynamically configured temporary circuit file.
 circom $TEMP_CIRCUIT_FILE --r1cs --wasm --sym -o $BUILD_DIR
 
-# --- 5. PREPARE FOR TRUSTED SETUP (PHASE 2) ---
-if [ ! -f "$POT_FILE" ]; then
-    echo "Error: Powers of Tau file ($POT_FILE) is missing. Please download it and place it in the zkp directory."
+# --- 6. CHECK FOR AND USE THE SELECTED PTAU FILE ---
+if [ ! -f "$PTAU_FILE" ]; then
+    echo "Error: Powers of Tau file ($PTAU_FILE) is missing."
+    echo "Please download it and place it in the zkp directory."
     exit 1
-else
-    echo "-> Found Powers of Tau file."
 fi
 
-# --- 6. GENERATE PROVING KEY (.zkey) ---
+# --- 7. GENERATE PROVING KEY (.zkey) ---
 echo "-> Generating proving key (zkey)..."
 snarkjs groth16 setup \
     "${BUILD_DIR}/VoteCheck_temp.r1cs" \
-    "$POT_FILE" \
+    "$PTAU_FILE" \
     "${BUILD_DIR}/circuit_0000.zkey"
 
-# --- 7. CONTRIBUTE TO PHASE 2 CEREMONY ---
+# --- 8. CONTRIBUTE TO PHASE 2 CEREMONY ---
 echo "-> Contributing to the ceremony..."
-# In a real production environment, this would involve multiple independent contributors.
 snarkjs zkey contribute \
     "${BUILD_DIR}/circuit_0000.zkey" \
     "${BUILD_DIR}/circuit_final.zkey" \
     --name="1st Contributor" -v -e="$(head -n 4096 /dev/urandom | openssl sha1)"
 
-# --- 8. EXPORT VERIFICATION KEY ---
-echo "-> Exporting verification key to JSON..."
-snarkjs zkey export verificationkey \
-    "${BUILD_DIR}/circuit_final.zkey" \
-    "${BUILD_DIR}/verification_key.json"
-
-# --- 9. EXPORT VERIFIER SMART CONTRACT ---
-echo "-> Exporting Verifier contract..."
-snarkjs zkey export solidityverifier \
-    "${BUILD_DIR}/circuit_final.zkey" \
-    "${BUILD_DIR}/${VERIFIER_FILE}"
+# --- 9. EXPORT VERIFICATION KEY & CONTRACT ---
+echo "-> Exporting verification key and contract..."
+snarkjs zkey export verificationkey "${BUILD_DIR}/circuit_final.zkey" "${BUILD_DIR}/verification_key.json"
+snarkjs zkey export solidityverifier "${BUILD_DIR}/circuit_final.zkey" "${BUILD_DIR}/${VERIFIER_FILE}"
 
 # --- 10. FINALIZE AND MOVE THE VERIFIER CONTRACT ---
-echo "-> Renaming contract inside the .sol file..."
-# `snarkjs` always names the contract `Groth16Verifier`. This renames it to match our unique filename.
+echo "-> Finalizing and moving the Verifier contract..."
 sed -i.bak "s/contract Groth16Verifier/contract ${VERIFIER_CONTRACT_NAME}/g" "${BUILD_DIR}/${VERIFIER_FILE}"
 rm "${BUILD_DIR}/${VERIFIER_FILE}.bak" 
-
-echo "-> Moving Verifier contract to the contracts directory..."
-# Move the finalized contract to the main contracts folder for Hardhat to use.
 mv "${BUILD_DIR}/${VERIFIER_FILE}" "../../contracts/"
 
 echo "=========================================================="

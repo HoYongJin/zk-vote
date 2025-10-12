@@ -7,6 +7,7 @@ app.use(cors());
 app.use(express.json());
 
 const setVoteRouter = require("./routes/setVote");
+const setZkDeployRouther = require("./routes/setupAndDeploy");
 const registerableVoteRouter = require("./routes/registerableVote");
 const finalizedVoteRouter = require("./routes/finalizedVote");
 const registerByAdminRouter = require("./routes/registerByAdmin");
@@ -22,7 +23,7 @@ app.use("/api/elections/set", setVoteRouter); // (관리자) 새 선거 생성: 
 app.use("/api/elections/registerable", registerableVoteRouter); // 등록 가능한 선거 목록: GET /api/elections/registerable
 app.use("/api/elections/finalized", finalizedVoteRouter); // 투표 가능한 선거 목록: GET /api/elections/finalized
 
-
+app.use("/api/elections/:election_id/setZkDeploy", setZkDeployRouther);
 app.use("/api/elections/:election_id/voters", registerByAdminRouter); // (관리자) 유권자 대량 등록: POST /api/elections/:id/voters
 app.use("/api/elections/:election_id/register", registerRouter); // 유권자 등록: POST /api/elections/:id/register
 app.use("/api/elections/:election_id/finalize", finalizeVoteRouter); // (관리자) 등록 마감: POST /api/elections/:id/finalize

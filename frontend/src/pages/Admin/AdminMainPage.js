@@ -24,13 +24,16 @@ function AdminMainPage() {
   const [voters, setVoters] = useState('');
   const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
+  const [finalizingVote, setFinalizingVote] = useState(null); // 마감할 투표 정보를 임시 저장
+  const [voteEndTime, setVoteEndTime] = useState(''); // 투표 종료 시간 입력값
 
   // This function will be used to refresh the lists
   const fetchAllVotes = async () => {
     try {
       const [regResponse, votableResponse] = await Promise.all([
-        axios.get('/registerableVote'),
-        axios.get('/finalizedVote')
+        axios.get('/elections/registerable'),
+        axios.get('/elections/finalized')
       ]);
       setRegisterableVotes(regResponse.data);
       setVotableVotes(votableResponse.data);
@@ -49,45 +52,57 @@ function AdminMainPage() {
     setIsModalOpen(true);
   };
 
+  const openFinalizeModal = (vote) => {
+    setFinalizingVote(vote); // 어떤 투표를 마감할지 저장
+    setVoteEndTime(''); // 입력 필드 초기화
+    setIsFinalizeModalOpen(true); // 모달 열기
+  };
+
   const handleRegisterVoters = async () => {
     if (!selectedVote) return alert('투표를 선택해주세요.');
     const voterList = voters.split(/[\n, ]+/).filter(v => v.trim() !== '');
     if (voterList.length === 0) return alert('등록할 유권자 이메일을 입력해주세요.');
     try {
-        // ✅ API 요청 주소 문제 해결: axios 인스턴스는 상대 경로('/registerByAdmin')를 사용해야 합니다.
-        await axios.post('/registerByAdmin', { voteId: selectedVote.id, voters: voterList });
+        // 👇 경로 변경: 동적으로 election_id를 주입
+        await axios.post(`/elections/${selectedVote.id}/voters`, { emails: voterList });
         alert(`'${selectedVote.name}'에 ${voterList.length}명의 유권자가 성공적으로 등록되었습니다.`);
-        setVoters('');
-        setIsModalOpen(false); // 모달 닫기
-        setSelectedVote(null);
+        setIsModalOpen(false);
       } catch (error) {
         alert(`유권자 등록 실패: ${error.response?.data?.message || error.message}`);
       }
     };
 
-    const handleFinalizeVote = async (voteId, voteName) => {
-        if (!window.confirm(`'${voteName}' 투표의 유권자 등록을 마감하시겠습니까?`)) return;
+    const handleFinalizeVote = async () => {
+        if (!finalizingVote) return;
+        if (!voteEndTime) {
+          alert('투표 종료 시간을 선택해주세요.');
+          return;
+        }
+    
         try {
-          // ✅ API 요청 주소 문제 해결: axios 인스턴스는 상대 경로('/finalizeVote')를 사용해야 합니다.
-          await axios.post('/finalizeVote', { voteId });
-          alert('등록이 마감되었습니다.');
-          fetchAllVotes();
+          // API 요청 body에 voteEndTime을 포함하여 전송
+          await axios.post(`/elections/${finalizingVote.id}/finalize`, { voteEndTime });
+          
+          alert(`'${finalizingVote.name}' 투표의 등록이 마감되었습니다.`);
+          setIsFinalizeModalOpen(false); // 모달 닫기
+          fetchAllVotes(); // 목록 새로고침
         } catch (error) {
           alert(`등록 마감 실패: ${error.response?.data?.message || error.message}`);
         }
       };
 
-  const handleAddAdmin = async () => {
-    const adminEmail = prompt("추가할 관리자의 이메일을 입력하세요:");
-    if (adminEmail) {
-      try {
-        await axios.post('/addAdmins', { emails: [adminEmail] });
-        alert(`${adminEmail} 관리자가 추가되었습니다.`);
-      } catch (error) {
-        alert(`관리자 추가 실패: ${error.response?.data?.message || error.message}`);
-      }
-    }
-  };
+      const handleAddAdmin = async () => {
+        const adminEmail = prompt("추가할 관리자의 이메일을 입력하세요:");
+        if (adminEmail) {
+          try {
+            // 👇 경로 변경
+            await axios.post('/management/addAdmins', { email: adminEmail });
+            alert(`${adminEmail} 관리자가 추가되었습니다.`);
+          } catch (error) {
+            alert(`관리자 추가 실패: ${error.response?.data?.message || error.message}`);
+          }
+        }
+      };
 
   return (
     <div style={pageStyle}>
@@ -108,7 +123,7 @@ function AdminMainPage() {
                 <span style={itemTitleStyle}>{vote.name} (ID: {vote.id})</span>
                 <div>
                 <button style={buttonStyle} onClick={() => openVoterRegistrationModal(vote)}>유권자 등록</button>
-                <button style={{...buttonStyle, backgroundColor: '#28a745'}} onClick={() => handleFinalizeVote(vote.id, vote.name)}>등록 마감</button>
+                <button style={{...buttonStyle, backgroundColor: '#28a745'}} onClick={() => openFinalizeModal(vote)}>등록 마감</button>
                 </div>
               </div>
               <div style={itemDetailsStyle}>
@@ -154,6 +169,28 @@ function AdminMainPage() {
           <button style={{...buttonStyle, backgroundColor: '#6c757d'}} onClick={() => setIsModalOpen(false)}>취소</button>
         </section>
       )}
+      </Modal>
+
+      <Modal isOpen={isFinalizeModalOpen} onClose={() => setIsFinalizeModalOpen(false)}>
+        {finalizingVote && (
+          <div>
+            <h3>'{finalizingVote.name}' 등록 마감</h3>
+            <p>투표 종료 시간을 설정해주세요. 이 시간 이후에는 더 이상 투표할 수 없습니다.</p>
+            
+            {/* 시간 입력을 위한 최고의 방법: datetime-local input */}
+            <input
+              type="datetime-local"
+              value={voteEndTime}
+              onChange={(e) => setVoteEndTime(e.target.value)}
+              style={{ width: '95%', padding: '8px', fontSize: '1em' }}
+            />
+
+            <div style={{ marginTop: '20px', textAlign: 'right' }}>
+              <button style={{...buttonStyle, backgroundColor: '#6c757d'}} onClick={() => setIsFinalizeModalOpen(false)}>취소</button>
+              <button style={{...buttonStyle, backgroundColor: '#28a745'}} onClick={handleFinalizeVote}>마감 및 투표 시작</button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

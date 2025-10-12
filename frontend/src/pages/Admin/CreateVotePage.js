@@ -1,12 +1,22 @@
 // frontend/src/pages/admin/CreateVotePage.js
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import axios from '../../api/axios'; // 경로가 한 단계 깊어졌으므로 '../' -> '../../'
+import { Link, useNavigate } from 'react-router-dom';
+import axios from '../../api/axios';
+
+// --- Style Definitions ---
+const pageStyle = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '600px', margin: 'auto' };
+const formStyle = { display: 'flex', flexDirection: 'column', gap: '15px' };
+const inputGroupStyle = { display: 'flex', flexDirection: 'column' };
+const labelStyle = { marginBottom: '5px', fontWeight: 'bold' };
+const inputStyle = { padding: '10px', border: '1px solid #ccc', borderRadius: '4px' };
+const buttonStyle = { padding: '12px', border: 'none', borderRadius: '4px', backgroundColor: '#007bff', color: 'white', cursor: 'pointer', fontSize: '16px' };
 
 function CreateVotePage() {
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [name, setName] = useState('');
+  const [merkleTreeDepth, setMerkleTreeDepth] = useState('');
   const [candidates, setCandidates] = useState(['']);
+  const [regEndTime, setRegEndTime] = useState('');
+  const navigate = useNavigate();
 
   const handleCandidateChange = (index, event) => {
     const newCandidates = [...candidates];
@@ -14,71 +24,76 @@ function CreateVotePage() {
     setCandidates(newCandidates);
   };
 
-  const addCandidate = () => {
-    setCandidates([...candidates, '']);
-  };
-
-  const removeCandidate = (index) => {
-    const newCandidates = candidates.filter((_, i) => i !== index);
-    setCandidates(newCandidates);
-  };
+  const addCandidate = () => setCandidates([...candidates, '']);
+  const removeCandidate = (index) => setCandidates(candidates.filter((_, i) => i !== index));
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     const finalCandidates = candidates.filter(c => c.trim() !== '');
 
     if (finalCandidates.length < 1) {
-      alert('후보자를 1명 이상 입력해주세요.');
+      alert('At least one candidate is required.');
+      return;
+    }
+    if (!name || !merkleTreeDepth || !regEndTime) {
+      alert('Please fill out all fields.');
       return;
     }
 
     try {
-      await axios.post('/setVote', {
-        title,
-        description,
+      // 1. Send the API request with the correct data structure
+      const response = await axios.post('/elections/set', {
+        name,
+        merkleTreeDepth: parseInt(merkleTreeDepth, 10), // Ensure it's a number
         candidates: finalCandidates,
+        regEndTime,
       });
-      alert('투표가 성공적으로 생성되었습니다!');
-      setTitle('');
-      setDescription('');
-      setCandidates(['']);
+
+      // The API should ideally return the new election's data, including the ID
+      const newElectionId = response.data?.id; 
+      
+      alert(`Vote created successfully!\nElection ID: ${newElectionId}\n\nNext steps:\n1. Run setUpZk.sh on the server.\n2. Run deployAll.js to deploy contracts.`);
+      
+      navigate('/admin'); // Navigate back to the admin dashboard on success
+
     } catch (error) {
-      console.error('투표 생성 중 오류 발생:', error);
-      alert(`투표 생성에 실패했습니다: ${error.response?.data?.message || error.message}`);
+      console.error('Error creating vote:', error);
+      alert(`Failed to create vote: ${error.response?.data?.message || error.message}`);
     }
   };
 
   return (
-    <div style={{ padding: '20px' }}>
-      <Link to="/admin">← 관리자 대시보드로 돌아가기</Link>
-      <h2>새로운 투표 생성</h2>
-      <form onSubmit={handleSubmit}>
-        {/* 기존 폼 UI는 그대로 사용합니다. */}
-        <div>
-          <label>투표 제목:</label>
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} required />
+    <div style={pageStyle}>
+      <Link to="/admin">← Back to Admin Dashboard</Link>
+      <h2>Create New Vote</h2>
+      <form onSubmit={handleSubmit} style={formStyle}>
+        <div style={inputGroupStyle}>
+          <label style={labelStyle}>Vote Name:</label>
+          <input style={inputStyle} type="text" value={name} onChange={(e) => setName(e.target.value)} required />
         </div>
-        <div>
-          <label>투표 설명:</label>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} />
+
+        <div style={inputGroupStyle}>
+          <label style={labelStyle}>Registration End Time:</label>
+          <input style={inputStyle} type="datetime-local" value={regEndTime} onChange={(e) => setRegEndTime(e.target.value)} required />
         </div>
-        <div>
-          <label>후보자 목록:</label>
+
+        <div style={inputGroupStyle}>
+          <label style={labelStyle}>Merkle Tree Depth:</label>
+          <input style={inputStyle} type="number" value={merkleTreeDepth} onChange={(e) => setMerkleTreeDepth(e.target.value)} placeholder="e.g., 10 (supports 2^10 = 1024 voters)" required />
+        </div>
+        
+        <div style={inputGroupStyle}>
+          <label style={labelStyle}>Candidates:</label>
           {candidates.map((candidate, index) => (
-            <div key={index}>
-              <input
-                type="text"
-                value={candidate}
-                onChange={(e) => handleCandidateChange(index, e)}
-                placeholder={`후보자 ${index + 1}`}
-              />
-              <button type="button" onClick={() => removeCandidate(index)}>삭제</button>
+            <div key={index} style={{ display: 'flex', gap: '10px', marginBottom: '5px' }}>
+              <input style={{...inputStyle, flex: 1}} type="text" value={candidate} onChange={(e) => handleCandidateChange(index, e)} placeholder={`Candidate ${index + 1}`} />
+              <button type="button" onClick={() => removeCandidate(index)}>Remove</button>
             </div>
           ))}
-          <button type="button" onClick={addCandidate}>후보자 추가</button>
+          <button type="button" onClick={addCandidate}>Add Candidate</button>
         </div>
-        <hr />
-        <button type="submit">투표 생성하기</button>
+        
+        <button type="submit" style={buttonStyle}>Create Vote & Get ID</button>
       </form>
     </div>
   );
