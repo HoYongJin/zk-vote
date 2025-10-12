@@ -27,6 +27,7 @@ function AdminMainPage() {
   const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
   const [finalizingVote, setFinalizingVote] = useState(null); // 마감할 투표 정보를 임시 저장
   const [voteEndTime, setVoteEndTime] = useState(''); // 투표 종료 시간 입력값
+  const [isLoadingScript, setIsLoadingScript] = useState(null);
 
   // This function will be used to refresh the lists
   const fetchAllVotes = async () => {
@@ -104,6 +105,22 @@ function AdminMainPage() {
         }
       };
 
+      const handleSetupAndDeploy = async (voteId, voteName) => {
+        if (!window.confirm(`'${voteName}' 투표의 ZKP 설정 및 컨트랙트 배포를 시작하시겠습니까?\n\n⚠️ 경고: 이 작업은 서버 CPU를 많이 사용하며 몇 분 이상 소요될 수 있습니다. 완료될 때까지 다른 작업을 수행하지 마세요.`)) {
+          return;
+        }
+        setIsLoadingScript(voteId); // 로딩 시작 (어떤 투표가 로딩중인지 ID로 구분)
+        try {
+          // 백엔드에 만들어둔 스크립트 실행 API를 호출합니다.
+          const response = await axios.post(`/elections/${voteId}/setZkDeploy`);
+          alert(`'${voteName}' 투표 설정 및 배포 완료: ${response.data.message}`);
+        } catch (error) {
+          alert(`스크립트 실행 실패: ${error.response?.data?.message || '서버에 문제가 발생했습니다. 서버 로그를 확인하세요.'}`);
+        } finally {
+          setIsLoadingScript(null); // 로딩 종료
+        }
+      };
+
   return (
     <div style={pageStyle}>
       <header style={headerStyle}>
@@ -124,7 +141,18 @@ function AdminMainPage() {
                 <div>
                 <button style={buttonStyle} onClick={() => openVoterRegistrationModal(vote)}>유권자 등록</button>
                 <button style={{...buttonStyle, backgroundColor: '#28a745'}} onClick={() => openFinalizeModal(vote)}>등록 마감</button>
+                <button 
+                      style={{...buttonStyle, backgroundColor: '#ffc107', color: 'black'}}
+                      onClick={() => handleSetupAndDeploy(vote.id, vote.name)}
+                      disabled={isLoadingScript === vote.id} // 로딩 중일 때 비활성화
+                    >
+                      {isLoadingScript === vote.id ? '처리 중...' : 'ZK 설정 & 배포'}
+                    </button>
                 </div>
+              </div>
+              <div style={itemDetailsStyle}>
+                <strong>후보자:</strong> {vote.candidates ? vote.candidates.join(', ') : '정보 없음'}<br />
+                <strong>등록 마감일:</strong> {vote.registration_end_time ? new Date(vote.registration_end_time).toLocaleString() : '정보 없음'}
               </div>
               <div style={itemDetailsStyle}>
                 <strong>후보자:</strong> {vote.candidates ? vote.candidates.join(', ') : '정보 없음'}<br />
