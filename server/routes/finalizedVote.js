@@ -20,6 +20,11 @@ router.get("/", auth, async (req, res) => {
             .eq('id', user.id)
             .single();
 
+        if (adminError && adminError.code !== 'PGRST116') {
+            // 예측하지 못한 다른 DB 오류(연결 실패 등)는 catch 블록으로 던집니다.
+            throw adminError;
+        } 
+
         // 2. 'finalized'된 선거를 찾는 기본 쿼리를 생성합니다.
         //    - Merkle Root가 설정되어 있어야 함 (등록 마감)
         //    - 투표 시작 시간이 현재보다 과거여야 함 (투표 시작)

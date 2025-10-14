@@ -27,13 +27,6 @@ const generateUserSecret = (userId) => {
  * @access  Private (User Authentication Required)
  */
 router.post("/", auth, async (req, res) => {
-    // 1. Authenticate user via JWT from the header.
-    // const authHeader = req.headers.authorization || "";
-    // const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    // if (!token) {
-    //     return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
-    // }
-
     const { election_id } = req.params;
     const { name } = req.body;
     const user = req.user;

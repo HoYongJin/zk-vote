@@ -1,41 +1,3 @@
-// const express = require("express");
-// const router = express.Router();
-// const supabase = require("../supabaseClient");
-
-// /**
-//  * @route   GET /elections/registerable
-//  * @desc    현재 유권자 등록이 가능한 모든 선거의 목록을 조회합니다.
-//  * @access  Public
-//  */
-// router.get("/", async (req, res) => {
-//     try {
-//         const now = new Date();
-
-//         // Elections 테이블에서 현재 시간이 등록 시작과 종료 시간 사이에 있는
-//         // 모든 선거를 조회합니다.
-//         const { data, error } = await supabase
-//             .from("Elections")
-//             .select("id, name, candidates") // 프론트엔드에 필요한 정보만 선택 (id, 이름, 등록 마감일 등)
-//             .lt('registration_start_time', now.toISOString()) // 등록 시작 시간이 현재보다 과거이고
-//             .gt('registration_end_time', now.toISOString());  // 등록 종료 시간이 현재보다 미래인
-
-//         if (error) {
-//             // Supabase 쿼리에서 오류가 발생한 경우
-//             throw error;
-//         }
-
-//         // 성공적으로 조회된 선거 목록을 반환합니다.
-//         res.status(200).json(data);
-
-//     } catch (err) {
-//         // 그 외 서버 내부 오류 처리
-//         console.error("등록 가능한 선거 조회 오류:", err.message);
-//         res.status(500).json({ error: "서버 오류가 발생했습니다." });
-//     }
-// });
-
-// module.exports = router;
-
 const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
@@ -57,32 +19,74 @@ router.get("/", auth, async (req, res) => {
             .eq('id', user.id)
             .single();
 
+        if (adminError && adminError.code !== 'PGRST116') {
+            // 예측하지 못한 다른 DB 오류(연결 실패 등)는 catch 블록으로 던집니다.
+            throw adminError;
+        }    
+
         let query = supabase
             .from("Elections") // 테이블 이름이 'Elections' 또는 'Votes'인지 확인하세요.
-            .select("id, name, candidates, registration_end_time") // 필요한 컬럼 선택
+            .select("id, name, candidates, contract_address, registration_end_time") // 필요한 컬럼 선택
             .lt('registration_start_time', now.toISOString()) // 필요 시 시간 제약 조건 추가
             .gt('registration_end_time', now.toISOString());
 
 
         if (!adminData) {
-            // 'voters' 테이블에서 현재 유저가 등록된 모든 vote_id를 가져옵니다.
-            const { data: registeredVotes, error: voterError } = await supabase
+            // // 'voters' 테이블에서 현재 유저가 등록된 모든 vote_id를 가져옵니다.
+            // const { data: registeredVotes, error: voterError } = await supabase
+            //     .from('Voters')
+            //     .select('election_id, user_id')
+            //     .eq('email', user.email);
+
+            // if (voterError) throw voterError;
+
+            // // 만약 등록된 투표가 하나도 없다면, 빈 배열을 반환하고 종료
+            // if (!registeredVotes || registeredVotes.length === 0) {
+            //     return res.status(200).json([]);
+            // }
+
+            // // [ { vote_id: 1 }, { vote_id: 3 } ] 형태의 데이터를 [1, 3] 형태로 변환
+            // const voteIds = registeredVotes.map(v => v.election_id);
+
+            // // 준비된 쿼리에 필터 조건을 추가합니다.
+            // query = query.in('id', voteIds);
+            const { data: userVoterRecords, error: voterError } = await supabase
                 .from('Voters')
-                .select('election_id')
+                .select('election_id, user_id') // election_id와 user_id를 모두 선택
                 .eq('email', user.email);
 
             if (voterError) throw voterError;
 
-            // 만약 등록된 투표가 하나도 없다면, 빈 배열을 반환하고 종료
-            if (!registeredVotes || registeredVotes.length === 0) {
+            // 만약 유권자 목록에 아예 없다면, 빈 배열을 반환합니다.
+            if (!userVoterRecords || userVoterRecords.length === 0) {
                 return res.status(200).json([]);
             }
 
-            // [ { vote_id: 1 }, { vote_id: 3 } ] 형태의 데이터를 [1, 3] 형태로 변환
-            const voteIds = registeredVotes.map(v => v.election_id);
+            // 2. 사용자가 유권자로 사전 등록된 모든 투표의 ID 목록을 만듭니다.
+            const preApprovedVoteIds = userVoterRecords.map(record => record.election_id);
 
-            // 준비된 쿼리에 필터 조건을 추가합니다.
-            query = query.in('id', voteIds);
+            // 3. 사용자가 등록 절차를 '완료'한 모든 투표의 ID 목록을 만듭니다.
+            //    (user_id가 null이 아닌 경우)
+            const completedVoteIds = new Set(
+                userVoterRecords
+                    .filter(record => record.user_id !== null)
+                    .map(record => record.election_id)
+            );
+
+            // 4. 기본 쿼리에 '사전 등록된 투표'만 조회하도록 필터를 추가합니다.
+            query = query.in('id', preApprovedVoteIds);
+            
+            // 5. 필터링된 쿼리를 실행합니다.
+            const { data: filteredElections, error } = await query;
+            if (error) throw error;
+
+            // 6. 최종 결과에 'isRegistered' 꼬리표를 추가하여 반환합니다.
+            const result = filteredElections.map(election => ({
+                ...election,
+                isRegistered: completedVoteIds.has(election.id)
+            }));
+            
+            return res.status(200).json(result);
         }
 
         // 6. 최종 쿼리 실행

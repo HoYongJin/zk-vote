@@ -138,9 +138,27 @@ function AdminMainPage() {
                                 <div>
                                     <button style={buttonStyle} onClick={() => openVoterRegistrationModal(vote)}>유권자 등록</button>
                                     <button style={{...buttonStyle, backgroundColor: '#28a745'}} onClick={() => openFinalizeModal(vote)}>등록 마감</button>
-                                    <button style={{...buttonStyle, backgroundColor: '#ffc107', color: 'black'}} onClick={() => handleSetupAndDeploy(vote.id, vote.name)} disabled={isLoadingScript === vote.id}>
+                                    {/* <button style={{...buttonStyle, backgroundColor: '#ffc107', color: 'black'}} onClick={() => handleSetupAndDeploy(vote.id, vote.name)} disabled={isLoadingScript === vote.id}>
+                                        {isLoadingScript === vote.id ? '처리 중...' : 'ZK 설정 & 배포'}
+                                    </button> */}
+                                    {vote.contract_address ? (
+                                    // contract_address가 있으면 '완료' 버튼을 보여줍니다.
+                                    <button 
+                                        style={{...buttonStyle, backgroundColor: '#6c757d', cursor: 'not-allowed'}} 
+                                        disabled
+                                    >
+                                        ZK 설정 & 배포 완료
+                                    </button>
+                                    ) : (
+                                    // contract_address가 없으면 기존 '실행' 버튼을 보여줍니다.
+                                    <button 
+                                        style={{...buttonStyle, backgroundColor: '#ffc107', color: 'black'}}
+                                        onClick={() => handleSetupAndDeploy(vote.id, vote.name)}
+                                        disabled={isLoadingScript === vote.id}
+                                    >
                                         {isLoadingScript === vote.id ? '처리 중...' : 'ZK 설정 & 배포'}
                                     </button>
+                                    )}
                                 </div>
                             </div>
                             <div style={itemDetailsStyle}>
@@ -193,7 +211,6 @@ function AdminMainPage() {
                         <input type="datetime-local" value={voteEndTime} onChange={(e) => setVoteEndTime(e.target.value)} style={{ width: '95%' }} />
                         <div style={{ marginTop: '20px', textAlign: 'right' }}>
                             <button style={{...buttonStyle, backgroundColor: '#6c757d'}} onClick={() => setIsFinalizeModalOpen(false)}>취소</button>
-                            {/* 👇 여기가 수정된 부분입니다! `finalizingVote` 변수를 사용합니다. 👇 */}
                             <button style={{...buttonStyle, backgroundColor: '#28a745'}} onClick={handleConfirmFinalize} disabled={isFinalizing === finalizingVote.id}>
                                 {isFinalizing === finalizingVote.id ? '처리 중...' : '마감 및 투표 시작'}
                             </button>
