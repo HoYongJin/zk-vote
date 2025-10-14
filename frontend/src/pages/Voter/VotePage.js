@@ -32,7 +32,7 @@ function VotePage() {
             setErrorMessage('');
             setLoadingMessage('투표 증명에 필요한 정보를 요청하는 중...');
 
-            const proofInputsResponse = await axios.post(`/api/elections/${electionId}/proof`);
+            const proofInputsResponse = await axios.post(`/elections/${electionId}/proof`);
             const inputs = proofInputsResponse.data;
             inputs.vote = selectedCandidateIndex;
 
