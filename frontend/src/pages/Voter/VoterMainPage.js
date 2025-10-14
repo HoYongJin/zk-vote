@@ -107,7 +107,7 @@ function VoterMainPage() {
             </ul>
           </section>
 
-          <section style={sectionStyle}>
+          {/* <section style={sectionStyle}>
             <h2>유권자 등록 가능한 투표</h2>
             <ul style={listStyle}>
               {registerableVotes.map((vote) => {
@@ -138,6 +138,39 @@ function VoterMainPage() {
                   </li>
                 );
               })}
+              {registerableVotes.length === 0 && <p>등록 가능한 투표가 없습니다.</p>}
+            </ul>
+          </section> */}
+          <section style={sectionStyle}>
+            <h2>유권자 등록 가능한 투표</h2>
+            <ul style={listStyle}>
+              {registerableVotes.map((vote) => (
+                  <li key={vote.id} style={listItemStyle}>
+                    <div style={itemHeaderStyle}>
+                      <span style={itemTitleStyle}>{vote.name}</span>
+
+                      {/* 👇 여기가 수정된 핵심 로직입니다! 👇 */}
+                      {vote.isRegistered ? (
+                        // API가 isRegistered: true를 보내준 경우
+                        <button style={{...buttonStyle, backgroundColor: '#28a745', cursor: 'default'}} disabled>
+                          등록 완료
+                        </button>
+                      ) : (
+                        // API가 isRegistered: false를 보내준 경우
+                        <button
+                          style={{...buttonStyle, backgroundColor: '#17a2b8'}}
+                          onClick={() => handleRegister(vote.id, vote.name)}
+                          disabled={registeringId === vote.id}
+                        >
+                          {registeringId === vote.id ? '등록 중...' : '등록하기'}
+                        </button>
+                      )}
+                    </div>
+                    <div style={itemDetailsStyle}>
+                      등록 마감일: {new Date(vote.registration_end_time).toLocaleString()}
+                    </div>
+                  </li>
+              ))}
               {registerableVotes.length === 0 && <p>등록 가능한 투표가 없습니다.</p>}
             </ul>
           </section>

@@ -13,7 +13,7 @@ router.get("/", auth, async (req, res) => {
         const user = req.user; 
         const now = new Date();
 
-        const { data: adminData } = await supabase
+        const { data: adminData, error: adminError } = await supabase
             .from("Admins")
             .select('id')
             .eq('id', user.id)
