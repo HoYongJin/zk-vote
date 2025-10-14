@@ -18,18 +18,34 @@ const getContract = (contractAddress) => {
 };
 
 // --- 2. Configure the Rate Limiter Middleware ---
+// const submitVoteLimiter = rateLimit({
+//     windowMs: 15 * 60 * 1000, // 15 minutes
+//     max: 5, // Limit each user to 5 requests per 15-minute window
+//     keyGenerator: (req, res) => {
+//         // The key is the user's ID. This is guaranteed to exist because
+//         // the authentication middleware runs before this one.
+//         return req.user.id;
+//     },
+//     handler: (req, res) => {
+//         res.status(429).json({
+//             error: "Too many requests.",
+//             details: "You have exceeded the vote submission limit. Please try again later."
+//         });
+//     },
+//     standardHeaders: true,
+//     legacyHeaders: false,
+// });
 const submitVoteLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // Limit each user to 5 requests per 15-minute window
+    max: 5, // IP당 15분 동안 5번의 요청만 허용
     keyGenerator: (req, res) => {
-        // The key is the user's ID. This is guaranteed to exist because
-        // the authentication middleware runs before this one.
-        return req.user.id;
+        // 사용자 ID 대신 IP 주소를 키로 사용합니다.
+        return req.ip;
     },
     handler: (req, res) => {
         res.status(429).json({
             error: "Too many requests.",
-            details: "You have exceeded the vote submission limit. Please try again later."
+            details: "You have exceeded the vote submission limit from this IP. Please try again later."
         });
     },
     standardHeaders: true,
@@ -41,11 +57,10 @@ const submitVoteLimiter = rateLimit({
  * @desc    Submits the final vote with a ZK proof to the smart contract. Acts as a gas relayer.
  * @access  Private (Requires JWT Authentication)
  */
-router.post("/", auth, submitVoteLimiter, async (req, res) => {
+router.post("/", submitVoteLimiter, async (req, res) => {
     try {
         // [수정] 파라미터 및 Body에서 필요한 값을 추출합니다.
         const { election_id } = req.params;
-        const { user } = req;
         const { proof, publicSignals } = req.body;
 
         // --- Input Validation ---
@@ -76,7 +91,7 @@ router.post("/", auth, submitVoteLimiter, async (req, res) => {
         // --- Smart Contract Interaction ---
         const votingTally = getContract(election.contract_address);
         
-        console.log(`Submitting vote for user ${user.id} to election ${election_id}...`);
+        console.log(`Submitting an anonymous vote to election ${election_id}...`);
         
         const { a, b, c } = proof;
         const tx = await votingTally.submitTally(a, b, c, publicSignals);
@@ -84,20 +99,20 @@ router.post("/", auth, submitVoteLimiter, async (req, res) => {
         console.log(`Vote successfully submitted. TxHash: ${receipt.transactionHash}`);
 
         // --- Update 'voted' status in the database ---
-        const { error: updateError } = await supabase
-            .from("Voters")
-            .update({ voted: true })
-            .eq("election_id", election_id)
-            .eq("email", user.email);
+        // const { error: updateError } = await supabase
+        //     .from("Voters")
+        //     .update({ voted: true })
+        //     .eq("election_id", election_id)
+        //     .eq("email", user.email);
 
-        if (updateError) {
-            console.error("CRITICAL: On-chain vote succeeded, but failed to update 'voted' status in DB.", updateError);
-        }
+        // if (updateError) {
+        //     console.error("CRITICAL: On-chain vote succeeded, but failed to update 'voted' status in DB.", updateError);
+        // }
 
         // --- Success Response ---
         return res.status(200).json({
             success: true,
-            message: "Your vote has been successfully cast.",
+            message: "Your vote has been successfully and anonymously cast.",
             transactionHash: receipt.transactionHash
         });
 

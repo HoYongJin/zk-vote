@@ -71,7 +71,7 @@ function VoterMainPage() {
   };
 
   // 'votableVotes' 목록에 있는 ID들을 Set으로 만들어 빠른 조회를 가능하게 합니다.
-  const votableVoteIds = new Set(votableVotes.map(v => v.id));
+  //const votableVoteIds = new Set(votableVotes.map(v => v.id));
 
   return (
     <div style={pageStyle}>
@@ -96,7 +96,9 @@ function VoterMainPage() {
                 <li key={vote.id} style={listItemStyle}>
                   <div style={itemHeaderStyle}>
                     <span style={itemTitleStyle}>{vote.name}</span>
-                    <button style={buttonStyle} onClick={() => navigate(`/vote/${vote.id}`)}>투표하기</button>
+                    <button style={buttonStyle} onClick={() => navigate(`/vote/${vote.id}`, { state: { vote } })}>
+                      투표하기
+                    </button>
                   </div>
                   <div style={itemDetailsStyle}>
                     투표 마감일: {new Date(vote.voting_end_time).toLocaleString()}

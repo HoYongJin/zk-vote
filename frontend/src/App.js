@@ -4,19 +4,16 @@ import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { setUser, setAdmin, clearUser, setRedirectComplete } from './store/authSlice';
 import { supabase } from './supabase';
-import { store } from './store/store'; // import를 최상단으로 이동
+import { store } from './store/store';
 
 // Page and Component Imports
-import MainPage from './pages/MainPage';
 import LoginPage from './pages/LoginPage';
-import VotePage from './pages/VotePage';
-//import AdminDashboardPage from './pages/Admin/AdminDashboardPage';
+import VotePage from './pages/Voter/VotePage';
 import CreateVotePage from './pages/Admin/CreateVotePage';
-// import ManageVotesPage from './pages/Admin/ManageVotesPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import AdminRoute from './components/AdminRoute';
-import VoterMainPage from './pages/Voter/VoterMainPage'; // 이름 변경된 유권자 페이지
-import AdminMainPage from './pages/Admin/AdminMainPage'; // 새로 만든 관리자 페이지
+import VoterMainPage from './pages/Voter/VoterMainPage';
+import AdminMainPage from './pages/Admin/AdminMainPage';
 
 // --- 인증 및 리디렉션 로직을 처리할 핸들러 컴포넌트 ---
 function AuthHandler({ children }) {
@@ -26,8 +23,12 @@ function AuthHandler({ children }) {
   useEffect(() => {
     // 관리자인지 확인하고, 로그인 직후라면 적절한 페이지로 리디렉션하는 함수
     const checkAdminAndRedirect = async (user) => {
-      const { data } = await supabase.from('Admins').select('id').eq('id', user.id).single();
-      const isAdminUser = !!data;
+      const { data } = await supabase
+        .from('Admins')
+        .select('id')
+        .eq('id', user.id);
+
+      const isAdminUser = data && data.length > 0;
       dispatch(setAdmin(isAdminUser));
 
       const { postLoginRedirectComplete } = store.getState().auth;
@@ -56,13 +57,17 @@ function AuthHandler({ children }) {
       }
     );
 
-    // 페이지 첫 로드 시 현재 세션 확인
+    // 페이지 첫 로드 시 현재 세션 확인 (새로고침 시 로그인 유지)
     const checkInitialSession = async () => {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
             dispatch(setUser({ user: session.user, session }));
-            const { data } = await supabase.from('Admins').select('id').eq('id', session.user.id).single();
-            dispatch(setAdmin(!!data));
+            
+            // 👇 여기가 수정된 부분입니다! .single()을 제거했습니다. 👇
+            const { data } = await supabase.from('Admins').select('id').eq('id', session.user.id);
+            // 배열의 길이가 0보다 큰지를 확인하여 관리자 여부를 판단합니다.
+            dispatch(setAdmin(data && data.length > 0));
+
         } else {
             dispatch(clearUser());
         }

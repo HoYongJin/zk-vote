@@ -1,10 +1,12 @@
 require("dotenv").config({ path: __dirname + '/.env' });
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use('/zkp-files', express.static(path.join(__dirname, 'zkp')));
 
 const setVoteRouter = require("./routes/setVote");
 const setZkDeployRouther = require("./routes/setupAndDeploy");
@@ -29,8 +31,6 @@ app.use("/api/elections/:election_id/register", registerRouter); // 유권자 �
 app.use("/api/elections/:election_id/finalize", finalizeVoteRouter); // (관리자) 등록 마감: POST /api/elections/:id/finalize
 app.use("/api/elections/:election_id/proof", proofRouter); // Merkle 증명 생성: POST /api/elections/:id/proof
 app.use("/api/elections/:election_id/submit", submitZkRouter); // ZK 증명 제출: POST /api/elections/:id/submit
-
-
 
 
 

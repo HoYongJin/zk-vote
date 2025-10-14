@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from '../../api/axios';
 import Modal from '../../components/Modal';
+import { supabase } from '../../supabase';
 
 // --- Style Definitions ---
 const pageStyle = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '1000px', margin: 'auto' };
@@ -28,6 +29,15 @@ function AdminMainPage() {
     const [voteEndTime, setVoteEndTime] = useState('');
     const [isLoadingScript, setIsLoadingScript] = useState(null);
     const [isFinalizing, setIsFinalizing] = useState(null);
+
+    const handleLogout = async () => {
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+            console.error('로그아웃 중 오류 발생:', error);
+            alert('로그아웃에 실패했습니다.');
+        }
+        // 로그아웃 성공 시 App.js의 AuthHandler가 자동으로 /login으로 리디렉션합니다.
+    };
 
     const fetchAllVotes = async () => {
         try {
@@ -125,6 +135,7 @@ function AdminMainPage() {
                 <div>
                     <button style={buttonStyle} onClick={handleAddAdmin}>관리자 추가</button>
                     <button style={buttonStyle} onClick={() => navigate('/admin/create')}>투표 생성</button>
+                    <button style={{...buttonStyle, backgroundColor: '#6c757d'}} onClick={handleLogout}>로그아웃</button>
                 </div>
             </header>
             

@@ -29,6 +29,16 @@
     "extends": [
       "react-app",
       "react-app/jest"
+    ],
+    "overrides": [
+      {
+        "files": [
+          "**/*.worker.js"
+        ],
+        "rules": {
+          "no-restricted-globals": "off"
+        }
+      }
     ]
   },
   "browserslist": {
