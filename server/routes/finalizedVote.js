@@ -14,7 +14,7 @@ router.get("/", auth, async (req, res) => {
         const now = new Date();
 
         // 1. 현재 사용자가 관리자인지 확인합니다.
-        const { data: adminData } = await supabase
+        const { data: adminData, error: adminError } = await supabase
             .from("Admins")
             .select('id')
             .eq('id', user.id)
