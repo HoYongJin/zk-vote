@@ -188,7 +188,9 @@ function AdminMainPage() {
                         <li key={vote.id} style={listItemStyle}>
                             <div style={itemHeaderStyle}>
                                 <span style={itemTitleStyle}>{vote.name} (ID: {vote.id})</span>
-                                <span style={{ color: '#6c757d' }}>투표 진행중</span>
+                                <span style={{ color: '#007bff', fontWeight: 'bold' }}>
+                                    등록률: {vote.registered_voters} / {vote.total_voters}
+                                </span>
                             </div>
                             <div style={itemDetailsStyle}>
                                 <strong>후보자:</strong> {vote.candidates ? vote.candidates.join(', ') : '정보 없음'}<br />

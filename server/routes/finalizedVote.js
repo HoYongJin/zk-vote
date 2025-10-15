@@ -40,7 +40,7 @@ router.get("/", auth, async (req, res) => {
             const { data: finalizedVotes, error: voterError } = await supabase
                 .from('Voters')
                 .select('election_id')
-                .eq('email', user.email);
+                .eq('user_id', user.id);
 
             if (voterError) throw voterError;
 
@@ -56,12 +56,41 @@ router.get("/", auth, async (req, res) => {
         }
 
         // 4. 최종 쿼리를 실행합니다.
-        const { data, error } = await query;
+        const { data: elections, error: electionsError } = await query;
+        if (electionsError) throw electionsError;
 
-        if (error) throw error;
+        if (adminData) {
+            const electionsWithCounts = await Promise.all(
+                elections.map(async (election) => {
+                    // 관리자에 의해 사전 등록된 총 유권자 수
+                    const { count: total_voters, error: totalError } = await supabase
+                        .from("Voters")
+                        .select('*', { count: 'exact', head: true })
+                        .eq("election_id", election.id);
 
-        res.status(200).json(data);
+                    // 실제 등록 절차를 완료한 유권자 수 (user_id가 null이 아님)
+                    const { count: registered_voters, error: registeredError } = await supabase
+                        .from("Voters")
+                        .select('*', { count: 'exact', head: true })
+                        .eq("election_id", election.id)
+                        .not('user_id', 'is', null);
 
+                    if (totalError || registeredError) {
+                        console.error(`Voter count error for election ${election.id}`, totalError || registeredError);
+                    }
+
+                    return {
+                        ...election,
+                        total_voters: total_voters || 0,
+                        registered_voters: registered_voters || 0,
+                    };
+                })
+            );
+            return res.status(200).json(electionsWithCounts);
+        }
+
+        // 일반 유저인 경우, 카운트 없이 그냥 반환
+        res.status(200).json(elections);  
     } catch (err) {
         console.error("투표 가능한 선거 조회 오류:", err.message);
         res.status(500).json({ error: "서버 오류가 발생했습니다." });
