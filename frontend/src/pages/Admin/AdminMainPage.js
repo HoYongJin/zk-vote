@@ -128,6 +128,17 @@ function AdminMainPage() {
         }
     };
 
+    const handleCompleteVote = async (voteId, voteName) => {
+        if (!window.confirm(`'${voteName}' 투표를 최종적으로 종료하시겠습니까? 이 작업 후에는 더 이상 해당 투표를 관리할 수 없습니다.`)) return;
+        try {
+            await axios.post(`/api/elections/${voteId}/complete`);
+            alert('투표가 성공적으로 종료되었습니다.');
+            fetchAllVotes(); // 목록 새로고침
+        } catch (error) {
+            alert(`투표 종료 실패: ${error.response?.data?.message || error.message}`);
+        }
+    };
+
     return (
         <div style={pageStyle}>
             <header style={headerStyle}>
@@ -191,6 +202,12 @@ function AdminMainPage() {
                                 <span style={{ color: '#007bff', fontWeight: 'bold' }}>
                                     등록률: {vote.registered_voters} / {vote.total_voters}
                                 </span>
+                                <button 
+                                        style={{...buttonStyle, backgroundColor: '#dc3545'}} 
+                                        onClick={() => handleCompleteVote(vote.id, vote.name)}
+                                    >
+                                        투표 종료
+                                    </button>
                             </div>
                             <div style={itemDetailsStyle}>
                                 <strong>후보자:</strong> {vote.candidates ? vote.candidates.join(', ') : '정보 없음'}<br />
