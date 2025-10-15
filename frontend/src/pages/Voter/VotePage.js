@@ -49,14 +49,14 @@ function VotePage() {
                 user_secret: proofData.user_secret,
                 vote: voteArray, // 방금 만든 1-hot 배열
                 pathElements: proofData.pathElements,
-                pathIndices: proofData.pathIndices,
-                election_id: proofData.election_id
+                pathIndices: proofData.pathIndices
+                //election_id: electionId
             };
             console.log("root_in: ", inputs.root_in);
             console.log("user_secret: ", inputs.user_secret);
             console.log("pathElements: ", inputs.pathElements);
             console.log("pathIndices: ", inputs.pathIndices);
-            console.log("election_id: ", inputs.election_id);
+            //console.log("election_id: ", inputs.election_id);
 
             const baseURL = process.env.REACT_APP_API_BASE_URL.replace('/api', '');
 

@@ -76,6 +76,10 @@ router.post("/", submitVoteLimiter, async (req, res) => {
         const { election_id } = req.params;
         const { proof, publicSignals } = req.body;
 
+        console.log("election_id: ", election_id);
+        console.log("proof: ", proof);
+        console.log("publicSignals: ", publicSignals);
+
         // --- Input Validation ---
         if (!proof || !publicSignals || !proof.a || !proof.b || !proof.c) {
             return res.status(400).json({ error: "Fields 'proof' and 'publicSignals' are required." });
