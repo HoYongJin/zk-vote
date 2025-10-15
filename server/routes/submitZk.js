@@ -74,14 +74,14 @@ router.post("/", submitVoteLimiter, async (req, res) => {
     try {
         // [수정] 파라미터 및 Body에서 필요한 값을 추출합니다.
         const { election_id } = req.params;
-        const { proof, publicSignals } = req.body;
+        const { formattedProof, publicSignals } = req.body;
 
         console.log("election_id: ", election_id);
-        console.log("proof: ", proof);
+        console.log("formattedProof: ", formattedProof);
         console.log("publicSignals: ", publicSignals);
 
         // --- Input Validation ---
-        if (!proof || !publicSignals || !proof.a || !proof.b || !proof.c) {
+        if (!formattedProof || !publicSignals || !formattedProof.a || !formattedProof.b || !formattedProof.c) {
             return res.status(400).json({ error: "Fields 'proof' and 'publicSignals' are required." });
         }
 
@@ -110,7 +110,7 @@ router.post("/", submitVoteLimiter, async (req, res) => {
         
         console.log(`Submitting an anonymous vote to election ${election_id}...`);
         
-        const { a, b, c } = proof;
+        const { a, b, c } = formattedProof;
         const tx = await votingTally.submitTally(a, b, c, publicSignals);
         const receipt = await tx.wait();
         console.log(`Vote successfully submitted. TxHash: ${receipt.transactionHash}`);

@@ -49,14 +49,14 @@ function VotePage() {
                 user_secret: proofData.user_secret,
                 vote: voteArray, // 방금 만든 1-hot 배열
                 pathElements: proofData.pathElements,
-                pathIndices: proofData.pathIndices
-                //election_id: electionId
+                pathIndices: proofData.pathIndices,
+                election_id:  "0x" + electionId.replace(/-/g, "")
             };
             console.log("root_in: ", inputs.root_in);
             console.log("user_secret: ", inputs.user_secret);
             console.log("pathElements: ", inputs.pathElements);
             console.log("pathIndices: ", inputs.pathIndices);
-            //console.log("election_id: ", inputs.election_id);
+            console.log("election_id: ", inputs.election_id);
 
             const baseURL = process.env.REACT_APP_API_BASE_URL.replace('/api', '');
 
@@ -77,7 +77,12 @@ function VotePage() {
 
                 if (status === 'success') {
                     setLoadingMessage('생성된 증명을 안전하게 제출하는 중...');
-                    await axios.post(`/elections/${electionId}/submit`, { proof, publicSignals });
+                    const formattedProof = {
+                        a: proof.pi_a.slice(0, 2),
+                        b: proof.pi_b.slice(0, 2).map(row => row.reverse()),
+                        c: proof.pi_c.slice(0, 2)
+                    };
+                    await axios.post(`/elections/${electionId}/submit`, { formattedProof, publicSignals });
                     setLoadingMessage('');
                     alert('투표가 성공적으로 제출되었습니다!');
                     navigate('/');
