@@ -60,6 +60,7 @@ router.post("/", auth, async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Merkle proof generated successfully.",
+            user_secret: voter.user_secret,
             ...proofData
         });
 

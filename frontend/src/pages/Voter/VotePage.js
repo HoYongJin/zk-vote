@@ -18,6 +18,8 @@ function VotePage() {
     const location = useLocation();
     const { vote: election } = location.state || {};
 
+    console.log("VotePage에서 받은 election 객체:", election);
+
     const [selectedCandidateIndex, setSelectedCandidateIndex] = useState(null);
     const [loadingMessage, setLoadingMessage] = useState('');
     const [errorMessage, setErrorMessage] = useState('');
@@ -32,13 +34,35 @@ function VotePage() {
             setErrorMessage('');
             setLoadingMessage('투표 증명에 필요한 정보를 요청하는 중...');
 
-            const proofInputsResponse = await axios.post(`/elections/${electionId}/proof`);
-            const inputs = proofInputsResponse.data;
-            inputs.vote = selectedCandidateIndex;
+            const serverResponse = await axios.post(`/elections/${electionId}/proof`);
+            const proofData = serverResponse.data;
+            
+            console.log("proofData: ", proofData);
+
+            const voteArray = Array(election.candidates.length).fill(0);
+            voteArray[selectedCandidateIndex] = 1;
+            const inputs = {
+                // Main 템플릿의 public input
+                root_in: proofData.root,
+
+                // Main 템플릿의 private inputs
+                user_secret: proofData.user_secret,
+                vote: voteArray, // 방금 만든 1-hot 배열
+                pathElements: proofData.pathElements,
+                pathIndices: proofData.pathIndices,
+                election_id: proofData.election_id
+            };
+            console.log("root_in: ", inputs.root_in);
+            console.log("user_secret: ", inputs.user_secret);
+            console.log("pathElements: ", inputs.pathElements);
+            console.log("pathIndices: ", inputs.pathIndices);
+            console.log("election_id: ", inputs.election_id);
+
+            const baseURL = process.env.REACT_APP_API_BASE_URL.replace('/api', '');
 
             const { merkle_tree_depth, num_candidates } = election;
-            const wasmPath = `/zkp-files/build_${merkle_tree_depth}_${num_candidates}/VoteCheck_temp_js/VoteCheck_temp.wasm`;
-            const zkeyPath = `/zkp-files/build_${merkle_tree_depth}_${num_candidates}/circuit_final.zkey`;
+            const wasmPath = `${baseURL}/zkp-files/build_${merkle_tree_depth}_${num_candidates}/VoteCheck_temp_js/VoteCheck_temp.wasm`;
+            const zkeyPath = `${baseURL}/zkp-files/build_${merkle_tree_depth}_${num_candidates}/circuit_final.zkey`;
             
             setLoadingMessage(<>영지식 증명을 생성하는 중...<br/>(UI는 멈추지 않아요!)</>);
             

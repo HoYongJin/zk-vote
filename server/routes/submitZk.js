@@ -35,13 +35,26 @@ const getContract = (contractAddress) => {
 //     standardHeaders: true,
 //     legacyHeaders: false,
 // });
+// const submitVoteLimiter = rateLimit({
+//     windowMs: 15 * 60 * 1000, // 15 minutes
+//     max: 5, // IP당 15분 동안 5번의 요청만 허용
+//     keyGenerator: (req, res) => {
+//         // 사용자 ID 대신 IP 주소를 키로 사용합니다.
+//         return req.ip;
+//     },
+//     handler: (req, res) => {
+//         res.status(429).json({
+//             error: "Too many requests.",
+//             details: "You have exceeded the vote submission limit from this IP. Please try again later."
+//         });
+//     },
+//     standardHeaders: true,
+//     legacyHeaders: false,
+// });
+
 const submitVoteLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // IP당 15분 동안 5번의 요청만 허용
-    keyGenerator: (req, res) => {
-        // 사용자 ID 대신 IP 주소를 키로 사용합니다.
-        return req.ip;
-    },
+    max: 5, // Limit each IP to 5 requests per windowMs
     handler: (req, res) => {
         res.status(429).json({
             error: "Too many requests.",
