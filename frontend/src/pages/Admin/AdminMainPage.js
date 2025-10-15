@@ -131,7 +131,7 @@ function AdminMainPage() {
     const handleCompleteVote = async (voteId, voteName) => {
         if (!window.confirm(`'${voteName}' 투표를 최종적으로 종료하시겠습니까? 이 작업 후에는 더 이상 해당 투표를 관리할 수 없습니다.`)) return;
         try {
-            await axios.post(`/api/elections/${voteId}/complete`);
+            await axios.post(`/elections/${voteId}/complete`);
             alert('투표가 성공적으로 종료되었습니다.');
             fetchAllVotes(); // 목록 새로고침
         } catch (error) {

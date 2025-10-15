@@ -32,6 +32,7 @@ router.get("/", auth, async (req, res) => {
         let query = supabase
             .from("Elections")
             .select("id, name, candidates, voting_end_time, contract_address, merkle_tree_depth, num_candidates") // 프론트엔드에 필요한 정보
+            .eq('completed', false)
             .lt('voting_start_time', now.toISOString())
             .gt('voting_end_time', now.toISOString());
 
