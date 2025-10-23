@@ -21,6 +21,7 @@ function AdminMainPage() {
     const [registerableVotes, setRegisterableVotes] = useState([]);
     const [votableVotes, setVotableVotes] = useState([]);
     const [selectedVote, setSelectedVote] = useState(null);
+    const [completedVotes, setCompletedVotes] = useState([]);
     const [voters, setVoters] = useState('');
     const navigate = useNavigate();
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -41,12 +42,14 @@ function AdminMainPage() {
 
     const fetchAllVotes = async () => {
         try {
-            const [regResponse, votableResponse] = await Promise.all([
+            const [regResponse, votableResponse, completedResponse] = await Promise.all([
                 axios.get('/elections/registerable'),
-                axios.get('/elections/finalized')
+                axios.get('/elections/finalized'),
+                axios.get('/elections/completed')
             ]);
             setRegisterableVotes(regResponse.data);
             setVotableVotes(votableResponse.data);
+            setCompletedVotes(completedResponse.data);
         } catch (error) {
             console.error('투표 목록 조회 오류:', error);
         }
@@ -216,6 +219,36 @@ function AdminMainPage() {
                             </div>
                         </li>
                     ))}
+                </ul>
+            </section>
+            <section style={sectionStyle}>
+                <h2>종료된 투표</h2>
+                <ul style={listStyle}>
+                    {completedVotes.map(vote => (
+                        <li key={vote.id} style={listItemStyle}>
+                            <div style={itemHeaderStyle}>
+                                <span style={itemTitleStyle}>{vote.name} (ID: {vote.id})</span>
+                                <div>
+                                    {/* 👇 '컨트랙트' 버튼 추가 👇 */}
+                                    {vote.contract_address && (
+                                        <a 
+                                            href={`https://sepolia.etherscan.io/address/${vote.contract_address}`} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer"
+                                        >
+                                            <button style={{...buttonStyle, backgroundColor: '#6c757d'}}>컨트랙트 보기</button>
+                                        </a>
+                                    )}
+                                    <span style={{ color: '#6c757d', marginLeft: '15px' }}>종료됨</span>
+                                </div>
+                            </div>
+                            <div style={itemDetailsStyle}>
+                                <strong>후보자:</strong> {vote.candidates ? vote.candidates.join(', ') : '정보 없음'}<br />
+                                <strong>최종 마감일:</strong> {vote.voting_end_time ? new Date(vote.voting_end_time).toLocaleString() : '정보 없음'}
+                            </div>
+                        </li>
+                    ))}
+                     {completedVotes.length === 0 && <p>종료된 투표가 없습니다.</p>}
                 </ul>
             </section>
 

@@ -22,6 +22,7 @@ function VoterMainPage() {
 
   const [registerableVotes, setRegisterableVotes] = useState([]);
   const [votableVotes, setVotableVotes] = useState([]);
+  const [completedVotes, setCompletedVotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [registeringId, setRegisteringId] = useState(null);
 
@@ -29,12 +30,14 @@ function VoterMainPage() {
     if (auth.isLoggedIn) {
       setLoading(true);
       try {
-        const [regResponse, votableResponse] = await Promise.all([
+        const [regResponse, votableResponse, completedResponse] = await Promise.all([
           axios.get('/elections/registerable'),
-          axios.get('/elections/finalized')
+          axios.get('/elections/finalized'),
+          axios.get('/elections/completed')
         ]);
         setRegisterableVotes(regResponse.data);
         setVotableVotes(votableResponse.data);
+        setCompletedVotes(completedResponse.data);
       } catch (error) {
         console.error('투표 목록 조회 오류:', error);
       } finally {
@@ -176,6 +179,32 @@ function VoterMainPage() {
               {registerableVotes.length === 0 && <p>등록 가능한 투표가 없습니다.</p>}
             </ul>
           </section>
+          <section style={sectionStyle}>
+                        <h2>참여했던 투표</h2>
+                        <ul style={listStyle}>
+                            {completedVotes.map((vote) => (
+                                <li key={vote.id} style={listItemStyle}>
+                                    <div style={itemHeaderStyle}>
+                                        <span style={itemTitleStyle}>{vote.name}</span>
+                                        <div>
+                                            {/* 👇 '컨트랙트' 버튼 추가 👇 */}
+                                            {vote.contract_address && (
+                                                <a 
+                                                    href={`https://sepolia.etherscan.io/address/${vote.contract_address}`} 
+                                                    target="_blank" 
+                                                    rel="noopener noreferrer"
+                                                >
+                                                    <button style={{...buttonStyle, backgroundColor: '#6c757d'}}>컨트랙트 보기</button>
+                                                </a>
+                                            )}
+                                            <span style={{ color: '#6c757d', marginLeft: '15px' }}>종료됨</span>
+                                        </div>
+                                    </div>
+                                </li>
+                            ))}
+                            {completedVotes.length === 0 && <p>참여했던 투표가 없습니다.</p>}
+                        </ul>
+                    </section>
         </>
       )}
     </div>

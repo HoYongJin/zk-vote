@@ -8,6 +8,12 @@ app.use(cors());
 app.use(express.json());
 app.use('/zkp-files', express.static(path.join(__dirname, 'zkp')));
 
+const corsOptions = {
+    origin: 'https://d33tqdup8vdi6i.cloudfront.net', 
+    optionsSuccessStatus: 200
+  };
+  app.use(cors(corsOptions));
+
 const addAdminsRouter = require("./routes/addAdmins");
 const setVoteRouter = require("./routes/setVote");
 const setZkDeployRouther = require("./routes/setupAndDeploy");
