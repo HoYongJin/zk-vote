@@ -58,7 +58,7 @@ function VotePage() {
             console.log("pathIndices: ", inputs.pathIndices);
             console.log("election_id: ", inputs.election_id);
 
-            const baseURL = process.env.REACT_APP_API_BASE_URL.replace('/api', '');
+            const baseURL = process.env.REACT_APP_API_BASE_URL;
 
             const { merkle_tree_depth, num_candidates } = election;
             const wasmPath = `${baseURL}/zkp-files/build_${merkle_tree_depth}_${num_candidates}/VoteCheck_temp_js/VoteCheck_temp.wasm`;
