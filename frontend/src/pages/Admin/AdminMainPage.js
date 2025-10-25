@@ -47,9 +47,9 @@ function AdminMainPage() {
                 axios.get('/elections/finalized'),
                 axios.get('/elections/completed')
             ]);
-            setRegisterableVotes(regResponse.data);
-            setVotableVotes(votableResponse.data);
-            setCompletedVotes(completedResponse.data);
+            setRegisterableVotes(Array.isArray(regResponse.data) ? regResponse.data : []);
+            setVotableVotes(Array.isArray(votableResponse.data) ? votableResponse.data : []);
+            setCompletedVotes(Array.isArray(completedResponse.data) ? completedResponse.data : []);
         } catch (error) {
             console.error('투표 목록 조회 오류:', error);
         }
