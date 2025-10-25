@@ -14,7 +14,7 @@ router.get("/", auth, async (req, res) => {
         const now = new Date();
         
         console.log("id: ", user.id);
-        console.log("email: ", user.eamil);
+        console.log("Email: ", user.Email);
 
         const { data: adminData, error: adminError } = await supabase
             .from("Admins")
@@ -35,44 +35,6 @@ router.get("/", auth, async (req, res) => {
 
 
         if (!adminData) {
-            // const { data: userVoterRecords, error: voterError } = await supabase
-            //     .from('Voters')
-            //     .select('election_id, user_id') // election_id와 user_id를 모두 선택
-            //     .eq('email', user.email);
-
-            // if (voterError) throw voterError;
-
-            // // 만약 유권자 목록에 아예 없다면, 빈 배열을 반환합니다.
-            // if (!userVoterRecords || userVoterRecords.length === 0) {
-            //     return res.status(200).json([]);
-            // }
-
-            // // 2. 사용자가 유권자로 사전 등록된 모든 투표의 ID 목록을 만듭니다.
-            // const preApprovedVoteIds = userVoterRecords.map(record => record.election_id);
-
-            // // 3. 사용자가 등록 절차를 '완료'한 모든 투표의 ID 목록을 만듭니다.
-            // //    (user_id가 null이 아닌 경우)
-            // const completedVoteIds = new Set(
-            //     userVoterRecords
-            //         .filter(record => record.user_id !== null)
-            //         .map(record => record.election_id)
-            // );
-
-            // // 4. 기본 쿼리에 '사전 등록된 투표'만 조회하도록 필터를 추가합니다.
-            // query = query.in('id', preApprovedVoteIds);
-            
-            // // 5. 필터링된 쿼리를 실행합니다.
-            // const { data: filteredElections, error } = await query;
-            // if (error) throw error;
-
-            // // 6. 최종 결과에 'isRegistered' 꼬리표를 추가하여 반환합니다.
-            // const result = filteredElections.map(election => ({
-            //     ...election,
-            //     isRegistered: completedVoteIds.has(election.id)
-            // }));
-            
-            // return res.status(200).json(result);
-            // (유권자 로직)
             // 1. (수정) 필터링 없이 *모든* 등록 가능 투표를 먼저 조회
             const { data: allRegisterableElections, error: electionsError } = await query;
             if (electionsError) throw electionsError;
@@ -81,7 +43,7 @@ router.get("/", auth, async (req, res) => {
             const { data: userVoterRecords, error: voterError } = await supabase
                 .from('Voters')
                 .select('election_id, user_id')
-                .eq('email', user.email);
+                .eq('email', user.Email);
 
             if (voterError) throw voterError;
 
