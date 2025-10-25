@@ -1,5 +1,5 @@
 name: Deploy Frontend to S3 and CloudFront
-#
+
 on:
   push:
     branches:
@@ -30,6 +30,8 @@ jobs:
         run: npm run build
         env:
           REACT_APP_API_BASE_URL: / # 프로덕션 환경 변수 설정
+          REACT_APP_SUPABASE_URL: ${{ secrets.REACT_APP_SUPABASE_URL }}
+          REACT_APP_SUPABASE_ANON_KEY: ${{ secrets.REACT_APP_SUPABASE_ANON_KEY }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
