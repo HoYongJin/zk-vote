@@ -8,11 +8,23 @@ app.use(cors());
 app.use(express.json());
 app.use('/zkp-files', express.static(path.join(__dirname, 'zkp')));
 
-const corsOptions = {
-    origin: 'https://d33tqdup8vdi6i.cloudfront.net', 
+const allowedOrigins = [
+    'https://d33tqdup8vdi6i.cloudfront.net', // 1. 배포된 CloudFront 주소
+    'http://localhost:3000'                 // 2. 로컬 개발 서버 주소
+  ];
+  
+  const corsOptions = {
+    origin: function (origin, callback) {
+      // 요청한 origin이 허용 목록에 있거나, (Postman 등에서) origin이 없는 경우
+      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true); // 허용
+      } else {
+        callback(new Error('Not allowed by CORS')); // 거부
+      }
+    },
     optionsSuccessStatus: 200
   };
-  app.use(cors(corsOptions));
+app.use(cors(corsOptions));
 
 const addAdminsRouter = require("./routes/addAdmins");
 const setVoteRouter = require("./routes/setVote");
