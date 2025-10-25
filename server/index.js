@@ -4,9 +4,9 @@ const cors = require("cors");
 const path = require("path");
 
 const app = express();
-app.use(cors());
+//app.use(cors());
 app.use(express.json());
-app.use('/zkp-files', express.static(path.join(__dirname, 'zkp')));
+//app.use('/zkp-files', express.static(path.join(__dirname, 'zkp')));
 
 const allowedOrigins = [
     'https://d33tqdup8vdi6i.cloudfront.net', // 1. 배포된 CloudFront 주소
@@ -39,6 +39,7 @@ const submitZkRouter = require("./routes/submitZk");
 const completeVoteRouter = require('./routes/completeVote');
 const completedVoteRouter = require('./routes/completedVote');
 
+app.use('/api/zkp-files', express.static(path.join(__dirname, 'zkp')));
 app.use("/api/management/addAdmins", addAdminsRouter);
 app.use("/api/elections/set", setVoteRouter); // (관리자) 새 선거 생성: POST /api/elections
 app.use("/api/elections/registerable", registerableVoteRouter); // 등록 가능한 선거 목록: GET /api/elections/registerable
