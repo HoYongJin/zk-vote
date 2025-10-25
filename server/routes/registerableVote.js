@@ -84,7 +84,7 @@ router.get("/", auth, async (req, res) => {
 
             // 3. (동일) 유권자가 등록을 '완료'한 투표 ID Set을 생성
             const completedVoteIds = new Set(
-                (userVoterRecords || []) // userVoterRecords가 null일 경우 대비
+                (userVoterRecords || [a]) // userVoterRecords가 null일 경우 대비
                     .filter(record => record.user_id !== null)
                     .map(record => record.election_id)
             );
