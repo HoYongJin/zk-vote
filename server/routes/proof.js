@@ -102,7 +102,7 @@ router.post("/", auth, async (req, res) => {
 
         // 4. Generate the Merkle proof using the retrieved secret.
         //    The `generateMerkleProof` function handles tree generation/caching internally.
-        const proofData = await generateMerkleProof(election_id, voter.user_secret);
+        const proofData = await generateMerkleProof(election_id, voterRecord.user_secret);
 
         // 5. Return the proof components AND the user secret to the client.
         //    The user_secret is returned because the client-side ZKP generation
@@ -110,7 +110,7 @@ router.post("/", auth, async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Merkle proof generated successfully.",
-            user_secret: voter.user_secret,
+            user_secret: voterRecord.user_secret,
             ...proofData
         });
 
