@@ -40,6 +40,8 @@ router.get("/", auth, async (req, res) => {
             const { data: allRegisterableElections, error: electionsError } = await query;
             if (electionsError) throw electionsError;
 
+            console.log("allRegisterableElections: ", allRegisterableElections);
+
             // 2. (동일) 현재 유권자의 등록 상태를 별도로 조회
             const { data: userVoterRecords, error: voterError } = await supabase
                 .from('Voters')
