@@ -13,8 +13,9 @@ router.get("/", auth, async (req, res) => {
         const user = req.user; 
         const now = new Date();
         
+        console.log("user: ", user);
         console.log("id: ", user.id);
-        console.log("Email: ", user.Email);
+        console.log("email: ", user.email);
 
         const { data: adminData, error: adminError } = await supabase
             .from("Admins")
@@ -43,7 +44,7 @@ router.get("/", auth, async (req, res) => {
             const { data: userVoterRecords, error: voterError } = await supabase
                 .from('Voters')
                 .select('election_id, user_id')
-                .eq('email', user.Email);
+                .eq('email', user.email);
 
             if (voterError) throw voterError;
 
