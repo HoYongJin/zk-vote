@@ -1,4 +1,4 @@
-// frontend/src/pages/admin/AdminMainPage.js
+// frontend/src/pages/admin/AdminMainPage.js // --- Re-deploy trigger ---
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from '../../api/axios';
