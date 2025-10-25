@@ -45,8 +45,9 @@ router.get("/", auth, async (req, res) => {
                 .from('Voters')
                 .select('election_id, user_id')
                 .eq('email', user.email);
-
             if (voterError) throw voterError;
+
+            console.log("userVoterRecords: ", userVoterRecords);
 
             // 3. (동일) 유권자가 등록을 '완료'한 투표 ID Set을 생성
             const completedVoteIds = new Set(
@@ -55,11 +56,15 @@ router.get("/", auth, async (req, res) => {
                     .map(record => record.election_id)
             );
 
+            console.log("completedVoteIds: ", completedVoteIds);
+
             // 4. (수정) *모든* 투표 목록에 'isRegistered' 꼬리표를 추가
             const result = allRegisterableElections.map(election => ({
                 ...election,
                 isRegistered: completedVoteIds.has(election.id)
             }));
+
+            console.log("result: ", result);
 
             return res.status(200).json(result);
         }
