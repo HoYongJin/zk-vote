@@ -76,9 +76,9 @@ router.post("/", authAdmin, async (req, res) => {
         if (electionError) throw electionError;
 
         // Defensive check: Ensure data was returned after insert.
-        // If `createdElection` is null here, it might indicate RLS issues
+        // If `electionData` is null here, it might indicate RLS issues
         // preventing the service role from reading its own inserts immediately.
-        if (!createdElection || !createdElection.id) {
+        if (!electionData || !electionData.id) {
             console.error("[setVote.js] Failed to retrieve data after inserting into Elections table. Check RLS policies or Supabase function permissions.");
             return res.status(500).json({
                 error: "ELECTION_CREATION_FAILED",
