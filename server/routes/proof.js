@@ -1,7 +1,8 @@
 /**
  * @file server/routes/proof.js
  * @desc Route handler for generating Merkle proof data needed by a voter
- * to create a ZK-SNARK for casting their vote.
+ * to create a ZK-SNARK for casting their vote. AND issuing a
+ * single-use submission ticket.
  * It securely retrieves the user's secret from the database.
  */
 
@@ -10,18 +11,22 @@ const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
 const auth = require("../middleware/auth");
 const { generateMerkleProof } = require("../utils/merkle");
+const crypto = require("crypto");
+const redisClient = require("../redisClient");
+
+// Configuration for submission tickets
+const TICKET_EXPIRY_SECONDS = 300; // 5 minutes
 
 /**
  * @route   POST /api/elections/:election_id/proof
- * @desc    Generates and returns the Merkle proof components for the currently
- * authenticated user for a specific election. This endpoint is called
- * by the voter's client *before* generating the ZK proof locally.
- * It fetches the user's secret securely from the DB based on their auth token.
+ * @desc    Generates Merkle proof components for the authenticated user
+ * AND issues a short-lived, single-use "submission ticket".
+ * This ticket is required by the anonymous /submit endpoint to prevent DDoS.
  * @access  Private (Requires standard user authentication via `auth` middleware)
  * @param   {string} req.params.election_id - The UUID of the election.
  * @param   {object} req.user - The authenticated Supabase user object (attached by `auth` middleware).
- * @returns {object} Contains the Merkle proof (`root`, `pathElements`, `pathIndices`)
- * and the `user_secret` needed as private input for the ZK circuit.
+ * @returns {object} Contains Merkle proof components, user_secret,
+ * and the newly generated `submissionTicket`.
  */
 router.post("/", auth, async (req, res) => {
     // Extract election ID from URL and user info from auth middleware.
@@ -37,9 +42,7 @@ router.post("/", auth, async (req, res) => {
     }
 
     try {
-        // --- Pre-checks ---
-        
-        // 1. Fetch election details and validate the voting period.
+        // --- 1. Fetch Election Details & Validate Voting Period ---
         const { data: election, error: electionError } = await supabase
             .from("Elections")
             .select("id, voting_start_time, voting_end_time")
@@ -49,7 +52,10 @@ router.post("/", auth, async (req, res) => {
         if (electionError) {
             console.error(`[proof.js] Error fetching election ${election_id}:`, electionError.message);
             if (electionError.code === 'PGRST116') { // No rows found
-                return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
+                return res.status(404).json({ 
+                    error: "ELECTION_NOT_FOUND", 
+                    details: `Election with ID ${election_id} not found.` 
+                });
             }
             throw electionError;
         }
@@ -104,6 +110,14 @@ router.post("/", auth, async (req, res) => {
         //    The `generateMerkleProof` function handles tree generation/caching internally.
         const proofData = await generateMerkleProof(election_id, voterRecord.user_secret);
 
+        // --- 5. Generate and Store Single-Use Submission Ticket ---
+        const submissionTicket = crypto.randomUUID();
+        const ticketKey = `submission-ticket:${submissionTicket}`;
+
+        // Store *only* the ticket, with no link to user.id.
+        // This makes the ticket anonymous.
+        await redisClient.set(ticketKey, "valid", "EX", TICKET_EXPIRY_SECONDS);
+
         // 5. Return the proof components AND the user secret to the client.
         //    The user_secret is returned because the client-side ZKP generation
         //    (`proof.worker.js`) needs it as a private input. Ensure the client handles it securely.
@@ -111,6 +125,7 @@ router.post("/", auth, async (req, res) => {
             success: true,
             message: "Merkle proof generated successfully.",
             user_secret: voterRecord.user_secret,
+            submissionTicket: submissionTicket,
             ...proofData
         });
 

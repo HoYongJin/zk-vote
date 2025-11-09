@@ -13,6 +13,7 @@ require("dotenv").config();
 /**
  * The zero element (hash of 0, 0) for the Poseidon Merkle tree.
  * This is a fixed value used for empty leaves.
+ * derived from keccak256("tornado") to ensure compatibility with circomlib.(tornado-core/contracts/MerkleTreeWithHistory.sol)
  */
 const ZERO_ELEMENT = "21663839004416932945382355908790599225266501822907911457504978515578255421292";
 
