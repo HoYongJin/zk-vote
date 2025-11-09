@@ -1,0 +1,25 @@
+# frontend/buildspec.yml
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 18 # 또는 20
+    commands:
+      - echo Installing node.js dependencies...
+      - npm install
+  build:
+    commands:
+      - echo Build started on `date`
+      # 1. 프로덕션 빌드를 위해 환경 변수 설정
+      - export REACT_APP_API_BASE_URL=/
+      # 2. 빌드 실행
+      - npm run build
+  post_build:
+    commands:
+      - echo Build completed on `date`
+artifacts:
+  # 3. 빌드 결과물(build 폴더 안의 모든 것)을 artifacts로 지정
+  files:
+    - '**/*'
+  base-directory: build
