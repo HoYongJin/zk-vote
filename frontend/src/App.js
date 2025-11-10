@@ -7,9 +7,9 @@
  */
 
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useNavigate, Navigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
-import { setUser, setAdmin, clearUser, setRedirectComplete, setLoading } from './store/authSlice'; // Import setLoading
+import { setUser, setAdmin, clearUser, setRedirectComplete } from './store/authSlice'; // Import setLoading
 import { supabase } from './supabase';
 import { store } from './store/store'; // Used for state access outside React components
 
