@@ -1,25 +1,62 @@
-/* eslint-env worker */ 
+/**
+ * @file frontend/src/workers/proof.worker.js
+ * @desc This script runs as a Web Worker in a separate background thread.
+ * Its sole purpose is to execute the computationally expensive ZK-SNARK
+ * proof generation (`snarkjs.groth16.fullProve`) without freezing the main
+ * browser UI thread.
+ */
 
-// snarkjs 라이브러리를 워커 스크립트로 가져옵니다.
+/* eslint-env worker */ // Tells ESLint this is a Web Worker environment
+
+// Import the snarkjs library into the worker's scope
 import * as snarkjs from 'snarkjs';
 
-// 메인 스레드로부터 메시지를 받으면 이 함수가 실행됩니다.
+/**
+ * Handles messages sent from the main UI thread (e.g., VotePage.js).
+ * This function is the entry point for the worker.
+ *
+ * @param {MessageEvent} event - The event object containing data from the main thread.
+ * @param {object} event.data - The data payload.
+ * @param {object} event.data.inputs - The private and public inputs for the ZK circuit.
+ * @param {string} event.data.wasmPath - The path to the compiled circuit's .wasm file.
+ * @param {string} event.data.zkeyPath - The path to the circuit's final .zkey (proving key).
+ */
 self.onmessage = async (event) => {
-  // 메인 스레드가 보낸 데이터(입력값, 파일 경로)를 추출합니다.
-  const { inputs, wasmPath, zkeyPath } = event.data;
-  console.log("Web Worker: 증명 생성을 시작합니다.");
+    // Extract data from the main thread's message
+    const { inputs, wasmPath, zkeyPath } = event.data;
+    
+    // Log for debugging, showing the paths the worker is attempting to use.
+    console.log(`[ZK Worker] Received job. Starting proof generation...`);
+    console.log(`[ZK Worker] WASM Path: ${wasmPath}`);
+    console.log(`[ZK Worker] ZKey Path: ${zkeyPath}`);
 
-  try {
-    // 백그라운드에서 무거운 ZKP 생성 작업을 수행합니다.
-    const { proof, publicSignals } = await snarkjs.groth16.fullProve(inputs, wasmPath, zkeyPath);
+    try {
+        // --- Heavy Computation ---
+        // This is the core, CPU-intensive task.
+        // It runs in this background thread, leaving the UI responsive.
+        const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+        inputs,   // The circuit inputs (private + public)
+        wasmPath, // Path to the .wasm file
+        zkeyPath  // Path to the .zkey file
+    );
+    // --- Computation Complete ---
 
-    // 작업이 성공하면 결과를 다시 메인 스레드로 보냅니다.
-    self.postMessage({ status: 'success', proof, publicSignals });
-    console.log("Web Worker: 증명 생성을 완료하고 결과를 보냈습니다.");
+    // Send the successful result back to the main thread.
+    self.postMessage({ 
+      status: 'success', 
+      proof, 
+      publicSignals
+    });
+    
+    console.log("[ZK Worker] Proof generation successful. Result posted to main thread.");
 
-  } catch (error) {
-    // 작업 중 오류가 발생하면 오류 메시지를 보냅니다.
-    self.postMessage({ status: 'error', message: error.message });
-    console.error("Web Worker: 증명 생성 중 오류 발생:", error);
-  }
+    } catch (error) {
+        // If snarkjs.groth16.fullProve fails (e.g., bad inputs, file not found),
+        // catch the error and send an error message back to the main thread.
+        console.error("[ZK Worker] Proof generation failed:", error);
+        self.postMessage({ 
+        status: 'error', 
+        message: error.message // Send the error message for debugging
+        });
+    }
 };
