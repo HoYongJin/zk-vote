@@ -146,12 +146,16 @@ function AdminMainPage() {
      */
     const handleAddAdmin = async () => {
         const adminEmail = prompt("추가할 관리자의 이메일을 입력하세요:");
-        if (!adminEmail) return; // User cancelled prompt
+
+        if (!adminEmail || adminEmail.trim() === '') {
+            return;
+        }
+        const trimmedEmail = adminEmail.trim();
 
         setActionLoading(prev => ({ ...prev, isAddingAdmin: true }));
         try {
-            await axios.post('/management/addAdmins', { emails: [adminEmail] });
-            alert(`${adminEmail} 관리자가 추가되었습니다.`);
+            await axios.post('/api/management/addAdmins', { email: trimmedEmail });
+            alert(`${trimmedEmail} 관리자가 추가되었습니다.`);
         } catch (error) {
             console.error('관리자 추가 실패:', error.response?.data);
             alert(`관리자 추가 실패: ${error.response?.data?.details || error.message}`);
