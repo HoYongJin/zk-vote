@@ -117,7 +117,7 @@ function CreateVotePage() {
             // [UX] Simplified success message
             alert(`투표가 성공적으로 생성되었습니다.\n관리 대시보드로 이동하여 "ZK 설정 & 배포"를 진행하세요.`);
             
-            navigate('/admin/manage'); // Navigate to the manage page (where the new vote will be)
+            navigate('/admin'); // Navigate to the manage page (where the new vote will be)
 
         } catch (error) {
             console.error('투표 생성 실패:', error.response?.data);
@@ -131,7 +131,7 @@ function CreateVotePage() {
 
     return (
         <main style={pageStyle}>
-        <Link to="/admin/manage" style={{ textDecoration: 'none', color: '#007bff' }}>
+        <Link to="/admin" style={{ textDecoration: 'none', color: '#007bff' }}>
             &larr; 관리 대시보드로 돌아가기
         </Link>
         <h2 style={{ marginTop: '20px' }}>새로운 투표 생성</h2>
