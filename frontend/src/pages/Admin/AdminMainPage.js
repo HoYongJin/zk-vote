@@ -154,7 +154,7 @@ function AdminMainPage() {
 
         setActionLoading(prev => ({ ...prev, isAddingAdmin: true }));
         try {
-            await axios.post('/api/management/addAdmins', { email: trimmedEmail });
+            await axios.post('/management/addAdmins', { email: trimmedEmail });
             alert(`${trimmedEmail} 관리자가 추가되었습니다.`);
         } catch (error) {
             console.error('관리자 추가 실패:', error.response?.data);
