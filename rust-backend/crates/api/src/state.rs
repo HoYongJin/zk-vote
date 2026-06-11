@@ -12,4 +12,7 @@ pub struct AppState {
     /// None when SUPABASE_JWKS_URL is not configured; authenticated routes
     /// then fail with a typed SERVER_ERROR instead of panicking.
     pub auth: Option<Arc<AuthContext>>,
+    /// Serializes relayer transaction sends (AR-M5): one hot wallet means
+    /// concurrent sends race on nonces.
+    pub relay_lock: Arc<tokio::sync::Mutex<()>>,
 }

@@ -1,0 +1,78 @@
+//! Single-use submission tickets (Redis), Node-parity semantics.
+//!
+//! Privacy invariant (AR-H5): a ticket binds the ELECTION and MERKLE ROOT
+//! only — never a nullifier. The server must not be able to link the
+//! authenticated `/proof` caller to the anonymous `/submit` nullifier.
+
+use crate::error::ApiError;
+use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+pub const TICKET_EXPIRY_SECONDS: u64 = 300;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TicketPayload {
+    #[serde(rename = "electionId")]
+    pub election_id: Uuid,
+    #[serde(rename = "merkleRoot")]
+    pub merkle_root: String,
+}
+
+fn key(token: &str) -> String {
+    format!("submission-ticket:{token}")
+}
+
+async fn connection(client: &redis::Client) -> Result<redis::aio::MultiplexedConnection, ApiError> {
+    client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(ApiError::from)
+}
+
+pub async fn issue(client: &redis::Client, payload: &TicketPayload) -> Result<String, ApiError> {
+    let token = Uuid::new_v4().to_string();
+    let mut conn = connection(client).await?;
+    let serialized = serde_json::to_string(payload)
+        .map_err(|err| ApiError::Internal(format!("ticket serialization failed: {err}")))?;
+    let _: () = redis::cmd("SET")
+        .arg(key(&token))
+        .arg(serialized)
+        .arg("EX")
+        .arg(TICKET_EXPIRY_SECONDS)
+        .arg("NX")
+        .query_async(&mut conn)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(token)
+}
+
+/// Non-destructive read (validate-then-consume, audit M1).
+pub async fn read(client: &redis::Client, token: &str) -> Result<Option<TicketPayload>, ApiError> {
+    let mut conn = connection(client).await?;
+    let raw: Option<String> = conn.get(key(token)).await.map_err(ApiError::from)?;
+    parse(raw)
+}
+
+/// Destructive consume (GETDEL) — call only after every validation passed.
+pub async fn consume(
+    client: &redis::Client,
+    token: &str,
+) -> Result<Option<TicketPayload>, ApiError> {
+    let mut conn = connection(client).await?;
+    let raw: Option<String> = redis::cmd("GETDEL")
+        .arg(key(token))
+        .query_async(&mut conn)
+        .await
+        .map_err(ApiError::from)?;
+    parse(raw)
+}
+
+fn parse(raw: Option<String>) -> Result<Option<TicketPayload>, ApiError> {
+    match raw {
+        None => Ok(None),
+        Some(raw) => serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|err| ApiError::Internal(format!("ticket payload malformed: {err}"))),
+    }
+}

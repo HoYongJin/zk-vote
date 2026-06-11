@@ -4,6 +4,7 @@ mod error;
 mod middleware;
 mod routes;
 mod state;
+mod tickets;
 
 use auth::AuthContext;
 use config::AppConfig;
@@ -44,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pg,
         redis,
         auth,
+        relay_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let (set_request_id, propagate_request_id) = middleware::request_id_layers();
@@ -130,6 +132,7 @@ mod tests {
             pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
             redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
             auth,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -966,6 +969,7 @@ mod tests {
             pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
             redis: RedisClient::open("redis://localhost:1").unwrap(),
             auth: auth_ctx,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let pool = state.pg.clone();
         let now = OffsetDateTime::now_utc();
@@ -1103,6 +1107,311 @@ mod tests {
 
         sqlx::query("DELETE FROM elections WHERE id = $1")
             .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// Phase 13 / Milestone D gate: the full Rust voting pipeline with a
+    /// REAL Groth16 proof (committed fixture) against docker PG + docker
+    /// Redis + a local hardhat node:
+    ///   bash scripts/local/smoke.sh && npx hardhat node
+    /// Run: `cargo test -p zkvote-api -- --ignored vote_pipeline`
+    #[tokio::test]
+    #[ignore = "requires docker PG+Redis and a local hardhat node"]
+    async fn vote_pipeline_end_to_end_with_real_proof() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+        use zkvote_db::repos::VoterRepo;
+
+        const RPC: &str = "http://127.0.0.1:8545";
+        const RELAYER_KEY: &str =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        const OWNER_KEY: &str =
+            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+        const OWNER_ADDR: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+        fn bytecode(rel: &str) -> Vec<u8> {
+            let path = format!("{}/../../../{rel}", env!("CARGO_MANIFEST_DIR"));
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let hex = json["bytecode"].as_str().unwrap().trim_start_matches("0x");
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect()
+        }
+
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/proof_fixture.json")).unwrap();
+        let election_id: uuid::Uuid = fixture["electionUuid"].as_str().unwrap().parse().unwrap();
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let jwks = jwks_url.clone();
+        let db = database_url.to_string();
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some(db.clone()),
+                "REDIS_URL" => Some("redis://localhost:6379".to_string()),
+                "SUPABASE_JWKS_URL" => Some(jwks.clone()),
+                "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
+                "SEPOLIA_RPC_URL" => Some(RPC.to_string()),
+                "PRIVATE_KEY" => Some(RELAYER_KEY.to_string()),
+                "OWNER_PRIVATE_KEY" => Some(OWNER_KEY.to_string()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let auth_ctx = Some(Arc::new(AuthContext::new(
+            jwks_url,
+            config.supabase_issuer.clone(),
+            config.supabase_audience.clone(),
+        )));
+        let state = AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open("redis://localhost:6379").unwrap(),
+            auth: auth_ctx,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        // The fixture binds the election UUID inside the proof: recreate
+        // that exact election from scratch.
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO elections (id, name, merkle_tree_depth, num_candidates, candidates, \
+                 registration_start_time, registration_end_time) \
+             VALUES ($1, 'p13 fixture election', 4, 5, '[\"A\",\"B\",\"C\",\"D\",\"E\"]'::jsonb, now(), $2)",
+        )
+        .bind(election_id)
+        .bind(now + Duration::hours(1))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        // Voter A holds secret "1" (fixture leaf 0); voter B holds "123".
+        let voter_id = uuid::Uuid::new_v4();
+        let voter_email = format!("p13-a-{admin_id}@example.com");
+        let voter_token = mint_token(
+            &voter_id.to_string(),
+            &voter_email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let leaves: Vec<String> = fixture["leaves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|leaf| leaf.as_str().unwrap().to_string())
+            .collect();
+        for (i, leaf) in leaves.iter().enumerate() {
+            let email = if i == 0 {
+                voter_email.clone()
+            } else {
+                format!("p13-b-{admin_id}@example.com")
+            };
+            let uid = if i == 0 {
+                voter_id
+            } else {
+                uuid::Uuid::new_v4()
+            };
+            VoterRepo::insert_allowlisted(&pool, election_id, &email)
+                .await
+                .unwrap();
+            VoterRepo::bind_registration(&pool, election_id, &email, uid, "V", leaf)
+                .await
+                .unwrap();
+        }
+
+        // Deploy with the REAL Groth16 verifier and finalize via the route.
+        let chain_config = zkvote_chain::ChainConfig {
+            rpc_url: RPC.to_string(),
+            relayer_private_key: RELAYER_KEY.to_string(),
+        };
+        let deployed = zkvote_chain::deploy_election(
+            &chain_config,
+            bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+            bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+            alloy::primitives::U256::from(123u64),
+            alloy::primitives::U256::from(5u64),
+            OWNER_ADDR.parse().unwrap(),
+        )
+        .await
+        .expect("deploy failed — is `npx hardhat node` running?");
+        zkvote_db::repos::ElectionRepo::set_contract_address(
+            &pool,
+            election_id,
+            &format!("{:#x}", deployed.voting_tally_address),
+            &format!("{:#x}", deployed.verifier_address),
+        )
+        .await
+        .unwrap();
+
+        let vote_end = (now + Duration::hours(2)).format(&Rfc3339Fmt).unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{election_id}/finalize"),
+            &admin_token,
+            serde_json::json!({ "voteEndTime": vote_end }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "finalize failed: {json}");
+        assert_eq!(
+            json["merkleRoot"].as_str().unwrap(),
+            fixture["root"].as_str().unwrap(),
+            "the live root must equal the fixture root (AR-H7)"
+        );
+
+        // /proof: ticket + path for voter A; path must satisfy the fixture.
+        let (status, proof_json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{election_id}/proof"),
+            &voter_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "proof failed: {proof_json}");
+        assert_eq!(
+            proof_json["root"].as_str().unwrap(),
+            fixture["root"].as_str().unwrap()
+        );
+        assert!(
+            proof_json.get("user_secret").is_none(),
+            "H2: no secret in /proof"
+        );
+        let ticket = proof_json["submissionTicket"].as_str().unwrap().to_string();
+
+        // /submit with the real proof: relayed, mined, counted.
+        let submit_body = serde_json::json!({
+            "formattedProof": fixture["formattedProof"],
+            "publicSignals": fixture["publicSignals"],
+            "submissionTicket": ticket,
+        });
+        let response = routes::router(state.clone())
+            .oneshot(
+                Request::post(format!("/api/elections/{election_id}/submit"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(submit_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "submit failed: {json}");
+        assert!(json["transactionHash"].as_str().unwrap().starts_with("0x"));
+
+        let onchain =
+            zkvote_chain::connect_election(&chain_config, deployed.voting_tally_address).unwrap();
+        assert_eq!(
+            onchain
+                .vote_count(alloy::primitives::U256::ZERO)
+                .await
+                .unwrap(),
+            alloy::primitives::U256::from(1u64),
+            "candidate 0 must hold exactly one vote"
+        );
+
+        // Replay with a fresh ticket: blocked by on-chain nullifier state.
+        let (_, proof_json2) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{election_id}/proof"),
+            &voter_token,
+            serde_json::json!({}),
+        )
+        .await;
+        let ticket2 = proof_json2["submissionTicket"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let replay_body = serde_json::json!({
+            "formattedProof": fixture["formattedProof"],
+            "publicSignals": fixture["publicSignals"],
+            "submissionTicket": ticket2,
+        });
+        let response = routes::router(state.clone())
+            .oneshot(
+                Request::post(format!("/api/elections/{election_id}/submit"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(replay_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "replay must be rejected: {json}"
+        );
+        assert_eq!(json["error"], "VOTE_ALREADY_CAST");
+
+        // Tampered election binding rejected before any chain interaction.
+        let mut tampered = fixture["publicSignals"].as_array().unwrap().clone();
+        tampered[3] = serde_json::json!("999");
+        let (_, proof_json3) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{election_id}/proof"),
+            &voter_token,
+            serde_json::json!({}),
+        )
+        .await;
+        let ticket3 = proof_json3["submissionTicket"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tampered_body = serde_json::json!({
+            "formattedProof": fixture["formattedProof"],
+            "publicSignals": tampered,
+            "submissionTicket": ticket3,
+        });
+        let response = routes::router(state.clone())
+            .oneshot(
+                Request::post(format!("/api/elections/{election_id}/submit"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(tampered_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "ELECTION_ID_MISMATCH");
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election_id)
             .execute(&pool)
             .await
             .unwrap();

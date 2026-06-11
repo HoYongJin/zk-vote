@@ -29,6 +29,7 @@ sol! {
         function usedNullifiers(uint256 nullifier) external view returns (bool);
         function voteCounts(uint256 candidate) external view returns (uint256);
         function configureElection(uint256 _root, uint256 _startTime, uint256 _endTime) external;
+        function submitTally(uint256[2] calldata a, uint256[2][2] calldata b, uint256[2] calldata c, uint256[4] calldata publicInputs) external;
     }
 }
 
@@ -226,4 +227,55 @@ impl<P: Provider + Clone> ElectionOnChain<P> {
             .await
             .map_err(classify)
     }
+}
+
+/// Relays a vote transaction. The caller MUST serialize calls per relayer
+/// wallet (AR-M5): concurrent sends from one wallet race on nonces. A
+/// preflight `eth_call` classifies permanent rejections before any gas is
+/// spent or the single-use ticket is consumed.
+pub async fn submit_tally(
+    config: &ChainConfig,
+    voting_tally_address: Address,
+    a: [U256; 2],
+    b: [[U256; 2]; 2],
+    c: [U256; 2],
+    public_inputs: [U256; 4],
+) -> Result<String, ChainError> {
+    let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    let contract = VotingTally::new(voting_tally_address, provider);
+
+    let call = contract.submitTally(a, b, c, public_inputs);
+    call.call().await.map_err(classify)?;
+
+    let pending = call.send().await.map_err(classify)?;
+    let receipt = pending
+        .get_receipt()
+        .await
+        .map_err(|err| ChainError::Transport(err.to_string()))?;
+    if !receipt.status() {
+        return Err(ChainError::Reverted(
+            "submitTally reverted on-chain".to_string(),
+        ));
+    }
+    Ok(format!("{:#x}", receipt.transaction_hash))
+}
+
+/// Preflight-only variant of submitTally — used to validate before the
+/// single-use ticket is consumed.
+pub async fn preflight_submit_tally(
+    config: &ChainConfig,
+    voting_tally_address: Address,
+    a: [U256; 2],
+    b: [[U256; 2]; 2],
+    c: [U256; 2],
+    public_inputs: [U256; 4],
+) -> Result<(), ChainError> {
+    let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    let contract = VotingTally::new(voting_tally_address, provider);
+    contract
+        .submitTally(a, b, c, public_inputs)
+        .call()
+        .await
+        .map_err(classify)?;
+    Ok(())
 }

@@ -4,6 +4,7 @@ pub mod finalize;
 pub mod health;
 pub mod manage;
 pub mod me;
+pub mod vote;
 pub mod voters;
 
 use crate::state::AppState;
@@ -39,5 +40,8 @@ pub fn router(state: AppState) -> Router {
             "/api/elections/:election_id/finalize",
             post(finalize::finalize),
         )
+        .route("/api/elections/:election_id/proof", post(vote::proof))
+        // Anonymous by design: no auth extractor on submit (privacy model).
+        .route("/api/elections/:election_id/submit", post(vote::submit))
         .with_state(state)
 }
