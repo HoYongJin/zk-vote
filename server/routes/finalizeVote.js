@@ -151,9 +151,13 @@ router.post("/", authAdmin, async (req, res) => {
 
                 
         // --- 4. Update the Smart Contract (On-Chain) ---
-        // Connect to the blockchain provider and wallet.
+        // Connect to the blockchain provider and wallet. configureElection is
+        // onlyOwner: use OWNER_PRIVATE_KEY when the owner key is separated
+        // from the hot relayer key (AR-M4); local dev may fall back to the
+        // relayer key when both roles share one account.
         const provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-        const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+        const ownerKey = process.env.OWNER_PRIVATE_KEY || process.env.PRIVATE_KEY;
+        const wallet = new ethers.Wallet(ownerKey, provider);
         const votingTallyContract = new ethers.Contract(election.contract_address, votingTallyAbi, wallet);
         
         // --- [Tx] Atomically set the Merkle root and voting period on the contract ---

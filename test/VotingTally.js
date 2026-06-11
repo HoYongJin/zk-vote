@@ -25,7 +25,8 @@ describe("VotingTally", function () {
         const votingTally = await VotingTally.deploy(
             otherAccount.address,
             ELECTION_ID,
-            NUM_CANDIDATES
+            NUM_CANDIDATES,
+            owner.address
         );
         await votingTally.waitForDeployment();
 
@@ -45,7 +46,8 @@ describe("VotingTally", function () {
         const votingTally = await VotingTally.deploy(
             await mockVerifier.getAddress(),
             ELECTION_ID,
-            NUM_CANDIDATES
+            NUM_CANDIDATES,
+            owner.address
         );
         await votingTally.waitForDeployment();
 
@@ -76,6 +78,43 @@ describe("VotingTally", function () {
     });
 
     describe("Admin configuration", function () {
+        it("keeps onlyOwner rights off the deploying relayer key (AR-M4)", async function () {
+            // The hot relayer key DEPLOYS contracts but must hold no owner
+            // privileges: a leaked relayer key must not be able to front-run
+            // configureElection with an attacker-controlled Merkle root.
+            const [relayer, , ownerAccount] = await ethers.getSigners();
+            const VotingTally = await ethers.getContractFactory("VotingTally", relayer);
+            const votingTally = await VotingTally.deploy(
+                relayer.address, // verifier placeholder
+                ELECTION_ID,
+                NUM_CANDIDATES,
+                ownerAccount.address
+            );
+            await votingTally.waitForDeployment();
+
+            const now = await time.latest();
+            await expect(
+                votingTally.connect(relayer).configureElection(1, now - 1, now + 3600)
+            ).to.be.revertedWith("VotingTally: Caller is not the owner");
+            await expect(
+                votingTally.connect(ownerAccount).configureElection(1, now - 1, now + 3600)
+            ).to.not.be.reverted;
+        });
+
+        it("rejects zero owner, zero verifier, and zero candidates at deployment", async function () {
+            const [deployer] = await ethers.getSigners();
+            const VotingTally = await ethers.getContractFactory("VotingTally");
+            await expect(
+                VotingTally.deploy(ethers.ZeroAddress, ELECTION_ID, NUM_CANDIDATES, deployer.address)
+            ).to.be.revertedWith("VotingTally: Verifier cannot be zero address");
+            await expect(
+                VotingTally.deploy(deployer.address, ELECTION_ID, NUM_CANDIDATES, ethers.ZeroAddress)
+            ).to.be.revertedWith("VotingTally: Owner cannot be zero address");
+            await expect(
+                VotingTally.deploy(deployer.address, ELECTION_ID, 0, deployer.address)
+            ).to.be.revertedWith("VotingTally: Candidates must be positive");
+        });
+
         it("allows only the owner to set the Merkle root", async function () {
             const { votingTally, otherAccount } = await loadFixture(deployVotingTallyFixture);
 

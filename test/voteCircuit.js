@@ -45,7 +45,8 @@ describe("VoteCheck circuit v2 (real proofs)", function () {
         const votingTally = await VotingTally.deploy(
             await verifier.getAddress(),
             ELECTION_ID,
-            CANDIDATES
+            CANDIDATES,
+            owner.address
         );
         await votingTally.waitForDeployment();
 

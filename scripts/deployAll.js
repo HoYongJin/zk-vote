@@ -87,12 +87,22 @@ async function main() {
     console.log(`${verifierContractName} deployed to: ${verifierAddress}`);
 
     // --- 4. Deploy the VotingTally Contract ---
-    // MODIFIED: Pass all three required arguments to the constructor.
+    // AR-M4: the owner (configureElection rights) is an explicit address so
+    // the hot relayer key that signs this deployment holds no privileges.
+    // OWNER_ADDRESS should be a cold/ops key in staging/production; local
+    // dev may fall back to the deployer with a warning.
+    const [deployer] = await hre.ethers.getSigners();
+    const ownerAddress = process.env.OWNER_ADDRESS || deployer.address;
+    if (!process.env.OWNER_ADDRESS) {
+        console.warn("WARNING: OWNER_ADDRESS not set — falling back to the deployer (relayer) key as owner. Do NOT do this in staging/production (AR-M4).");
+    }
+
     const VotingTally = await hre.ethers.getContractFactory("VotingTally");
     const votingTally = await VotingTally.deploy(
         verifierAddress,
         electionId,
-        election.num_candidates // Pass the number of num_candidates
+        election.num_candidates, // Pass the number of num_candidates
+        ownerAddress
     );
     await votingTally.waitForDeployment();
     const votingTallyAddress = await votingTally.getAddress();
@@ -153,6 +163,7 @@ async function main() {
                 verifierAddress,
                 electionId.toString(),
                 election.num_candidates,
+                ownerAddress,
             ],
         });
         console.log("Verification successful for VotingTally");

@@ -72,9 +72,17 @@ contract VotingTally {
      * @param _verifierAddress The address of the deployed Groth16Verifier contract.
      * @param _electionId A unique ID for this election.
      * @param _numCandidates The total number of valid candidates (e.g., 3 for indices 0, 1, 2).
+     * @param _owner The address holding onlyOwner rights (configureElection).
+     *        Passed explicitly so the internet-exposed hot relayer key that
+     *        DEPLOYS the contract holds no owner privileges (AR-M4): a leaked
+     *        relayer key must not be able to front-run configureElection with
+     *        an attacker Merkle root.
      */
-    constructor(address _verifierAddress, uint256 _electionId, uint256 _numCandidates) {
-        owner = msg.sender;
+    constructor(address _verifierAddress, uint256 _electionId, uint256 _numCandidates, address _owner) {
+        require(_verifierAddress != address(0), "VotingTally: Verifier cannot be zero address");
+        require(_owner != address(0), "VotingTally: Owner cannot be zero address");
+        require(_numCandidates > 0, "VotingTally: Candidates must be positive");
+        owner = _owner;
         verifier = IVerifier(_verifierAddress);
         electionId = _electionId;
         numCandidates = _numCandidates;
