@@ -450,3 +450,38 @@ impl ZkArtifactRepo {
         .await?)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Contract deployments (Phase 11 metadata)
+// ---------------------------------------------------------------------------
+
+pub struct DeploymentRepo;
+
+impl DeploymentRepo {
+    /// Records the deployed pair. UNIQUE(election_id) makes a double record
+    /// surface as a unique violation rather than silently overwriting.
+    pub async fn record(
+        pool: &PgPool,
+        election_id: Uuid,
+        zk_artifact_id: Option<Uuid>,
+        verifier_address: &str,
+        voting_tally_address: &str,
+        chain_id: i64,
+        deploy_tx_hash: &str,
+    ) -> Result<Uuid, DbError> {
+        Ok(sqlx::query_scalar(
+            "INSERT INTO contract_deployments \
+                 (election_id, zk_artifact_id, verifier_address, voting_tally_address, \
+                  chain_id, deploy_tx_hash) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        )
+        .bind(election_id)
+        .bind(zk_artifact_id)
+        .bind(verifier_address)
+        .bind(voting_tally_address)
+        .bind(chain_id)
+        .bind(deploy_tx_hash)
+        .fetch_one(pool)
+        .await?)
+    }
+}
