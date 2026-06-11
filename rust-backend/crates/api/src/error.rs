@@ -25,6 +25,14 @@ pub enum ApiError {
     #[allow(dead_code)]
     #[error("{0}")]
     Conflict(String),
+    /// Route-specific Node error codes (REGISTRATION_PERIOD_ENDED,
+    /// OVER_CAPACITY, ...) that don't warrant their own variant.
+    #[error("{details}")]
+    Coded {
+        status: u16,
+        code: &'static str,
+        details: String,
+    },
     #[error("database error")]
     Database(#[from] zkvote_db::DbError),
     #[error("redis error")]
@@ -50,6 +58,10 @@ impl ApiError {
             Self::AdminRequired => (StatusCode::FORBIDDEN, "ADMIN_PRIVILEGES_REQUIRED"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
+            Self::Coded { status, code, .. } => (
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                code,
+            ),
             Self::Database(_) | Self::Redis(_) | Self::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "SERVER_ERROR")
             }

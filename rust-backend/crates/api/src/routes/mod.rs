@@ -3,6 +3,7 @@ pub mod elections;
 pub mod health;
 pub mod manage;
 pub mod me;
+pub mod voters;
 
 use crate::state::AppState;
 use axum::routing::{get, post};
@@ -24,6 +25,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/elections/:election_id/setZkDeploy",
             post(manage::set_zk_deploy),
+        )
+        .route(
+            "/api/elections/:election_id/voters",
+            post(voters::allowlist_voters),
+        )
+        .route(
+            "/api/elections/:election_id/register",
+            post(voters::register_voter),
         )
         .with_state(state)
 }

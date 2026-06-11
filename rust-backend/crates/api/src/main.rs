@@ -704,6 +704,211 @@ mod tests {
             .unwrap();
     }
 
+    /// Phase 9 gates: allowlist capacity + dedup, registration lifecycle
+    /// rejections, AR-H6 commitment re-binding.
+    /// Run: `cargo test -p zkvote-api -- --ignored`
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn voter_allowlist_and_registration_gates() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let voter_id = uuid::Uuid::new_v4();
+        let voter_email = format!("p9-voter-{voter_id}@example.com");
+        let voter_token = mint_token(
+            &voter_id.to_string(),
+            &voter_email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        // depth 2 -> Merkle capacity 4 (AR-H2 gate material).
+        let election = zkvote_db::repos::ElectionRepo::create(
+            &pool,
+            &zkvote_db::repos::NewElection {
+                name: format!("p9 election {voter_id}"),
+                merkle_tree_depth: 2,
+                candidates: vec!["A".to_string(), "B".to_string()],
+                registration_end_time: now + Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        let base = format!("/api/elections/{}", election.id);
+
+        // Five emails exceed capacity 4 -> OVER_CAPACITY, nothing inserted.
+        let many: Vec<String> = (0..5)
+            .map(|i| format!("p9-{i}-{voter_id}@example.com"))
+            .collect();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/voters"),
+            &admin_token,
+            serde_json::json!({ "emails": many }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "expected OVER_CAPACITY: {json}"
+        );
+        assert_eq!(json["error"], "OVER_CAPACITY");
+
+        // Three valid + one duplicate + one invalid -> summary counts.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/voters"),
+            &admin_token,
+            serde_json::json!({ "emails": [voter_email, voter_email.to_uppercase(), "not-an-email", format!("p9-x-{voter_id}@example.com")] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "allowlist failed: {json}");
+        assert_eq!(json["summary"]["newly_registered_count"], 2);
+        assert_eq!(json["summary"]["duplicates_skipped_count"], 0);
+        assert_eq!(json["summary"]["invalid_format_skipped_count"], 1);
+
+        // Re-adding the same email reports a duplicate skip.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/voters"),
+            &admin_token,
+            serde_json::json!({ "emails": [voter_email] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["summary"]["duplicates_skipped_count"], 1);
+
+        // Registration: happy path stores the commitment.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &voter_token,
+            serde_json::json!({ "name": "Alice", "secretCommitment": "123" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "register failed: {json}");
+
+        // Another user on the same allowlist row -> ALREADY_REGISTERED.
+        let other_token = mint_token(
+            &uuid::Uuid::new_v4().to_string(),
+            &voter_email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &other_token,
+            serde_json::json!({ "name": "Mallory", "secretCommitment": "999" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ALREADY_REGISTERED");
+
+        // AR-H6: the SAME user re-binds a fresh commitment before finalize.
+        let (status, _) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &voter_token,
+            serde_json::json!({ "name": "Alice", "secretCommitment": "0x1c8" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT user_secret_commitment FROM voters WHERE election_id = $1 AND user_id = $2",
+        )
+        .bind(election.id)
+        .bind(voter_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("456"),
+            "0x1c8 == 456 must be re-bound"
+        );
+
+        // Not on the allowlist -> 403.
+        let stranger_token = mint_token(
+            &uuid::Uuid::new_v4().to_string(),
+            "stranger@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &stranger_token,
+            serde_json::json!({ "name": "S", "secretCommitment": "1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["error"], "NOT_ON_VOTER_LIST");
+
+        // After finalization both surfaces fail closed.
+        zkvote_db::repos::ElectionRepo::finalize_sync(
+            &pool,
+            election.id,
+            "42",
+            now + Duration::minutes(1),
+            now,
+            now + Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &voter_token,
+            serde_json::json!({ "name": "Alice", "secretCommitment": "789" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ALREADY_FINALIZED");
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/voters"),
+            &admin_token,
+            serde_json::json!({ "emails": [format!("late-{voter_id}@example.com")] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ALREADY_FINALIZED");
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn api_error_shape_matches_node_contract() {
         let response = axum::response::IntoResponse::into_response(error::ApiError::Validation(
