@@ -10,3 +10,4 @@ thiserror.workspace = true
 time.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
+num-bigint.workspace = true

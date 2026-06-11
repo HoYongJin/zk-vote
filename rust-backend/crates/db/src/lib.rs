@@ -1,4 +1,8 @@
+pub mod repos;
+
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -6,6 +10,41 @@ use thiserror::Error;
 pub enum DbError {
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
+}
+
+impl DbError {
+    /// True when the underlying error is a Postgres unique-constraint
+    /// violation (SQLSTATE 23505) — duplicate voter e-mail, duplicate
+    /// nullifier, etc.
+    pub fn is_unique_violation(&self) -> bool {
+        if let Self::Sqlx(sqlx::Error::Database(db)) = self {
+            db.code().as_deref() == Some("23505")
+        } else {
+            false
+        }
+    }
+}
+
+pub type Tx = sqlx::Transaction<'static, sqlx::Postgres>;
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + 'a>>;
+
+/// Runs a multi-statement state change atomically: commits on Ok, rolls back
+/// on Err. Used for lifecycle steps that must not partially apply.
+pub async fn with_transaction<T, F>(pool: &PgPool, operation: F) -> Result<T, DbError>
+where
+    F: for<'t> FnOnce(&'t mut Tx) -> BoxFut<'t, T>,
+{
+    let mut tx = pool.begin().await?;
+    match operation(&mut tx).await {
+        Ok(value) => {
+            tx.commit().await?;
+            Ok(value)
+        }
+        Err(err) => {
+            let _ = tx.rollback().await;
+            Err(err)
+        }
+    }
 }
 
 // sqlx defaults to a 30s acquire timeout, which turns a down database into

@@ -3168,8 +3168,12 @@ dependencies = [
 name = "zkvote-db"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sqlx",
  "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "uuid",
  "zkvote-domain",
 ]
 
@@ -3177,6 +3181,7 @@ dependencies = [
 name = "zkvote-domain"
 version = "0.1.0"
 dependencies = [
+ "num-bigint",
  "serde",
  "thiserror 1.0.69",
  "time",

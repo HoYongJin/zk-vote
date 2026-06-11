@@ -5,6 +5,12 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
 zkvote-domain = { path = "../domain" }
+
+[dev-dependencies]
+tokio.workspace = true

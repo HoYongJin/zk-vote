@@ -22,7 +22,7 @@ serde_json = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "json", "macros"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 time = { version = "0.3", features = ["serde"] }
@@ -31,5 +31,6 @@ utoipa = { version = "5", features = ["axum_extras", "uuid"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "util"] }
 http-body-util = "0.1"
+num-bigint = "0.4"
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
