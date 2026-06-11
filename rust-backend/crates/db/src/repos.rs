@@ -485,3 +485,46 @@ impl DeploymentRepo {
         .await?)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Finalization jobs (Phase 12 retry-safe status trail)
+// ---------------------------------------------------------------------------
+
+pub struct JobRepo;
+
+impl JobRepo {
+    pub async fn create(
+        pool: &PgPool,
+        election_id: Uuid,
+        desired_merkle_root: &str,
+    ) -> Result<Uuid, DbError> {
+        Ok(sqlx::query_scalar(
+            "INSERT INTO finalization_jobs (election_id, desired_merkle_root, status) \
+             VALUES ($1, $2, 'pending') RETURNING id",
+        )
+        .bind(election_id)
+        .bind(desired_merkle_root)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    pub async fn set_status(
+        pool: &PgPool,
+        job_id: Uuid,
+        status: &str,
+        tx_hash: Option<&str>,
+        error_message: Option<&str>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE finalization_jobs SET status = $2, tx_hash = COALESCE($3, tx_hash), \
+                 error_message = $4 WHERE id = $1",
+        )
+        .bind(job_id)
+        .bind(status)
+        .bind(tx_hash)
+        .bind(error_message)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}

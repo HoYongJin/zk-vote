@@ -1,0 +1,353 @@
+//! Phase 12: recoverable finalization (port of the post-H4 Node semantics).
+//!
+//! Order of operations is the safety property:
+//!   1. durably close registration in Postgres (fail-closed across crashes)
+//!   2. snapshot registered commitments and build the Merkle root (AR-H7
+//!      bit-exact tree)
+//!   3. configureElection on-chain (owner key, AR-M4), idempotent when the
+//!      contract is already configured with the same root
+//!   4. revalidate the snapshot, then sync the DB exactly once
+//! A finalization_jobs row tracks every step for retry/audit.
+
+use crate::auth::AdminUser;
+use crate::error::ApiError;
+use crate::state::AppState;
+use axum::extract::{Path, State};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
+use zkvote_chain::{configure_election, connect_election, ChainConfig, ChainError};
+use zkvote_db::repos::{ElectionRepo, JobRepo};
+use zkvote_db::{with_transaction, DbError, Tx};
+use zkvote_domain::services::{check_finalization, FinalizationCheck, FinalizationRejection};
+use zkvote_zkp::merkle::FixedMerkleTree;
+
+fn coded(status: u16, code: &'static str, details: impl Into<String>) -> ApiError {
+    ApiError::Coded {
+        status,
+        code,
+        details: details.into(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FinalizeBody {
+    #[serde(rename = "voteEndTime")]
+    pub vote_end_time: Option<String>,
+    /// AR-M7: the voting period is immutable on-chain; exceeding the
+    /// configured maximum duration requires this explicit confirmation.
+    #[serde(rename = "confirmExtendedDuration", default)]
+    pub confirm_extended_duration: bool,
+}
+
+#[derive(Serialize)]
+pub struct FinalizeResponse {
+    pub success: bool,
+    pub message: String,
+    #[serde(rename = "merkleRoot")]
+    pub merkle_root: String,
+}
+
+struct Snapshot {
+    leaves: Vec<String>,
+    registration_closed_at: OffsetDateTime,
+}
+
+async fn close_and_snapshot(
+    tx: &mut Tx,
+    election_id: Uuid,
+    now: OffsetDateTime,
+    vote_end: OffsetDateTime,
+) -> Result<Result<Snapshot, ApiError>, DbError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(election_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+
+    let row: Option<(Option<String>, Option<String>, OffsetDateTime)> = sqlx::query_as(
+        "SELECT contract_address, merkle_root, registration_end_time \
+         FROM elections WHERE id = $1",
+    )
+    .bind(election_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((contract_address, merkle_root, registration_end)) = row else {
+        return Ok(Err(coded(
+            404,
+            "ELECTION_NOT_FOUND",
+            format!("Election with ID {election_id} not found."),
+        )));
+    };
+
+    let registered: Vec<String> = sqlx::query_scalar(
+        "SELECT user_secret_commitment FROM voters \
+         WHERE election_id = $1 AND user_secret_commitment IS NOT NULL \
+         ORDER BY id",
+    )
+    .bind(election_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    if let Err(rejection) = check_finalization(&FinalizationCheck {
+        now,
+        contract_deployed: contract_address.is_some(),
+        already_finalized: merkle_root.is_some(),
+        registered_voters: registered.len() as u64,
+        vote_end,
+    }) {
+        let (status, code, details): (u16, &'static str, String) = match rejection {
+            FinalizationRejection::ContractNotDeployed => (
+                400,
+                "STATE_ERROR",
+                "The smart contract for this election has not been deployed yet.".into(),
+            ),
+            FinalizationRejection::AlreadyFinalized => (
+                409,
+                "ALREADY_FINALIZED",
+                "This election's registration period has already been finalized.".into(),
+            ),
+            FinalizationRejection::NoVotersRegistered => (
+                400,
+                "NO_VOTERS_REGISTERED",
+                "Cannot finalize: No voters have completed their registration.".into(),
+            ),
+            FinalizationRejection::VoteEndNotInFuture => (
+                400,
+                "VALIDATION_ERROR",
+                "`voteEndTime` must be set in the future.".into(),
+            ),
+        };
+        return Ok(Err(coded(status, code, details)));
+    }
+
+    // Durable fail-closed close (audit H4/M3): even if the process crashes
+    // after the on-chain transaction, registration stays closed in Postgres.
+    let registration_closed_at = now.min(registration_end);
+    sqlx::query(
+        "UPDATE elections SET registration_end_time = $2 \
+         WHERE id = $1 AND merkle_root IS NULL",
+    )
+    .bind(election_id)
+    .bind(registration_closed_at)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(Ok(Snapshot {
+        leaves: registered,
+        registration_closed_at,
+    }))
+}
+
+async fn current_leaves(pool: &sqlx::PgPool, election_id: Uuid) -> Result<Vec<String>, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT user_secret_commitment FROM voters \
+         WHERE election_id = $1 AND user_secret_commitment IS NOT NULL \
+         ORDER BY id",
+    )
+    .bind(election_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+pub async fn finalize(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Path(election_id): Path<Uuid>,
+    Json(body): Json<FinalizeBody>,
+) -> Result<Json<FinalizeResponse>, ApiError> {
+    let now = OffsetDateTime::now_utc();
+    let vote_end = body
+        .vote_end_time
+        .as_deref()
+        .and_then(|raw| OffsetDateTime::parse(raw, &Rfc3339).ok())
+        .ok_or_else(|| {
+            ApiError::Validation(
+                "`voteEndTime` must be provided as a valid ISO 8601 date string.".to_string(),
+            )
+        })?;
+
+    // AR-M7: the configured voting period is immutable on-chain.
+    let max_duration = Duration::days(state.config.max_voting_duration_days);
+    if vote_end - now > max_duration && !body.confirm_extended_duration {
+        return Err(coded(
+            400,
+            "VOTING_DURATION_EXCEEDS_MAXIMUM",
+            format!(
+                "The requested voting window exceeds the {}-day maximum and the period is immutable on-chain. Pass `confirmExtendedDuration: true` to proceed deliberately.",
+                state.config.max_voting_duration_days
+            ),
+        ));
+    }
+
+    let rpc_url = state
+        .config
+        .rpc_url
+        .clone()
+        .ok_or_else(|| ApiError::Internal("SEPOLIA_RPC_URL is not configured".to_string()))?;
+    let relayer_key =
+        state.config.relayer_private_key.clone().ok_or_else(|| {
+            ApiError::Internal("RELAYER_PRIVATE_KEY is not configured".to_string())
+        })?;
+    let owner_key = state
+        .config
+        .owner_private_key
+        .clone()
+        .unwrap_or_else(|| relayer_key.clone());
+    let chain = ChainConfig {
+        rpc_url,
+        relayer_private_key: relayer_key,
+    };
+
+    // Step 1+2: durably close registration and snapshot, atomically.
+    let snapshot: Result<Snapshot, ApiError> = with_transaction(&state.pg, move |tx| {
+        Box::pin(async move { close_and_snapshot(tx, election_id, now, vote_end).await })
+    })
+    .await?;
+    let snapshot = snapshot?;
+
+    let tree = FixedMerkleTree::build(merkle_depth(&state, election_id).await?, &snapshot.leaves)
+        .map_err(|err| ApiError::Internal(format!("Merkle build failed: {err}")))?;
+    let root = tree.root();
+
+    let job_id = JobRepo::create(&state.pg, election_id, &root).await?;
+
+    // Step 3: on-chain configuration (idempotent recovery path included).
+    let election = ElectionRepo::find(&state.pg, election_id)
+        .await?
+        .ok_or_else(|| coded(404, "ELECTION_NOT_FOUND", "Election vanished mid-flight."))?;
+    let contract_address = election
+        .contract_address
+        .as_deref()
+        .and_then(|addr| addr.parse().ok())
+        .ok_or_else(|| coded(400, "STATE_ERROR", "Contract address is missing/invalid."))?;
+    let onchain = connect_election(&chain, contract_address)
+        .map_err(|err| ApiError::Internal(format!("chain connect failed: {err}")))?;
+
+    let root_u256 = alloy::primitives::U256::from_str_radix(&root, 10)
+        .map_err(|err| ApiError::Internal(format!("root parse failed: {err}")))?;
+
+    macro_rules! chain_try {
+        ($expr:expr) => {
+            match $expr {
+                Ok(value) => value,
+                Err(err) => return Err(chain_api_error(&state, job_id, err).await),
+            }
+        };
+    }
+
+    let (voting_start, voting_end_final, tx_hash) = if chain_try!(onchain.configured().await) {
+        // Recovery: a previous attempt configured the contract but failed
+        // before the DB sync. Reconcile only when the root matches.
+        let onchain_root = chain_try!(onchain.merkle_root().await);
+        if onchain_root != root_u256 {
+            JobRepo::set_status(
+                &state.pg,
+                job_id,
+                "failed",
+                None,
+                Some("on-chain root mismatch"),
+            )
+            .await?;
+            return Err(coded(
+                409,
+                "ON_CHAIN_STATE_MISMATCH",
+                "The contract is already configured with a different Merkle root. Manual reconciliation is required.",
+            ));
+        }
+        let start = chain_try!(onchain.voting_start_time().await);
+        let end = chain_try!(onchain.voting_end_time().await);
+        (from_unix(start)?, from_unix(end)?, None)
+    } else {
+        JobRepo::set_status(&state.pg, job_id, "onchain_sent", None, None).await?;
+        let tx_hash = chain_try!(
+            configure_election(
+                &chain,
+                &owner_key,
+                contract_address,
+                root_u256,
+                alloy::primitives::U256::from(now.unix_timestamp() as u64),
+                alloy::primitives::U256::from(vote_end.unix_timestamp() as u64),
+            )
+            .await
+        );
+        JobRepo::set_status(&state.pg, job_id, "onchain_confirmed", Some(&tx_hash), None).await?;
+        (now, vote_end, Some(tx_hash))
+    };
+
+    // Step 4: revalidate the snapshot before the DB sync (audit H4).
+    let revalidated = current_leaves(&state.pg, election_id).await?;
+    if revalidated != snapshot.leaves {
+        JobRepo::set_status(&state.pg, job_id, "failed", None, Some("snapshot changed")).await?;
+        return Err(coded(
+            500,
+            "FINALIZATION_SNAPSHOT_CHANGED",
+            "On-chain finalization succeeded, but the voter snapshot changed before database synchronization. Manual reconciliation is required.",
+        ));
+    }
+
+    let synced = ElectionRepo::finalize_sync(
+        &state.pg,
+        election_id,
+        &root,
+        snapshot.registration_closed_at,
+        voting_start,
+        voting_end_final,
+    )
+    .await?;
+    if !synced {
+        JobRepo::set_status(&state.pg, job_id, "failed", None, Some("db sync raced")).await?;
+        return Err(coded(
+            500,
+            "FINALIZATION_DB_SYNC_FAILED",
+            "On-chain finalization succeeded, but the database row was already finalized by another writer.",
+        ));
+    }
+    JobRepo::set_status(&state.pg, job_id, "db_synced", tx_hash.as_deref(), None).await?;
+
+    Ok(Json(FinalizeResponse {
+        success: true,
+        message: "Election finalized and voting has started successfully.".to_string(),
+        merkle_root: root,
+    }))
+}
+
+async fn merkle_depth(state: &AppState, election_id: Uuid) -> Result<usize, ApiError> {
+    let depth: Option<i32> =
+        sqlx::query_scalar("SELECT merkle_tree_depth FROM elections WHERE id = $1")
+            .bind(election_id)
+            .fetch_optional(&state.pg)
+            .await
+            .map_err(zkvote_db::DbError::from)?;
+    Ok(depth.unwrap_or(0).max(0) as usize)
+}
+
+fn from_unix(value: alloy::primitives::U256) -> Result<OffsetDateTime, ApiError> {
+    let secs: i64 = value
+        .try_into()
+        .map_err(|_| ApiError::Internal("on-chain timestamp out of range".to_string()))?;
+    OffsetDateTime::from_unix_timestamp(secs)
+        .map_err(|err| ApiError::Internal(format!("invalid on-chain timestamp: {err}")))
+}
+
+/// Classifies chain failures into the Node error vocabulary and records the
+/// job failure. Reverts are permanent (ON_CHAIN_ERROR); transport errors are
+/// retryable (502).
+async fn chain_api_error(state: &AppState, job_id: Uuid, err: ChainError) -> ApiError {
+    let retryable = err.is_retryable();
+    let _ = JobRepo::set_status(&state.pg, job_id, "failed", None, Some(&err.to_string())).await;
+    if retryable {
+        coded(
+            502,
+            "CHAIN_UNAVAILABLE",
+            "The blockchain RPC is unreachable; the finalization can be retried.",
+        )
+    } else {
+        coded(
+            500,
+            "ON_CHAIN_ERROR",
+            format!("Smart contract execution failed: {err}"),
+        )
+    }
+}

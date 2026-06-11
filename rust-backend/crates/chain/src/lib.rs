@@ -24,6 +24,8 @@ sol! {
         function merkleRoot() external view returns (uint256);
         function electionId() external view returns (uint256);
         function numCandidates() external view returns (uint256);
+        function votingStartTime() external view returns (uint256);
+        function votingEndTime() external view returns (uint256);
         function usedNullifiers(uint256 nullifier) external view returns (bool);
         function voteCounts(uint256 candidate) external view returns (uint256);
         function configureElection(uint256 _root, uint256 _startTime, uint256 _endTime) external;
@@ -195,6 +197,18 @@ impl<P: Provider + Clone> ElectionOnChain<P> {
 
     pub async fn merkle_root(&self) -> Result<U256, ChainError> {
         self.contract.merkleRoot().call().await.map_err(classify)
+    }
+
+    pub async fn voting_start_time(&self) -> Result<U256, ChainError> {
+        self.contract
+            .votingStartTime()
+            .call()
+            .await
+            .map_err(classify)
+    }
+
+    pub async fn voting_end_time(&self) -> Result<U256, ChainError> {
+        self.contract.votingEndTime().call().await.map_err(classify)
     }
 
     pub async fn nullifier_used(&self, nullifier: U256) -> Result<bool, ChainError> {

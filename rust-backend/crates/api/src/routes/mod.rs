@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod elections;
+pub mod finalize;
 pub mod health;
 pub mod manage;
 pub mod me;
@@ -33,6 +34,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/elections/:election_id/register",
             post(voters::register_voter),
+        )
+        .route(
+            "/api/elections/:election_id/finalize",
+            post(finalize::finalize),
         )
         .with_state(state)
 }

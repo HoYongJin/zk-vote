@@ -15,6 +15,15 @@ pub struct AppConfig {
     pub supabase_issuer: Option<String>,
     /// Expected token audience (Supabase default role audience).
     pub supabase_audience: String,
+    /// Ethereum RPC endpoint (finalize/submit relaying).
+    pub rpc_url: Option<String>,
+    /// Hot relayer key — deploys and relays, holds no owner rights (AR-M4).
+    pub relayer_private_key: Option<String>,
+    /// Contract-owner key, used only by finalize's configureElection.
+    pub owner_private_key: Option<String>,
+    /// AR-M7: finalize rejects voting windows longer than this without an
+    /// explicit confirmation field (the period is immutable on-chain).
+    pub max_voting_duration_days: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +80,12 @@ impl AppConfig {
             supabase_issuer,
             supabase_audience: get("SUPABASE_JWT_AUDIENCE")
                 .unwrap_or_else(|| "authenticated".to_string()),
+            rpc_url: get("SEPOLIA_RPC_URL").or_else(|| get("RPC_URL")),
+            relayer_private_key: get("RELAYER_PRIVATE_KEY").or_else(|| get("PRIVATE_KEY")),
+            owner_private_key: get("OWNER_PRIVATE_KEY"),
+            max_voting_duration_days: get("MAX_VOTING_DURATION_DAYS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
         })
     }
 }

@@ -95,6 +95,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
+    use time::format_description::well_known::Rfc3339 as Rfc3339Fmt;
     use tower::ServiceExt;
 
     fn test_state() -> AppState {
@@ -892,6 +893,209 @@ mod tests {
             &format!("{base}/voters"),
             &admin_token,
             serde_json::json!({ "emails": [format!("late-{voter_id}@example.com")] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ALREADY_FINALIZED");
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// Phase 12 gates: durable+recoverable finalize against docker PG AND a
+    /// local hardhat node. Start both first:
+    ///   bash scripts/local/smoke.sh && npx hardhat node
+    /// Run: `cargo test -p zkvote-api -- --ignored finalize`
+    #[tokio::test]
+    #[ignore = "requires docker PG and a local hardhat node"]
+    async fn finalize_configures_chain_and_syncs_db_once() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+        use zkvote_db::repos::{ElectionRepo, NewElection, VoterRepo};
+
+        const RPC: &str = "http://127.0.0.1:8545";
+        const RELAYER_KEY: &str =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        const OWNER_KEY: &str =
+            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+        const OWNER_ADDR: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+        fn bytecode(rel: &str) -> Vec<u8> {
+            let path = format!("{}/../../../{rel}", env!("CARGO_MANIFEST_DIR"));
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let hex = json["bytecode"].as_str().unwrap().trim_start_matches("0x");
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect()
+        }
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let jwks = jwks_url.clone();
+        let db = database_url.to_string();
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some(db.clone()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "SUPABASE_JWKS_URL" => Some(jwks.clone()),
+                "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
+                "SEPOLIA_RPC_URL" => Some(RPC.to_string()),
+                "PRIVATE_KEY" => Some(RELAYER_KEY.to_string()),
+                "OWNER_PRIVATE_KEY" => Some(OWNER_KEY.to_string()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let auth_ctx = Some(Arc::new(AuthContext::new(
+            jwks_url,
+            config.supabase_issuer.clone(),
+            config.supabase_audience.clone(),
+        )));
+        let state = AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open("redis://localhost:1").unwrap(),
+            auth: auth_ctx,
+        };
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        // Election with two registered commitments (H(1), H(123) — the
+        // AR-H7 vector values).
+        let election = ElectionRepo::create(
+            &pool,
+            &NewElection {
+                name: format!("p12 election {admin_id}"),
+                merkle_tree_depth: 4,
+                candidates: vec!["A".to_string(), "B".to_string()],
+                registration_end_time: now + Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        for (i, secret) in ["1", "123"].iter().enumerate() {
+            let email = format!("p12-{i}-{admin_id}@example.com");
+            VoterRepo::insert_allowlisted(&pool, election.id, &email)
+                .await
+                .unwrap();
+            VoterRepo::bind_registration(
+                &pool,
+                election.id,
+                &email,
+                uuid::Uuid::new_v4(),
+                "V",
+                &zkvote_zkp::poseidon::hash1(secret).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Deploy the contracts and bind the address (relayer deploys,
+        // separate owner per AR-M4).
+        let chain_config = zkvote_chain::ChainConfig {
+            rpc_url: RPC.to_string(),
+            relayer_private_key: RELAYER_KEY.to_string(),
+        };
+        let deployed = zkvote_chain::deploy_election(
+            &chain_config,
+            bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+            bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+            zkvote_domain::services::election_id_to_field(&election.id)
+                .to_string()
+                .parse()
+                .unwrap(),
+            alloy::primitives::U256::from(2u64),
+            OWNER_ADDR.parse().unwrap(),
+        )
+        .await
+        .expect("deploy failed — is `npx hardhat node` running?");
+        ElectionRepo::set_contract_address(
+            &pool,
+            election.id,
+            &format!("{:#x}", deployed.voting_tally_address),
+            &format!("{:#x}", deployed.verifier_address),
+        )
+        .await
+        .unwrap();
+
+        // AR-M7 duration gate (checked before any chain interaction).
+        let too_long = (now + Duration::days(60)).format(&Rfc3339Fmt).unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{}/finalize", election.id),
+            &admin_token,
+            serde_json::json!({ "voteEndTime": too_long }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "duration gate: {json}");
+        assert_eq!(json["error"], "VOTING_DURATION_EXCEEDS_MAXIMUM");
+
+        // Happy path.
+        let vote_end = (now + Duration::hours(2)).format(&Rfc3339Fmt).unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{}/finalize", election.id),
+            &admin_token,
+            serde_json::json!({ "voteEndTime": vote_end }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "finalize failed: {json}");
+        let root = json["merkleRoot"].as_str().unwrap().to_string();
+
+        // DB synced exactly once with the same root the chain holds.
+        let db_root: Option<String> =
+            sqlx::query_scalar("SELECT merkle_root FROM elections WHERE id = $1")
+                .bind(election.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(db_root.as_deref(), Some(root.as_str()));
+        let onchain =
+            zkvote_chain::connect_election(&chain_config, deployed.voting_tally_address).unwrap();
+        assert_eq!(
+            onchain.merkle_root().await.unwrap().to_string(),
+            root,
+            "on-chain root must equal the DB root"
+        );
+        let job_status: String = sqlx::query_scalar(
+            "SELECT status FROM finalization_jobs WHERE election_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(election.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(job_status, "db_synced");
+
+        // Idempotence: a second finalize is rejected, root unchanged.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{}/finalize", election.id),
+            &admin_token,
+            serde_json::json!({ "voteEndTime": vote_end }),
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);

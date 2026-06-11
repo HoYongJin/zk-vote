@@ -20,7 +20,10 @@ jsonwebtoken.workspace = true
 reqwest.workspace = true
 time.workspace = true
 uuid.workspace = true
+zkvote-chain = { path = "../chain" }
 zkvote-db = { path = "../db" }
+zkvote-zkp = { path = "../zkp" }
+alloy.workspace = true
 zkvote-domain = { path = "../domain" }
 
 [dev-dependencies]

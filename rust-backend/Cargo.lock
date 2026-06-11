@@ -5888,6 +5888,7 @@ dependencies = [
 name = "zkvote-api"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "axum",
  "http-body-util",
  "jsonwebtoken",
@@ -5905,8 +5906,10 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "uuid",
+ "zkvote-chain",
  "zkvote-db",
  "zkvote-domain",
+ "zkvote-zkp",
 ]
 
 [[package]]
