@@ -25,7 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "json", "macros"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 uuid = { version = "1", features = ["serde", "v4"] }
-time = { version = "0.3", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "serde-well-known"] }
 alloy = { version = "1", default-features = false }
 utoipa = { version = "5", features = ["axum_extras", "uuid"] }
 tower = { version = "0.5", features = ["util"] }

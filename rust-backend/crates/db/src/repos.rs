@@ -290,3 +290,104 @@ impl SubmissionRepo {
         .await?)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Read-model rows for the Phase 7 list surfaces
+// ---------------------------------------------------------------------------
+
+/// Registerable election as seen by a non-admin voter (allowlist join).
+#[derive(Debug, sqlx::FromRow)]
+pub struct RegisterableElection {
+    #[sqlx(flatten)]
+    pub election: Election,
+    pub is_registered: bool,
+}
+
+/// Election with allowlist/registration counts (admin lists).
+#[derive(Debug, sqlx::FromRow)]
+pub struct ElectionWithCounts {
+    #[sqlx(flatten)]
+    pub election: Election,
+    pub total_voters: i64,
+    pub registered_voters: i64,
+}
+
+const COUNT_SUBSELECTS: &str = "\
+     (SELECT count(*) FROM voters v2 WHERE v2.election_id = e.id) AS total_voters, \
+     (SELECT count(*) FROM voters v2 WHERE v2.election_id = e.id AND v2.user_id IS NOT NULL) AS registered_voters";
+
+impl ElectionRepo {
+    /// Non-admin view: only elections where the voter's normalized e-mail is
+    /// allowlisted, with their registration status.
+    pub async fn list_registerable_for_email(
+        pool: &PgPool,
+        now: OffsetDateTime,
+        email: &str,
+    ) -> Result<Vec<RegisterableElection>, DbError> {
+        Ok(sqlx::query_as::<_, RegisterableElection>(
+            "SELECT e.*, (v.user_id IS NOT NULL) AS is_registered \
+             FROM elections e \
+             JOIN voters v ON v.election_id = e.id AND v.email = $2 \
+             WHERE e.registration_end_time > $1 AND e.merkle_root IS NULL \
+             ORDER BY e.registration_end_time",
+        )
+        .bind(now)
+        .bind(email)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Admin view of active voting elections, with voter counts.
+    pub async fn list_voting_with_counts(
+        pool: &PgPool,
+        now: OffsetDateTime,
+    ) -> Result<Vec<ElectionWithCounts>, DbError> {
+        let query = format!(
+            "SELECT e.*, {COUNT_SUBSELECTS} FROM elections e \
+             WHERE e.merkle_root IS NOT NULL AND e.completed = false \
+               AND e.voting_end_time IS NOT NULL AND e.voting_end_time > $1 \
+             ORDER BY e.voting_end_time"
+        );
+        Ok(sqlx::query_as::<_, ElectionWithCounts>(&query)
+            .bind(now)
+            .fetch_all(pool)
+            .await?)
+    }
+
+    /// Non-admin view: active voting elections where this user completed
+    /// registration, with voter counts.
+    pub async fn list_voting_for_user(
+        pool: &PgPool,
+        now: OffsetDateTime,
+        user_id: Uuid,
+    ) -> Result<Vec<ElectionWithCounts>, DbError> {
+        let query = format!(
+            "SELECT e.*, {COUNT_SUBSELECTS} FROM elections e \
+             JOIN voters v ON v.election_id = e.id AND v.user_id = $2 \
+             WHERE e.merkle_root IS NOT NULL AND e.completed = false \
+               AND e.voting_end_time IS NOT NULL AND e.voting_end_time > $1 \
+             ORDER BY e.voting_end_time"
+        );
+        Ok(sqlx::query_as::<_, ElectionWithCounts>(&query)
+            .bind(now)
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?)
+    }
+
+    /// Non-admin view: completed elections where this user was registered.
+    pub async fn list_completed_for_user(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<Election>, DbError> {
+        Ok(sqlx::query_as::<_, Election>(
+            "SELECT e.* FROM elections e \
+             JOIN voters v ON v.election_id = e.id AND v.user_id = $1 \
+             WHERE e.completed = true \
+             ORDER BY e.voting_end_time DESC NULLS LAST",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?)
+    }
+}

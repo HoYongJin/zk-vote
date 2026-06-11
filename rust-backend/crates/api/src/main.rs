@@ -335,6 +335,208 @@ mod tests {
             .unwrap();
     }
 
+    async fn get_json(
+        app: axum::Router,
+        path: &str,
+        bearer: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::get(path)
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn row_by_id<'a>(rows: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
+        rows.as_array().unwrap().iter().find(|row| row["id"] == id)
+    }
+
+    /// Phase 7 gate: the three read-only lists reproduce the Node visibility
+    /// rules and response shapes against seeded DB state.
+    /// Run explicitly: `cargo test -p zkvote-api -- --ignored`
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn read_only_lists_match_node_visibility_rules() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+        use zkvote_db::repos::{ElectionRepo, NewElection, VoterRepo};
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        let admin_id = uuid::Uuid::new_v4();
+        let voter_id = uuid::Uuid::new_v4();
+        let voter_email = format!("voter-{voter_id}@example.com");
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let new = |name: &str| NewElection {
+            name: format!("{name} {voter_id}"),
+            merkle_tree_depth: 4,
+            candidates: vec!["A".to_string(), "B".to_string()],
+            registration_end_time: now + Duration::hours(1),
+        };
+        // A: registration open, voter allowlisted but unregistered.
+        let a = ElectionRepo::create(&pool, &new("p7 reg-open"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, a.id, &voter_email)
+            .await
+            .unwrap();
+        // B: voting active, voter registered.
+        let b = ElectionRepo::create(&pool, &new("p7 voting"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, b.id, &voter_email)
+            .await
+            .unwrap();
+        VoterRepo::bind_registration(&pool, b.id, &voter_email, voter_id, "Voter", "123")
+            .await
+            .unwrap();
+        ElectionRepo::finalize_sync(
+            &pool,
+            b.id,
+            "42",
+            now + Duration::minutes(1),
+            now,
+            now + Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        // C: completed, voter registered.
+        let c = ElectionRepo::create(&pool, &new("p7 completed"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, c.id, &voter_email)
+            .await
+            .unwrap();
+        VoterRepo::bind_registration(&pool, c.id, &voter_email, voter_id, "Voter", "456")
+            .await
+            .unwrap();
+        ElectionRepo::finalize_sync(
+            &pool,
+            c.id,
+            "43",
+            now + Duration::minutes(1),
+            now - Duration::hours(2),
+            now - Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        ElectionRepo::mark_completed(&pool, c.id).await.unwrap();
+        // D: registration open, voter NOT allowlisted (admin-only visibility).
+        let d = ElectionRepo::create(&pool, &new("p7 hidden"))
+            .await
+            .unwrap();
+
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let voter_token = mint_token(
+            &voter_id.to_string(),
+            &voter_email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let a_id = a.id.to_string();
+        let b_id = b.id.to_string();
+        let c_id = c.id.to_string();
+        let d_id = d.id.to_string();
+
+        // /registerable — admin sees A and D without isRegistered.
+        let (status, rows) = get_json(
+            routes::router(state.clone()),
+            "/api/elections/registerable",
+            &admin_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let row_a = row_by_id(&rows, &a_id).expect("admin must see A");
+        assert!(row_by_id(&rows, &d_id).is_some(), "admin must see D");
+        assert!(row_a.get("isRegistered").is_none());
+        assert!(row_a["registration_end_time"].as_str().is_some());
+
+        // /registerable — voter sees only A, with isRegistered=false.
+        let (status, rows) = get_json(
+            routes::router(state.clone()),
+            "/api/elections/registerable",
+            &voter_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let row_a = row_by_id(&rows, &a_id).expect("voter must see allowlisted A");
+        assert_eq!(row_a["isRegistered"], false);
+        assert!(row_by_id(&rows, &d_id).is_none(), "voter must NOT see D");
+
+        // /finalized — admin sees B with voter counts.
+        let (status, rows) = get_json(
+            routes::router(state.clone()),
+            "/api/elections/finalized",
+            &admin_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let row_b = row_by_id(&rows, &b_id).expect("admin must see voting B");
+        assert_eq!(row_b["total_voters"], 1);
+        assert_eq!(row_b["registered_voters"], 1);
+        assert_eq!(row_b["num_candidates"], 2);
+
+        // /finalized — voter sees B (registered) but the completed C is gone.
+        let (status, rows) = get_json(
+            routes::router(state.clone()),
+            "/api/elections/finalized",
+            &voter_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(row_by_id(&rows, &b_id).is_some());
+        assert!(row_by_id(&rows, &c_id).is_none());
+
+        // /completed — both see C.
+        for token in [&admin_token, &voter_token] {
+            let (status, rows) = get_json(
+                routes::router(state.clone()),
+                "/api/elections/completed",
+                token,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(row_by_id(&rows, &c_id).is_some());
+        }
+
+        for id in [a.id, b.id, c.id, d.id] {
+            sqlx::query("DELETE FROM elections WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn api_error_shape_matches_node_contract() {
         let response = axum::response::IntoResponse::into_response(error::ApiError::Validation(

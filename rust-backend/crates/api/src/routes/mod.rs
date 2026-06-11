@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod elections;
 pub mod health;
 pub mod me;
 
@@ -14,5 +15,8 @@ pub fn router(state: AppState) -> Router {
         // /api/elections/:id/submit port) must NOT use the auth extractors.
         .route("/api/me", get(me::me))
         .route("/api/admin/ping", get(admin::ping))
+        .route("/api/elections/registerable", get(elections::registerable))
+        .route("/api/elections/finalized", get(elections::finalized))
+        .route("/api/elections/completed", get(elections::completed))
         .with_state(state)
 }
