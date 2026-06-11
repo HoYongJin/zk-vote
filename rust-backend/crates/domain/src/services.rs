@@ -98,6 +98,58 @@ pub fn check_allowlist_capacity(
 }
 
 // ---------------------------------------------------------------------------
+// Election creation input validation (Node: setVote.js, audit M4)
+// ---------------------------------------------------------------------------
+
+pub const MAX_SUPPORTED_MERKLE_DEPTH: u32 = 5;
+pub const MAX_SUPPORTED_CANDIDATES: usize = 5;
+
+/// Validates and normalizes admin election-creation input. Returns the
+/// trimmed name and trimmed candidate labels; every rejection is the
+/// human-readable `details` string Node pairs with VALIDATION_ERROR.
+pub fn validate_election_input(
+    name: &str,
+    merkle_tree_depth: u32,
+    candidates: &[String],
+    registration_end: OffsetDateTime,
+    now: OffsetDateTime,
+) -> Result<(String, Vec<String>), String> {
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err("`name` must be a non-empty string.".to_string());
+    }
+    if merkle_tree_depth == 0 {
+        return Err("`merkleTreeDepth` must be a positive integer.".to_string());
+    }
+    if merkle_tree_depth > MAX_SUPPORTED_MERKLE_DEPTH {
+        return Err(format!(
+            "`merkleTreeDepth` must be {MAX_SUPPORTED_MERKLE_DEPTH} or lower."
+        ));
+    }
+    if candidates.is_empty() || candidates.iter().any(|c| c.trim().is_empty()) {
+        return Err("`candidates` must be a non-empty array of strings.".to_string());
+    }
+    let normalized: Vec<String> = candidates.iter().map(|c| c.trim().to_string()).collect();
+    if normalized.len() > MAX_SUPPORTED_CANDIDATES {
+        return Err(format!(
+            "`candidates` must contain {MAX_SUPPORTED_CANDIDATES} or fewer entries."
+        ));
+    }
+    let mut keys: Vec<String> = normalized.iter().map(|c| c.to_lowercase()).collect();
+    keys.sort();
+    keys.dedup();
+    if keys.len() != normalized.len() {
+        return Err("`candidates` must not contain duplicate names.".to_string());
+    }
+    if registration_end <= now {
+        return Err(
+            "`regEndTime` must be a valid ISO 8601 date string set in the future.".to_string(),
+        );
+    }
+    Ok((trimmed_name.to_string(), normalized))
+}
+
+// ---------------------------------------------------------------------------
 // Finalization eligibility (Node: finalizeVote.js pre-checks)
 // ---------------------------------------------------------------------------
 
@@ -504,5 +556,37 @@ mod tests {
         assert_eq!(parse_field_element("123").unwrap().to_string(), "123");
         assert_eq!(parse_field_element("0x7b").unwrap().to_string(), "123");
         assert!(parse_field_element("not-a-number").is_err());
+    }
+
+    #[test]
+    fn election_input_validation_mirrors_node_m4_rules() {
+        let future = now() + Duration::hours(1);
+        let ok =
+            validate_election_input(" Election ", 4, &["  A ".into(), "b".into()], future, now())
+                .unwrap();
+        assert_eq!(ok.0, "Election");
+        assert_eq!(ok.1, vec!["A".to_string(), "b".to_string()]);
+
+        assert!(validate_election_input("  ", 4, &["A".into()], future, now()).is_err());
+        assert!(validate_election_input("E", 0, &["A".into()], future, now()).is_err());
+        assert!(validate_election_input("E", 6, &["A".into()], future, now()).is_err());
+        assert!(validate_election_input("E", 4, &[], future, now()).is_err());
+        // duplicate after trim, case-insensitive (audit M4)
+        assert!(validate_election_input(
+            "E",
+            4,
+            &["Alice".into(), " alice ".into()],
+            future,
+            now()
+        )
+        .is_err());
+        // candidate cap (audit M4)
+        let six: Vec<String> = (0..6).map(|i| format!("c{i}")).collect();
+        assert!(validate_election_input("E", 4, &six, future, now()).is_err());
+        // past deadline
+        assert!(
+            validate_election_input("E", 4, &["A".into()], now() - Duration::hours(1), now())
+                .is_err()
+        );
     }
 }

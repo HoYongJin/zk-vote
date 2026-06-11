@@ -537,6 +537,173 @@ mod tests {
             .unwrap();
     }
 
+    async fn post_json(
+        app: axum::Router,
+        path: &str,
+        bearer: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::post(path)
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// Phase 8 gates: creation validation (M4), invitation upsert
+    /// idempotency, deploy guard. Run: `cargo test -p zkvote-api -- --ignored`
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn admin_setup_routes_validate_and_guard() {
+        use auth::token::test_support::*;
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let voter_token = mint_token(
+            &uuid::Uuid::new_v4().to_string(),
+            "rando@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let future = (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        let valid_body = serde_json::json!({
+            "name": format!("p8 election {admin_id}"),
+            "merkleTreeDepth": 4,
+            "candidates": [" A ", "B"],
+            "regEndTime": future,
+        });
+
+        // Non-admin cannot create elections.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/elections/set",
+            &voter_token,
+            valid_body.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["error"], "ADMIN_PRIVILEGES_REQUIRED");
+
+        // Valid creation: 201 with Node response shape + trimmed candidates.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/elections/set",
+            &admin_token,
+            valid_body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "create failed: {json}");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["election"]["num_candidates"], 2);
+        assert_eq!(json["election"]["candidates"][0], "A");
+        let election_id = json["election"]["id"].as_str().unwrap().to_string();
+
+        // Malformed date is rejected (Phase 8 gate).
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/elections/set",
+            &admin_token,
+            serde_json::json!({
+                "name": "bad", "merkleTreeDepth": 4,
+                "candidates": ["A"], "regEndTime": "tomorrow-ish",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "VALIDATION_ERROR");
+
+        // Duplicate candidates are rejected (audit M4).
+        let (status, _) = post_json(
+            routes::router(state.clone()),
+            "/api/elections/set",
+            &admin_token,
+            serde_json::json!({
+                "name": "dup", "merkleTreeDepth": 4,
+                "candidates": ["Alice", " alice"], "regEndTime": future,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // setZkDeploy: no registered artifact set -> blocked (Phase 8 gate).
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{election_id}/setZkDeploy"),
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(json["details"]
+            .as_str()
+            .unwrap()
+            .contains("No registered ZK artifact set"));
+
+        // addAdmins: idempotent invitation upsert.
+        let invite_email = format!("invitee-{admin_id}@example.com");
+        for _ in 0..2 {
+            let (status, json) = post_json(
+                routes::router(state.clone()),
+                "/api/management/addAdmins",
+                &admin_token,
+                serde_json::json!({ "email": format!(" {} ", invite_email.to_uppercase()) }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            assert_eq!(json["promotedExistingUser"], false);
+        }
+        assert!(
+            zkvote_db::repos::AdminRepo::pending_invitation_exists(&pool, &invite_email)
+                .await
+                .unwrap()
+        );
+
+        sqlx::query("DELETE FROM elections WHERE id = $1::uuid")
+            .bind(&election_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1")
+            .bind(&invite_email)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn api_error_shape_matches_node_contract() {
         let response = axum::response::IntoResponse::into_response(error::ApiError::Validation(

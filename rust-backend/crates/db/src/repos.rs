@@ -391,3 +391,62 @@ impl ElectionRepo {
         .await?)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Admin invitations (Phase 8 surface; consumption lives in the auth layer)
+// ---------------------------------------------------------------------------
+
+pub struct AdminRepo;
+
+impl AdminRepo {
+    /// Idempotent invitation upsert (Node parity: `upsert onConflict email`).
+    /// Promotion happens at auth time (AR-L4 decision), not here.
+    pub async fn upsert_invitation(pool: &PgPool, email: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO admin_invitations (email) VALUES ($1) \
+             ON CONFLICT (email) DO NOTHING",
+        )
+        .bind(email)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn pending_invitation_exists(pool: &PgPool, email: &str) -> Result<bool, DbError> {
+        let found: Option<String> = sqlx::query_scalar(
+            "SELECT email::text FROM admin_invitations WHERE email = $1 AND accepted_at IS NULL",
+        )
+        .bind(email)
+        .fetch_optional(pool)
+        .await?;
+        Ok(found.is_some())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ZK artifacts (placeholder lookups until the Phase 10 pipeline lands)
+// ---------------------------------------------------------------------------
+
+pub struct ZkArtifactRepo;
+
+impl ZkArtifactRepo {
+    /// Finds a usable circom artifact set for a circuit shape. Until the
+    /// Phase 10 artifact pipeline populates this table, deployments through
+    /// the Rust API are blocked with a typed error (Phase 8 gate: missing
+    /// artifacts block deployment setup).
+    pub async fn find_by_shape(
+        pool: &PgPool,
+        merkle_tree_depth: i32,
+        num_candidates: i32,
+    ) -> Result<Option<Uuid>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM zk_artifacts \
+             WHERE backend = 'circom' AND merkle_tree_depth = $1 AND num_candidates = $2 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(merkle_tree_depth)
+        .bind(num_candidates)
+        .fetch_optional(pool)
+        .await?)
+    }
+}

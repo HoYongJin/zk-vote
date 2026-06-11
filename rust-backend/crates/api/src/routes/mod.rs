@@ -1,10 +1,11 @@
 pub mod admin;
 pub mod elections;
 pub mod health;
+pub mod manage;
 pub mod me;
 
 use crate::state::AppState;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 
 pub fn router(state: AppState) -> Router {
@@ -18,5 +19,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/elections/registerable", get(elections::registerable))
         .route("/api/elections/finalized", get(elections::finalized))
         .route("/api/elections/completed", get(elections::completed))
+        .route("/api/elections/set", post(manage::create_election))
+        .route("/api/management/addAdmins", post(manage::add_admins))
+        .route(
+            "/api/elections/:election_id/setZkDeploy",
+            post(manage::set_zk_deploy),
+        )
         .with_state(state)
 }
