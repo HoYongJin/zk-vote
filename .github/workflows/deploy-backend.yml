@@ -1,23 +1,21 @@
 # 워크플로우의 이름
 name: Deploy Backend to AWS EC2
 
-# 이 워크플로우가 언제 실행될지를 정의합니다.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 # 수행할 작업(job)들을 정의합니다.
 jobs:
   deploy:
     # 이 작업이 실행될 가상 환경을 지정합니다.
     runs-on: ubuntu-latest
+    environment: legacy-aws-production
 
     # 작업이 수행할 단계(step)들을 순서대로 나열합니다.
     steps:
       # 1단계: EC2에 접속하여 배포 스크립트를 실행
       - name: Deploy to EC2
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.AWS_USER }}

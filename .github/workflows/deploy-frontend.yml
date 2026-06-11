@@ -1,15 +1,12 @@
 name: Deploy Frontend to S3 and CloudFront
 
 on:
-  push:
-    branches:
-      - main # 또는 master 브랜치
-    paths:
-      - 'frontend/**' # frontend 폴더가 변경될 때만 실행
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment: legacy-aws-production
     defaults:
       run:
         working-directory: ./frontend # 모든 명령을 frontend 폴더에서 실행
