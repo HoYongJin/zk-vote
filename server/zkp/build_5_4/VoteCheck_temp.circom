@@ -1,7 +1,9 @@
 pragma circom 2.0.0;
 
 // Imports the Poseidon hash function from the circomlib library.
-include "../circomlib/circuits/poseidon.circom";
+// Resolved through circom's library path (`-l .../circomlib/circuits`, set in
+// setUpZk.sh), so circomlib only needs to be installed under node_modules.
+include "poseidon.circom";
 
 /*
 ==========================================================================
@@ -43,6 +45,13 @@ template MerkleProof(depth) {
 
     // 2. Iteratively compute the parent hash for each level of the tree.
     for (var i = 0; i < depth; i++) {
+        // Constrain each path index to be boolean (0 or 1). Without this, a
+        // prover controlling pathIndices and pathElements can fully control both
+        // Poseidon inputs at every level and forge membership for an arbitrary
+        // leaf (audit H1). The quadratic constraint x * (1 - x) === 0 holds only
+        // when x is 0 or 1.
+        pathIndices[i] * (1 - pathIndices[i]) === 0;
+
         term1_left[i] <== (1 - pathIndices[i]) * cur[i];
         term2_left[i] <== pathIndices[i] * pathElements[i];
         left[i] <== term1_left[i] + term2_left[i];
@@ -182,4 +191,11 @@ template Main(depth, numOptions) {
 // === CIRCUIT INSTANTIATION ===
 // Creates an instance of the Main circuit with specific parameters.
 // To change the system's configuration, you would modify these values and re-run the entire ZKP setup.
-component main = Main(5, 4);
+//
+// `election_id` is exposed as a PUBLIC input so the on-chain verifier can bind
+// the proof to a specific election (audit C1). With this declaration the public
+// signals become, in snarkjs order, the outputs followed by the public inputs:
+//   [root_out, vote_index, nullifier_hash, election_id]  (nPublic = 4)
+// setUpZk.sh rewrites the (depth, candidates) arguments while preserving this
+// `{public [election_id]}` declaration.
+component main {public [election_id]} = Main(5, 4);

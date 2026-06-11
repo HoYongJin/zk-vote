@@ -1,9 +1,12 @@
 node_modules
 .env
+.env.local
 server/zkp/tmp/
 server/zkp/input/
 server/zkp/circomlib/
 server/zkp/build/circuit_0000.zkey
+# Per-environment deployment state: binds deployed elections to artifact hashes (audit M5).
+server/zkp/artifact-manifest.json
 *.ptau
 zk-vote-key.pem
 build_3
@@ -23,3 +26,12 @@ test-proof-generator.js
 
 # Hardhat Ignition default folder for deployments against a local node
 ignition/deployments/chain-31337
+
+# Local zk-vote infra data
+.data/*
+!.data/zk-artifacts/
+.data/zk-artifacts/*
+!.data/zk-artifacts/.gitkeep
+
+# Rust build output
+rust-backend/target/
