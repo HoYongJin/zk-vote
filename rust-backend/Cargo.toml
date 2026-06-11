@@ -28,3 +28,6 @@ uuid = { version = "1", features = ["serde", "v4"] }
 time = { version = "0.3", features = ["serde"] }
 alloy = { version = "1", default-features = false }
 utoipa = { version = "5", features = ["axum_extras", "uuid"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "util"] }
+http-body-util = "0.1"

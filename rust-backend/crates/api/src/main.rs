@@ -1,55 +1,17 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+mod config;
+// The shared error type has no production call sites until the Phase 5+
+// business routes land; its contract is locked by tests below.
+#[allow(dead_code)]
+mod error;
+mod middleware;
+mod routes;
+mod state;
+
+use config::AppConfig;
 use redis::Client as RedisClient;
-use serde::Serialize;
-use sqlx::PgPool;
-use std::{env, net::SocketAddr, sync::Arc};
+use state::AppState;
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-#[derive(Clone)]
-struct AppState {
-    config: Arc<AppConfig>,
-    pg: PgPool,
-    redis: RedisClient,
-}
-
-#[derive(Debug)]
-struct AppConfig {
-    bind_addr: SocketAddr,
-    database_url: String,
-    redis_url: String,
-    artifact_store: String,
-}
-
-#[derive(Serialize)]
-struct HealthResponse {
-    status: &'static str,
-}
-
-#[derive(Serialize)]
-struct ReadinessResponse {
-    status: &'static str,
-    config_loaded: bool,
-    postgres: &'static str,
-    redis: &'static str,
-    artifact_store: String,
-}
-
-impl AppConfig {
-    fn from_env() -> Result<Self, String> {
-        let bind_addr = env::var("APP_BIND_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
-            .parse::<SocketAddr>()
-            .map_err(|err| format!("APP_BIND_ADDR is invalid: {err}"))?;
-
-        Ok(Self {
-            bind_addr,
-            database_url: env::var("DATABASE_URL")
-                .map_err(|_| "DATABASE_URL is required".to_string())?,
-            redis_url: env::var("REDIS_URL").map_err(|_| "REDIS_URL is required".to_string())?,
-            artifact_store: env::var("ARTIFACT_STORE").unwrap_or_else(|_| "local".to_string()),
-        })
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,61 +21,131 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Arc::new(AppConfig::from_env()?);
-    let pg = zkvote_db::connect(&config.database_url).await?;
+    // Lazy pool: the process starts (and /healthz answers) even when Postgres
+    // is briefly unavailable; /readyz keeps reporting the truth.
+    let pg = zkvote_db::connect_lazy(&config.database_url)?;
     let redis = RedisClient::open(config.redis_url.as_str())?;
     let bind_addr = config.bind_addr;
 
-    let state = AppState { config, pg, redis };
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .with_state(state);
+    let state = AppState {
+        config: config.clone(),
+        pg,
+        redis,
+    };
+
+    let (set_request_id, propagate_request_id) = middleware::request_id_layers();
+    let app = routes::router(state)
+        .layer(propagate_request_id)
+        .layer(middleware::trace_layer())
+        .layer(set_request_id)
+        .layer(middleware::cors_layer(&config.cors_allowed_origins));
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("zkvote-api listening on {bind_addr}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("zkvote-api shut down cleanly");
     Ok(())
 }
 
-async fn healthz() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
-}
-
-async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
-    let postgres_ok = zkvote_db::ping(&state.pg).await.is_ok();
-    let redis_ok = ping_redis(&state.redis).await.is_ok();
-    let status = if postgres_ok && redis_ok {
-        "ready"
-    } else {
-        "not_ready"
-    };
-    let http_status = if postgres_ok && redis_ok {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
+/// Resolves on SIGINT (ctrl-c) or SIGTERM (Cloud Run / container stop), so
+/// in-flight requests drain instead of being severed.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install ctrl-c handler");
     };
 
-    (
-        http_status,
-        Json(ReadinessResponse {
-            status,
-            config_loaded: true,
-            postgres: if postgres_ok { "ok" } else { "error" },
-            redis: if redis_ok { "ok" } else { "error" },
-            artifact_store: state.config.artifact_store.clone(),
-        }),
-    )
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("shutdown signal received");
 }
 
-async fn ping_redis(client: &RedisClient) -> redis::RedisResult<()> {
-    let mut conn = client.get_multiplexed_async_connection().await?;
-    let response: String = redis::cmd("PING").query_async(&mut conn).await?;
-    if response == "PONG" {
-        Ok(())
-    } else {
-        Err(redis::RedisError::from((
-            redis::ErrorKind::ResponseError,
-            "unexpected redis PING response",
-        )))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn test_state() -> AppState {
+        let config = Arc::new(
+            AppConfig::from_lookup(|name| match name {
+                "DATABASE_URL" => Some("postgres://localhost:1/unreachable".to_string()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn healthz_works_without_live_dependencies() {
+        let app = routes::router(test_state());
+        let response = app
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], br#"{"status":"ok"}"#);
+    }
+
+    #[tokio::test]
+    async fn responses_carry_a_request_id() {
+        let (set, propagate) = middleware::request_id_layers();
+        let app = routes::router(test_state()).layer(propagate).layer(set);
+        let response = app
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let request_id = response
+            .headers()
+            .get(middleware::REQUEST_ID_HEADER)
+            .expect("x-request-id header missing");
+        assert!(uuid::Uuid::parse_str(request_id.to_str().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn readyz_reports_unready_when_dependencies_are_down() {
+        let app = routes::router(test_state());
+        let response = app
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn api_error_shape_matches_node_contract() {
+        let response = axum::response::IntoResponse::into_response(error::ApiError::Validation(
+            "bad field".to_string(),
+        ));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "VALIDATION_ERROR");
+        assert_eq!(json["details"], "bad field");
     }
 }
