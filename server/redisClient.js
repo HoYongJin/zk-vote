@@ -1,16 +1,25 @@
 const Redis = require("ioredis");
 require("dotenv").config();
 
-// .env 파일에서 연결 정보를 가져와 Redis 클라이언트 인스턴스를 생성합니다.
-const redis = new Redis({
-    host: process.env.REDIS_HOST,
-    port: process.env.REDIS_PORT,
-    tls: {},
-    maxRetriesPerRequest: 3 // 연결 실패 시 재시도 횟수
-});
+const redisUrl = process.env.REDIS_URL;
+const redisOptions = {
+    maxRetriesPerRequest: 3
+};
+
+if (process.env.REDIS_TLS === "true" || (redisUrl && redisUrl.startsWith("rediss://"))) {
+    redisOptions.tls = {};
+}
+
+const redis = redisUrl
+    ? new Redis(redisUrl, redisOptions)
+    : new Redis({
+        ...redisOptions,
+        host: process.env.REDIS_HOST || "127.0.0.1",
+        port: Number(process.env.REDIS_PORT || 6379)
+    });
 
 redis.on('connect', () => {
-    console.log('Connected to AWS ElastiCache for Redis');
+    console.log('Connected to Redis');
 });
 
 redis.on('error', (err) => {
