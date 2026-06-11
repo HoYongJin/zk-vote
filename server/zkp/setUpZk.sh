@@ -99,8 +99,35 @@ echo "-> Generating proving key (zkey)..."
 echo "-> Contributing to the ceremony..."
 "$SNARKJS_BIN" zkey contribute \
     "${BUILD_DIR}/circuit_0000.zkey" \
-    "${BUILD_DIR}/circuit_final.zkey" \
+    "${BUILD_DIR}/circuit_0001.zkey" \
     --name="1st Contributor" -v -e="$(head -n 4096 /dev/urandom | openssl sha1)"
+
+# --- 8b. FINALIZE WITH A PUBLIC RANDOM BEACON (architecture review AR-H1) ---
+# A single operator-run contribution lets whoever knows its entropy forge
+# proofs. Finalizing with a PUBLIC beacon value (e.g. a published drand round
+# or a future block hash, supplied as BEACON_HEX) removes that trust:
+# anyone can re-verify the transcript. Staging/production elections MUST be
+# generated with BEACON_HEX set; local dev may omit it, and the artifact
+# manifest records which mode produced the zkey.
+if [ -n "${BEACON_HEX:-}" ]; then
+    echo "-> Finalizing zkey with public beacon ${BEACON_HEX:0:16}..."
+    "$SNARKJS_BIN" zkey beacon \
+        "${BUILD_DIR}/circuit_0001.zkey" \
+        "${BUILD_DIR}/circuit_final.zkey" \
+        "${BEACON_HEX}" 10 -n="Final beacon"
+    echo "{\"finalizedWithBeacon\": true, \"beaconHex\": \"${BEACON_HEX}\"}" > "${BUILD_DIR}/ceremony.json"
+else
+    echo "-> WARNING: no BEACON_HEX set — dev-only zkey (NOT acceptable for staging/production, AR-H1)."
+    mv "${BUILD_DIR}/circuit_0001.zkey" "${BUILD_DIR}/circuit_final.zkey"
+    echo '{"finalizedWithBeacon": false}' > "${BUILD_DIR}/ceremony.json"
+fi
+
+# --- 8c. VERIFY THE CEREMONY TRANSCRIPT (gate) ---
+echo "-> Verifying the zkey transcript against the circuit and ptau..."
+"$SNARKJS_BIN" zkey verify \
+    "${BUILD_DIR}/VoteCheck_temp.r1cs" \
+    "$PTAU_FILE" \
+    "${BUILD_DIR}/circuit_final.zkey"
 
 # --- 9. EXPORT VERIFICATION KEY & CONTRACT ---
 echo "-> Exporting verification key and contract..."

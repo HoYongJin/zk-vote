@@ -38,6 +38,7 @@ const proofRouter = require("./routes/proof");
 const submitZkRouter = require("./routes/submitZk");
 const completeVoteRouter = require('./routes/completeVote');
 const completedVoteRouter = require('./routes/completedVote');
+const artifactInfoRouter = require('./routes/artifactInfo');
 
 app.use('/api/zkp-files', express.static(path.join(__dirname, 'zkp')));
 app.use("/api/management/addAdmins", addAdminsRouter);
@@ -49,6 +50,7 @@ app.use("/api/elections/:election_id/setZkDeploy", setZkDeployRouther);
 app.use("/api/elections/:election_id/voters", registerByAdminRouter); // (관리자) 유권자 대량 등록: POST /api/elections/:id/voters
 app.use("/api/elections/:election_id/register", registerRouter); // 유권자 등록: POST /api/elections/:id/register
 app.use("/api/elections/:election_id/finalize", finalizeVoteRouter); // (관리자) 등록 마감: POST /api/elections/:id/finalize
+app.use("/api/elections/:election_id/artifact-info", artifactInfoRouter); // 아티팩트 해시/경로 (AR-M6 클라이언트 검증)
 app.use("/api/elections/:election_id/proof", proofRouter); // Merkle 증명 생성: POST /api/elections/:id/proof
 app.use("/api/elections/:election_id/submit", submitZkRouter); // ZK 증명 제출: POST /api/elections/:id/submit
 app.use('/api/elections/:election_id/complete', completeVoteRouter);

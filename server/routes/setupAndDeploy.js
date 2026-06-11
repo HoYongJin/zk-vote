@@ -245,6 +245,25 @@ router.post("/", authAdmin, async (req, res) => {
                 }
                 console.log(`[${election_id}] Verified that all required ZKP artifacts exist.`);
 
+                // AR-H1 gate: a zkey finalized without a public beacon is a
+                // dev-only artifact. With REQUIRE_BEACON=true (staging/
+                // production), refuse to deploy it.
+                if (process.env.REQUIRE_BEACON === "true") {
+                    const ceremonyPath = path.join(path.dirname(artifactPaths.zkeyPath), "ceremony.json");
+                    let ceremony = null;
+                    try {
+                        ceremony = JSON.parse(fs.readFileSync(ceremonyPath, "utf8"));
+                    } catch (err) {
+                        ceremony = null;
+                    }
+                    if (!ceremony || ceremony.finalizedWithBeacon !== true) {
+                        return res.status(409).json({
+                            error: "ZKEY_NOT_BEACON_FINALIZED",
+                            details: "The proving key was not finalized with a public random beacon. Regenerate with BEACON_HEX before deploying to staging/production (AR-H1)."
+                        });
+                    }
+                }
+
             } catch (scriptError) {
                 // execPromise rejects if the script exits with a non-zero code.
                 // The error object often contains stdout and stderr from the failed process.

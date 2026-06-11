@@ -12,6 +12,7 @@ import React, { useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from '../../api/axios'; // Our configured axios instance (baseURL: /api)
 import { getVoterSecret } from '../../utils/voterSecret';
+import { fetchVerifiedArtifact } from '../../utils/artifactIntegrity';
 
 // --- (Style definitions are omitted for brevity) ---
 const pageStyle = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '600px', margin: 'auto' };
@@ -94,23 +95,51 @@ function VotePage() {
                 election_id:  "0x" + electionId.replace(/-/g, "") 
             };
 
-            // --- 3. Get ZKP File Paths ---
-            // The baseURL is '/api' (set in GitHub Actions env var)
-            const baseURL = process.env.REACT_APP_API_BASE_URL; 
+            // --- 3. Fetch and VERIFY the proving artifacts (AR-M6) ---
+            // The wasm/zkey consume the plaintext voter secret, so the
+            // browser must refuse to prove when the served bytes differ from
+            // the deploy-time manifest hashes (audit M5).
+            const baseURL = process.env.REACT_APP_API_BASE_URL;
             const { merkle_tree_depth, num_candidates } = election;
-            // Construct the path to the ZKP files on the EC2 server (served via /api/zkp-files)
             const buildDir = `build_${merkle_tree_depth}_${num_candidates}`;
-            const wasmPath = `${baseURL}/zkp-files/${buildDir}/VoteCheck_temp_js/VoteCheck_temp.wasm`;
-            const zkeyPath = `${baseURL}/zkp-files/${buildDir}/circuit_final.zkey`;
-            
+
+            let workerPayload;
+            let artifactInfo = null;
+            try {
+                const infoResponse = await axios.get(`/elections/${electionId}/artifact-info`);
+                artifactInfo = infoResponse.data;
+            } catch (infoError) {
+                if (infoError.response?.status !== 404) {
+                    throw new Error(`아티팩트 정보를 가져오지 못했습니다: ${infoError.response?.data?.details || infoError.message}`);
+                }
+                // Pre-manifest election: no recorded hashes to verify against.
+                console.warn('[VotePage] No artifact hashes recorded for this election; falling back to UNVERIFIED artifact fetch.');
+            }
+
+            if (artifactInfo) {
+                setLoadingMessage('증명 아티팩트 무결성을 검증하는 중...');
+                const origin = baseURL.replace(/\/api\/?$/, '');
+                const [wasmData, zkeyData] = await Promise.all([
+                    fetchVerifiedArtifact(`${origin}${artifactInfo.wasmPath}`, artifactInfo.wasmSha256, '증명 회로(wasm)'),
+                    fetchVerifiedArtifact(`${origin}${artifactInfo.zkeyPath}`, artifactInfo.zkeySha256, '증명 키(zkey)'),
+                ]);
+                workerPayload = { inputs, wasmData, zkeyData };
+            } else {
+                workerPayload = {
+                    inputs,
+                    wasmPath: `${baseURL}/zkp-files/${buildDir}/VoteCheck_temp_js/VoteCheck_temp.wasm`,
+                    zkeyPath: `${baseURL}/zkp-files/${buildDir}/circuit_final.zkey`,
+                };
+            }
+
             setLoadingMessage(<>영지식 증명을 생성하는 중...<br/>(UI는 멈추지 않아요!)</>);
-            
+
             // --- 4. Start Web Worker for Proof Generation ---
             // Use `new URL()` to ensure Webpack handles the worker file correctly.
             const worker = new Worker(new URL('../../workers/proof.worker.js', import.meta.url));
-            
+
             // Send all necessary data to the worker
-            worker.postMessage({ inputs, wasmPath, zkeyPath });
+            worker.postMessage(workerPayload);
 
             // --- 5. Handle Worker Response (Proof Completion) ---
             worker.onmessage = async (event) => {

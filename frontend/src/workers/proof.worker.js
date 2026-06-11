@@ -22,22 +22,26 @@ import * as snarkjs from 'snarkjs';
  * @param {string} event.data.zkeyPath - The path to the circuit's final .zkey (proving key).
  */
 self.onmessage = async (event) => {
-    // Extract data from the main thread's message
-    const { inputs, wasmPath, zkeyPath } = event.data;
-    
-    // Log for debugging, showing the paths the worker is attempting to use.
+    // Extract data from the main thread's message. Preferred: integrity
+    // verified in-memory artifacts (wasmData/zkeyData, AR-M6); legacy
+    // fallback: URLs for pre-manifest elections.
+    const { inputs, wasmPath, zkeyPath, wasmData, zkeyData } = event.data;
+
+    const wasmInput = wasmData ? { type: 'mem', data: wasmData } : wasmPath;
+    const zkeyInput = zkeyData ? { type: 'mem', data: zkeyData } : zkeyPath;
+
     console.log(`[ZK Worker] Received job. Starting proof generation...`);
-    console.log(`[ZK Worker] WASM Path: ${wasmPath}`);
-    console.log(`[ZK Worker] ZKey Path: ${zkeyPath}`);
+    console.log(`[ZK Worker] WASM: ${wasmData ? `verified in-memory (${wasmData.length} bytes)` : wasmPath}`);
+    console.log(`[ZK Worker] ZKey: ${zkeyData ? `verified in-memory (${zkeyData.length} bytes)` : zkeyPath}`);
 
     try {
         // --- Heavy Computation ---
         // This is the core, CPU-intensive task.
         // It runs in this background thread, leaving the UI responsive.
         const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-        inputs,   // The circuit inputs (private + public)
-        wasmPath, // Path to the .wasm file
-        zkeyPath  // Path to the .zkey file
+        inputs,    // The circuit inputs (private + public)
+        wasmInput, // Verified bytes or path to the .wasm file
+        zkeyInput  // Verified bytes or path to the .zkey file
     );
     // --- Computation Complete ---
 
