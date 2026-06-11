@@ -7,6 +7,7 @@
 //!   3. configureElection on-chain (owner key, AR-M4), idempotent when the
 //!      contract is already configured with the same root
 //!   4. revalidate the snapshot, then sync the DB exactly once
+//!
 //! A finalization_jobs row tracks every step for retry/audit.
 
 use crate::auth::AdminUser;
