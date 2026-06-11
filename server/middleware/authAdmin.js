@@ -6,6 +6,7 @@
  */
 
 const supabase = require("../supabaseClient");
+const { promoteInvitedAdmin } = require("../utils/adminInvitations");
 
 /**
  * Express middleware to authenticate a request and verify admin privileges.
@@ -45,14 +46,27 @@ const authAdmin = async (req, res, next) => {
             });
         }
 
-        // 3. Check if the authenticated user exists in the 'Admins' table.
+        // 3. Consume a pending invitation, if one exists for this authenticated
+        // user's normalized email. This makes future-admin invitations effective
+        // on first admin-authenticated request instead of remaining inert.
+        try {
+            await promoteInvitedAdmin(user);
+        } catch (promotionError) {
+            console.error("Admin invitation promotion failed:", promotionError.message);
+            return res.status(500).json({
+                error: "ADMIN_INVITATION_PROMOTION_FAILED",
+                details: "Failed to apply a pending admin invitation."
+            });
+        }
+
+        // 4. Check if the authenticated user exists in the 'Admins' table.
         const { data: admin, error: adminError } = await supabase
             .from("Admins")
             .select("*")
             .eq("id", user.id)
             .single();
 
-        // 4. Handle errors or if the user is not found in the 'Admins' table.
+        // 5. Handle errors or if the user is not found in the 'Admins' table.
         //    (adminError) handles DB errors
         //    (!admin) handles the case where the user is valid but not an admin.
         if (adminError || !admin) {
@@ -62,11 +76,11 @@ const authAdmin = async (req, res, next) => {
             });
         }
 
-        // 5. Attach both user and admin objects to the request for downstream use.
+        // 6. Attach both user and admin objects to the request for downstream use.
         req.user = user;   // The standard Supabase user object
         req.admin = admin; // The user's profile from the 'Admins' table
         
-        // 6. If all checks pass, proceed to the next middleware or route handler.
+        // 7. If all checks pass, proceed to the next middleware or route handler.
         next();
 
     } catch (err) {

@@ -43,13 +43,28 @@ router.post("/", authAdmin, async (req, res) => {
         }
 
        // Check if the election is already marked as completed
-       if (election.completed === true) {
+        if (election.completed === true) {
            console.warn(`[${election_id}] Election is already marked as completed.`);
            return res.status(409).json({ // 409 Conflict
                error: "ALREADY_COMPLETED",
                details: "This election has already been marked as completed."
            });
        }
+
+        if (!election.voting_end_time) {
+            return res.status(400).json({
+                error: "VOTING_NOT_STARTED",
+                details: "This election does not have a voting end time yet."
+            });
+        }
+
+        const votingEndTime = new Date(election.voting_end_time);
+        if (now < votingEndTime) {
+            return res.status(403).json({
+                error: "VOTING_PERIOD_ACTIVE",
+                details: `Cannot complete the election before voting ends at ${votingEndTime.toISOString()}.`
+            });
+        }
 
         // --- 2. Update the election record in the database ---
         // Set the 'completed' flag to true.
@@ -58,6 +73,7 @@ router.post("/", authAdmin, async (req, res) => {
             .from("Elections")
             .update({ completed: true })
             .eq("id", election_id)
+            .eq("completed", false)
             .select('id, completed') // Select fields to confirm update
             .single(); // Expect one row to be updated
 

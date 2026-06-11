@@ -6,9 +6,11 @@
 
 const express = require("express");
 const router = express.Router({ mergeParams: true });
-const validator = require('validator');
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
+const { normalizeEmail } = require("../utils/email");
+const { isOnchainConfigured } = require("../utils/finalizationState");
+const { withElectionMerkleLock } = require("../utils/merkle");
 
 /**
  * @route   POST /api/elections/:election_id/voters
@@ -51,14 +53,16 @@ router.post("/", authAdmin, async (req, res) => {
     };
 
     // --- 3. Checking Input Emails ---
-    // Use validator for consistency and robustness. Deduplicate using a Set.
-    const uniqueValidEmails = Array.from(new Set(originalEmails.filter(email => {
-        if (typeof email === 'string' && validator.isEmail(email)) {
-            return true;
+    const normalizedEmails = [];
+    for (const email of originalEmails) {
+        const normalizedEmail = normalizeEmail(email);
+        if (normalizedEmail) {
+            normalizedEmails.push(normalizedEmail);
+        } else {
+            results.invalid_format_skipped.push(email);
         }
-        results.invalid_format_skipped.push(email);
-        return false;
-    })));
+    }
+    const uniqueValidEmails = Array.from(new Set(normalizedEmails));
 
     // If no valid emails remain after filtering.
     if (uniqueValidEmails.length === 0) {
@@ -71,11 +75,12 @@ router.post("/", authAdmin, async (req, res) => {
     }
 
     try {
+        return await withElectionMerkleLock(election_id, async () => {
         // --- 3. Pre-check Election Status ---
         // Ensure the election exists and the registration period is still open.
         const { data: election, error: electionError } = await supabase
             .from("Elections")
-            .select("id, registration_end_time")
+            .select("id, registration_end_time, merkle_root, merkle_tree_depth")
             .eq("id", election_id)
             .single();
 
@@ -88,6 +93,18 @@ router.post("/", authAdmin, async (req, res) => {
         }
         if (!election) {
             return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
+        }
+        if (election.merkle_root) {
+            return res.status(409).json({
+                error: "ALREADY_FINALIZED",
+                details: "Cannot register voters after the election has been finalized."
+            });
+        }
+        if (await isOnchainConfigured(election_id)) {
+            return res.status(409).json({
+                error: "ALREADY_FINALIZED",
+                details: "Cannot register voters after the election has been finalized on-chain."
+            });
         }
 
         // Check if the registration period has already ended.
@@ -125,7 +142,36 @@ router.post("/", authAdmin, async (req, res) => {
             }
         }
 
-        // --- 5. Perform Batch Insert for New Voters ---
+        // --- 5. Enforce Merkle capacity before inserting (architecture review AR-H2) ---
+        // Every allowlisted voter can become a tree leaf. Exceeding 2^depth would
+        // make finalize/`/proof` throw `Tree is full` with no recovery API, so the
+        // overflow must be rejected here, before any row exists.
+        if (votersToInsert.length > 0) {
+            const capacity = 2 ** election.merkle_tree_depth;
+            const { count: currentVoterCount, error: countError } = await supabase
+                .from("Voters")
+                .select("id", { count: "exact", head: true })
+                .eq("election_id", election_id);
+
+            if (countError) {
+                console.error(`[${election_id}] Error counting existing voters:`, countError.message);
+                throw countError;
+            }
+
+            if ((currentVoterCount ?? 0) + votersToInsert.length > capacity) {
+                return res.status(409).json({
+                    error: "OVER_CAPACITY",
+                    details: `Adding ${votersToInsert.length} voter(s) would exceed this election's Merkle capacity of ${capacity} (currently ${currentVoterCount ?? 0} allowlisted).`,
+                    summary: {
+                        capacity,
+                        current_voter_count: currentVoterCount ?? 0,
+                        requested_new_count: votersToInsert.length,
+                    }
+                });
+            }
+        }
+
+        // --- 6. Perform Batch Insert for New Voters ---
         if (votersToInsert.length > 0) {
             // Store the emails that will be inserted for the final report.
             results.newly_registered = votersToInsert.map(v => v.email);
@@ -149,7 +195,7 @@ router.post("/", authAdmin, async (req, res) => {
             }
         }
 
-        // --- 6. Final Success Response ---
+        // --- 7. Final Success Response ---
         // Use 200 OK if some emails were skipped but the operation logic completed.
         // Use 201 Created if only new emails were processed and inserted. Choose one for consistency.
         return res.status(200).json({ // Using 200 OK as it reports on skipped items too.
@@ -164,9 +210,10 @@ router.post("/", authAdmin, async (req, res) => {
             // Optionally include detailed lists (might be large, consider if needed by client).
             // details: results 
         });
+        });
 
     } catch (err) {
-        // --- 7. Error Handling ---
+        // --- 8. Error Handling ---
         console.error(`[${election_id}] Admin bulk voter registration failed:`, err.message);
 
         // Handle specific errors like unique constraints (can happen with high concurrency

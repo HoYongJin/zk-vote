@@ -9,6 +9,8 @@ const router = express.Router();
 const validator = require('validator');
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
+const MAX_SUPPORTED_MERKLE_DEPTH = 5;
+const MAX_SUPPORTED_CANDIDATES = 5;
 
 /**
  * @route   POST /api/elections/set
@@ -48,8 +50,28 @@ router.post("/", authAdmin, async (req, res) => {
     if (!Number.isInteger(merkleTreeDepth) || merkleTreeDepth <= 0) {
         return res.status(400).json({ error: "VALIDATION_ERROR", details: "`merkleTreeDepth` must be a positive integer." });
     }
+    if (merkleTreeDepth > MAX_SUPPORTED_MERKLE_DEPTH) {
+        return res.status(400).json({
+            error: "VALIDATION_ERROR",
+            details: `\`merkleTreeDepth\` must be ${MAX_SUPPORTED_MERKLE_DEPTH} or lower.`
+        });
+    }
     if (!Array.isArray(candidates) || candidates.length === 0 || !candidates.every(c => typeof c === 'string' && c.trim() !== '')) {
         return res.status(400).json({ error: "VALIDATION_ERROR", details: "`candidates` must be a non-empty array of strings." });
+    }
+    const normalizedCandidates = candidates.map(c => c.trim());
+    if (normalizedCandidates.length > MAX_SUPPORTED_CANDIDATES) {
+        return res.status(400).json({
+            error: "VALIDATION_ERROR",
+            details: `\`candidates\` must contain ${MAX_SUPPORTED_CANDIDATES} or fewer entries.`
+        });
+    }
+    const candidateKeys = normalizedCandidates.map(c => c.toLocaleLowerCase());
+    if (new Set(candidateKeys).size !== candidateKeys.length) {
+        return res.status(400).json({
+            error: "VALIDATION_ERROR",
+            details: "`candidates` must not contain duplicate names."
+        });
     }
     if (!validator.isISO8601(regEndTime) || new Date(regEndTime) <= new Date()) {
         return res.status(400).json({ error: "VALIDATION_ERROR", details: "`regEndTime` must be a valid ISO 8601 date string set in the future." });
@@ -57,7 +79,8 @@ router.post("/", authAdmin, async (req, res) => {
 
     try {
         // --- 2. Insert New Election into Supabase 'Elections' Table ---
-        const numCandidates = candidates.length;
+        const normalizedRegEndTime = new Date(regEndTime).toISOString();
+        const numCandidates = normalizedCandidates.length;
 
         // Insert the new election record.
         const { data: electionData, error: electionError } = await supabase
@@ -65,10 +88,10 @@ router.post("/", authAdmin, async (req, res) => {
             .insert([{
                 name: name.trim(),
                 merkle_tree_depth: merkleTreeDepth,
-                candidates: candidates,
+                candidates: normalizedCandidates,
                 num_candidates: numCandidates,
                 registration_start_time: new Date().toISOString(),
-                registration_end_time: regEndTime,
+                registration_end_time: normalizedRegEndTime,
             }])
             .select()
             .single(); // .single()을 사용하여 결과를 배열이 아닌 단일 객체로 받습니다.

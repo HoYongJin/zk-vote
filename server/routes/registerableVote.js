@@ -8,6 +8,7 @@ const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
 const auth = require("../middleware/auth");
+const { normalizeEmail } = require("../utils/email");
 
 /**
  * @route   GET /api/elections/registerable
@@ -26,6 +27,7 @@ router.get("/", auth, async (req, res) => {
         const user = req.user; 
         const now = new Date();
         const nowISO = now.toISOString();
+        const normalizedUserEmail = normalizeEmail(user.email);
         
         // --- 1. Check if the user is an administrator ---
         // Improvement Suggestion: Use optional admin middleware to avoid this query.
@@ -58,16 +60,19 @@ router.get("/", auth, async (req, res) => {
             if (error) throw error;
             return res.status(200).json(elections || []);
         }else {
+            if (!normalizedUserEmail) {
+                return res.status(200).json([]);
+            }
             // Regular users see only elections they are pre-registered for.
 
             // [A] Find all election IDs the user is pre-registered for (by email).
             const { data: preRegisteredRecords, error: preRegError } = await supabase
                 .from('Voters')
                 .select('election_id')
-                .eq('email', user.email); // Pre-registration is email-based
+                .eq('email', normalizedUserEmail); // Pre-registration is email-based
 
             if (preRegError) {
-                 console.error(`[registerableVote.js] Error fetching pre-registered records for email ${user.email}:`, preRegError.message);
+                 console.error(`[registerableVote.js] Error fetching pre-registered records for email ${normalizedUserEmail}:`, preRegError.message);
                  throw preRegError;
             }
 

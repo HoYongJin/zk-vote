@@ -6,9 +6,35 @@
 
 const express = require("express");
 const router = express.Router();
-const validator = require('validator');
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
+const { normalizeEmail } = require("../utils/email");
+
+async function findExistingAuthUserByEmail(normalizedEmail) {
+    if (!supabase.auth?.admin?.listUsers) {
+        return null;
+    }
+
+    let page = 1;
+    const perPage = 1000;
+    while (true) {
+        const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
+        if (error) {
+            throw error;
+        }
+
+        const users = data?.users || [];
+        const match = users.find((user) => normalizeEmail(user.email) === normalizedEmail);
+        if (match) {
+            return match;
+        }
+
+        if (users.length < perPage) {
+            return null;
+        }
+        page += 1;
+    }
+}
 
 /**
  * @route   POST /api/management/addAdmins
@@ -26,14 +52,15 @@ router.post("/", authAdmin, async (req, res) => {
 
     // --- 1. Input Validation ---
     // Check if email is provided.
-    if (!email) {
+    if (!email || typeof email !== "string") {
         return res.status(400).json({ 
             error: "VALIDATION_ERROR", 
             details: "Email is required in the request body." 
         });
     }
+    const normalizedEmail = normalizeEmail(email);
     // Check if the provided email has a valid format.
-    if (!validator.isEmail(email)) {
+    if (!normalizedEmail) {
         return res.status(400).json({ 
             error: "VALIDATION_ERROR", 
             details: "Invalid email format provided." 
@@ -42,10 +69,10 @@ router.post("/", authAdmin, async (req, res) => {
 
     // --- 2. Add email to Invitation List in Supabase ---
     try {
-        // 초대 명단에 이메일 추가 (이미 존재하면 무시)
+        // 초대 명단에 이메일 추가 (이미 존재하면 갱신)
         const { error } = await supabase
             .from("AdminInvitations")
-            .insert({ email }, { upsert: true });
+            .upsert({ email: normalizedEmail }, { onConflict: "email" });
 
         // If Supabase returned an error during the insert/upsert.
         if (error) {
@@ -53,15 +80,39 @@ router.post("/", authAdmin, async (req, res) => {
             throw error; 
         }
 
+        let promotedExistingUser = false;
+        try {
+            const existingUser = await findExistingAuthUserByEmail(normalizedEmail);
+            if (existingUser?.id) {
+                const { error: adminUpsertError } = await supabase
+                    .from("Admins")
+                    .upsert({ id: existingUser.id }, { onConflict: "id" });
+
+                if (adminUpsertError) {
+                    throw adminUpsertError;
+                }
+                promotedExistingUser = true;
+            }
+        } catch (promotionError) {
+            console.warn(`[addAdmins.js] Admin invitation was saved, but existing-user promotion failed for ${normalizedEmail}:`, promotionError.message);
+            return res.status(500).json({
+                error: "ADMIN_PROMOTION_FAILED",
+                details: "The invitation was saved, but the existing user could not be granted admin access."
+            });
+        }
+
         // --- 3. Success Response ---
         return res.status(201).json({ 
             success: true, 
-            message: `Successfully added ${email} to the admin invitation list.` 
+            message: promotedExistingUser
+                ? `Successfully added ${normalizedEmail} to the admin invitation list and granted admin access to the existing user.`
+                : `Successfully added ${normalizedEmail} to the admin invitation list.`,
+            promotedExistingUser
         });
 
     } catch (err) {
         // --- 4. Error Handling ---
-        console.error(`[addAdmins.js] Failed to add admin invitation for ${email}:`, err.message);
+        console.error(`[addAdmins.js] Failed to add admin invitation for ${normalizedEmail}:`, err.message);
         
         // Provide a more specific error message if possible, otherwise generic.
         let statusCode = 500;

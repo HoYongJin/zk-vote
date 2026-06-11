@@ -6,6 +6,7 @@
  */
 
 const supabase = require("../supabaseClient");
+const { promoteInvitedAdmin } = require("../utils/adminInvitations");
 
 /**
  * Express middleware to authenticate a request using a Supabase JWT.
@@ -26,9 +27,9 @@ const auth = async (req, res, next) => {
 
         // If no token is provided, return a 401 Unauthorized error.
         if (!token) {
-            return res.status(401).json({ 
-                error: "AUTHENTICATION_REQUIRED", 
-                details: "No token provided." 
+            return res.status(401).json({
+                error: "AUTHENTICATION_REQUIRED",
+                details: "No token provided."
             });
         }
 
@@ -37,16 +38,31 @@ const auth = async (req, res, next) => {
 
         // If the token is invalid (e.g., expired) or no user is found, return 401.
         if (error || !user) {
-            return res.status(401).json({ 
-                error: "INVALID_TOKEN", 
-                details: "The provided token is invalid or has expired." 
+            return res.status(401).json({
+                error: "INVALID_TOKEN",
+                details: "The provided token is invalid or has expired."
             });
         }
 
-        // 3. Attach the authenticated Supabase user object to the request.
+        // 3. Consume a pending admin invitation for this user, if any (audit H5).
+        // This must run on the general auth path too: an invited-then-signed-up
+        // user never reaches an admin-only route (the frontend hides admin UI
+        // from non-admins), so promoting only inside authAdmin would leave the
+        // invitation inert forever. Promotion failure must not break voter
+        // flows; it is retried on the next authenticated request.
+        try {
+            const promotion = await promoteInvitedAdmin(user);
+            if (promotion.promoted) {
+                console.log(`[auth] Applied pending admin invitation for ${promotion.email}.`);
+            }
+        } catch (promotionError) {
+            console.error(`[auth] Pending admin invitation promotion failed for user ${user.id}:`, promotionError.message);
+        }
+
+        // 4. Attach the authenticated Supabase user object to the request.
         req.user = user;
 
-        // 4. If all checks pass, proceed to the next middleware or route handler.
+        // 5. If all checks pass, proceed to the next middleware or route handler.
         next();
 
     } catch (err) {
