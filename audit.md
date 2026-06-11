@@ -12,7 +12,7 @@
 > - rev2 (2026-06-11) — 코드 리뷰 피드백을 실제 코드로 재검증해 C1 fix 범위, H1 전제조건, M1 fix 원자성, 검증표(cargo test), M2/검증표(snarkjs), 문서 불일치 #8·#11을 정정.
 > - rev3 (2026-06-11) — 요약표 M2 줄을 본문과 일치(`circom/snarkjs` → `circom`)시키고, C1 evidence의 `component main`을 source(`Main(3,3)`) vs 빌드 산출물(`build_4_5`=`Main(4,5)`, `build_5_4`=`Main(5,4)`)로 구분해 정정.
 > - rev4 (2026-06-11) — 요약표 M11 줄을 본문과 일치(백엔드 EC2 단독 → 백엔드 EC2 + 프런트 S3/CloudFront)시킴.
-> - rev5 (2026-06-12) — **Phase 1 클로저 기록**: C1·H1~H5 전체 및 M1~M5/M9~M13 수정 완료(코드+테스트 증거, 아래 클로저 매트릭스). M6~M8은 Rust 스키마 항목으로 Phase 3에서 처리(스테이징 블로커로 명시 추적). 본문 발견 서술은 감사 시점 기준 원문 그대로 유지한다 — 현재 상태는 매트릭스가 우선.
+> - rev5 (2026-06-12) — **Phase 1 클로저 기록**: C1·H1~H5 전체 및 M1~M5/M9~M13 수정 완료(코드+테스트 증거, 아래 클로저 매트릭스). 같은 날 Phase 3 완료로 **M6~M8도 닫힘**(`rust-backend/migrations/0003` + `docs/DATA_MODEL.md` + `scripts/local/db-verify.sh` 게이트). 본문 발견 서술은 감사 시점 기준 원문 그대로 유지한다 — 현재 상태는 매트릭스가 우선.
 
 ---
 
@@ -59,9 +59,9 @@
 | M3 | **CLOSED**(설계 변경) | Redis 마커 대신 **Postgres `registration_end_time` 내구 마감이 fail-closed 게이트**(tx 브로드캐스트 전 설정). Redis 마커는 보조로 유지 | `registerRoute.js`/`registerByAdminRoute.js` durable-close 거부, `finalizeVoteRoute.js` ordering |
 | M4 | **CLOSED** | 후보 수 상한(5)·트림 후 대소문자 무시 중복 거부·depth 상한 (`setVote.js`), 배포측 상한 재검증 (`setupAndDeploy.js`) | `setVote` 검증 로직 + 배포측 캡 (코드 경로) |
 | M5 | **CLOSED**(Phase 1 범위) | 배포 시 zkey/vkey/wasm sha256을 선거별 manifest에 기록(`deployAll.js`→`zkArtifacts.js`), `/proof`가 드리프트 시 `ARTIFACT_MISMATCH` 409 | `zkArtifacts.js` 5케이스, `proofRoute.js` ARTIFACT_MISMATCH. 완전한 manifest 저장은 Phase 10 |
-| M6 | **OPEN→Phase 3** | Rust 마이그레이션 스키마 항목(PascalCase↔snake_case). Node 경로에 영향 없음 — 스테이징 블로커로 추적 | Phase 3 게이트에서 실측 |
-| M7 | **OPEN→Phase 3** | `circuit_id` NOT NULL — 위와 동일 | Phase 3 게이트에서 실측 |
-| M8 | **OPEN→Phase 3** | `numeric(78,0)` 직렬화 — 위와 동일 | Phase 3 게이트에서 실측 |
+| M6 | **CLOSED**(Phase 3, 2026-06-12) | 결정: Cloud SQL은 snake_case 전용(PascalCase 테이블/뷰 불채택 — PostgREST 소멸+백엔드 경유 전제), Node↔Rust 매핑 표 + ETL 계획 문서화(`docs/DATA_MODEL.md`), `0003`이 레거시 `title`/`*_at` 스키마를 정식 형태로 수렴 | `scripts/local/db-verify.sh` 전 게이트 통과(레거시 볼륨 + 신규 DB 양쪽) |
+| M7 | **CLOSED**(Phase 3) | `elections.circuit_id` nullable로 변경(`0003`), 아티팩트 선택 시 백필 | `db-verify.sh`: Node식 insert(circuit_id 없음) 성공 게이트 |
+| M8 | **CLOSED**(Phase 3) | field element를 `text` + `CHECK('^[0-9]+$')`로 전환(`0003`), 평문 `voters.user_secret` 컬럼 제거 | `db-verify.sh`: 77자리 round-trip 정확 일치 + `0x…` 거부 게이트 |
 | M9 | **CLOSED** | `secretAccessor`를 `zkvote-staging-*` 비밀별 부여로 전환 (`zkvote-staging-setup.sh`) | 스크립트 검토: 프로젝트 레벨 잔여 부여는 cloudsql.client/logging/monitoring뿐 |
 | M10 | **CLOSED** | `gcloud sql users create` 직후 database-url secret 버전 기록 | 스크립트 검토 (`SQL_USER_CREATED`/`DATABASE_URL_SECRET_WRITTEN` 가드) |
 | M11 | **CLOSED** | 두 워크플로우 `workflow_dispatch` 전용 + `legacy-aws-production` environment + `ssh-action@v1.2.0` 핀 | `.github/workflows/*` diff — main push 트리거 제거 |
