@@ -8,6 +8,9 @@ const { buildPoseidon } = require("circomlibjs");
 const { MerkleTree } = require("fixed-merkle-tree");
 const supabase = require("../supabaseClient");
 const redis = require('../redisClient');
+const { isRedisLockHeld, withRedisLock } = require("./redisLock");
+const { isOnchainConfigured } = require("./finalizationState");
+const { electionIdToBigInt } = require("./electionId");
 require("dotenv").config();
 
 /**
@@ -24,6 +27,13 @@ const ZERO_ELEMENT = "2166383900441693294538235590879059922526650182290791145750
  */
 let poseidonPromise = null;
 
+const merkleLockKey = (election_id) => `merkle_lock:${election_id}`;
+const merkleCacheKey = (election_id) => `merkle_cache:leaves:${election_id}`;
+
+function withElectionMerkleLock(election_id, fn, options = {}) {
+    return withRedisLock(merkleLockKey(election_id), fn, options);
+}
+
 /**
  * initializes and returns a singleton instance of the Poseidon hash function.
  * @returns {Promise<Object>} The initialized Poseidon hash function object.
@@ -38,36 +48,119 @@ async function getPoseidon() {
 }
 
 /**
- * Fetches all non-null user secrets for a given election from the database.
- * The results are ordered by 'id' to ensure deterministic leaf ordering.
+ * Fetches all non-null voter leaf commitments for a given election from the DB.
+ *
+ * Historical note: the Supabase column is still named `user_secret` for schema
+ * compatibility, but Phase 1/H2 treats it as a leaf commitment H(secret). The
+ * backend must not store or derive the plaintext voter secret.
+ *
  * @param {string} election_id - The UUID of the election.
- * @returns {Promise<string[]>} An array of user_secret strings.
+ * @returns {Promise<string[]>} An array of Poseidon leaf commitments.
  */
-async function loadSecretsFromDB(election_id) {
+async function loadLeafCommitmentsFromDB(election_id) {
     const { data: voters, error } = await supabase
         .from("Voters")
         .select("user_secret")
         .eq("election_id", election_id)
-        .not("user_secret", "is", null)     // Only select voters who have completed registration
+        .not("user_secret", "is", null)     // Stored as H(secret), not plaintext.
         .order('id', { ascending: true });  // CRITICAL: Ensures deterministic leaf order
 
     if (error) {
-        console.error(`[merkle.js] Failed to load user secrets from DB for election ${election_id}:`, error.message);
+        console.error(`[merkle.js] Failed to load voter commitments from DB for election ${election_id}:`, error.message);
         throw error;
     }
     return voters.map(v => v.user_secret);
 }
 
 /**
- * Calculates the Poseidon hash for each secret to create the Merkle tree leaves.
- * @param {string[]} secrets - An array of user_secret strings.
- * @returns {Promise<string[]>} An array of hashed leaf values as strings.
+ * Normalizes already-computed leaf commitments.
+ * @param {string[]} commitments - An array of H(secret) field elements.
+ * @returns {string[]} An array of leaf values as strings.
  */
-async function calculateLeaves(secrets) {
+function normalizeLeafCommitments(commitments) {
+    return commitments.map(commitment => BigInt(commitment).toString());
+}
+
+async function calculateLeafCommitment(user_secret) {
     const poseidon = await getPoseidon();
-    // Hash the secret. The secret itself is never stored in the tree or cache.
-    // The leaf is H(secret).
-    return secrets.map(secret => poseidon.F.toString(poseidon([BigInt(secret)])));
+    return poseidon.F.toString(poseidon([BigInt(user_secret)]));
+}
+
+async function calculateNullifierHash(user_secret, election_id) {
+    const poseidon = await getPoseidon();
+    return poseidon.F.toString(poseidon([
+        BigInt(user_secret),
+        electionIdToBigInt(election_id)
+    ]));
+}
+
+async function loadElectionDepth(election_id) {
+    const { data: election, error } = await supabase
+        .from("Elections")
+        .select("merkle_tree_depth")
+        .eq("id", election_id)
+        .single();
+
+    if (error || !election) {
+        throw new Error(`[merkle.js] Could not fetch election details for ${election_id}. ${error?.message}`);
+    }
+
+    return election.merkle_tree_depth;
+}
+
+function buildTree(depth, leaves, poseidon) {
+    return new MerkleTree(depth, leaves, {
+        hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
+        zeroElement: ZERO_ELEMENT
+    });
+}
+
+async function writeLeavesCache(election_id, leaves) {
+    const MERKLE_TREE_CACHE_KEY = merkleCacheKey(election_id);
+
+    try {
+        if (leaves.length > 0) {
+            await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(leaves), 'EX', 3600);
+        } else {
+            await redis.del(MERKLE_TREE_CACHE_KEY);
+        }
+    } catch (err) {
+        console.warn(`[merkle.js] Redis cache write failed for ${election_id}. Error: ${err.message}`);
+    }
+}
+
+async function buildMerkleTreeFromSource(election_id, { forceRefresh = false } = {}) {
+    const poseidon = await getPoseidon();
+    const MERKLE_TREE_CACHE_KEY = merkleCacheKey(election_id);
+
+    let leaves;
+
+    if (!forceRefresh) {
+        try {
+            const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
+            if (cachedLeaves) {
+                console.log(`[merkle.js] Cache hit for election ${election_id} leaves.`);
+                leaves = JSON.parse(cachedLeaves);
+            } else {
+                console.log(`[merkle.js] Cache miss for election ${election_id}.`);
+            }
+        } catch (err) {
+            console.warn(`[merkle.js] Redis GET failed for ${election_id}. Falling back to DB. Error: ${err.message}`);
+        }
+    }
+
+    if (!leaves) {
+        console.log(`[merkle.js] Loading voter commitments from DB for election ${election_id}.`);
+        const commitments = await loadLeafCommitmentsFromDB(election_id);
+        leaves = normalizeLeafCommitments(commitments);
+        await writeLeavesCache(election_id, leaves);
+    }
+
+    const depth = await loadElectionDepth(election_id);
+    return {
+        tree: buildTree(depth, leaves, poseidon),
+        leaves: leaves
+    };
 }
 
 /**
@@ -81,65 +174,8 @@ async function calculateLeaves(secrets) {
  * @param {string} election_id - The UUID of the election.
  * @returns {Promise<{tree: MerkleTree, leaves: string[]}>} The constructed MerkleTree and its leaves.
  */
-async function generateMerkleTree(election_id) {
-    const poseidon = await getPoseidon();
-    const MERKLE_TREE_CACHE_KEY = `merkle_cache:leaves:${election_id}`;
-
-    let leaves;
-
-    // 1. --- Try to get leaves from Cache (Redis) ---
-    try {
-        const cachedLeaves = await redis.get(MERKLE_TREE_CACHE_KEY);
-        if (cachedLeaves) {
-            console.log(`[merkle.js] Cache hit for election ${election_id} leaves.`);
-            leaves = JSON.parse(cachedLeaves);
-        } else {
-            console.log(`[merkle.js] Cache miss for election ${election_id}.`);
-        }
-    } catch (err) {
-        // If Redis GET fails, log a warning and fall back to DB.
-        console.warn(`[merkle.js] Redis GET failed for ${election_id}. Falling back to DB. Error: ${err.message}`);
-        // 'leaves' remains undefined, so the next block will execute.
-    }
-
-    // 2. --- If Cache Miss or Redis Error, load from DB ---
-    if (!leaves) {
-        console.log(`[merkle.js] Loading secrets from DB for election ${election_id}.`);
-        const secrets = await loadSecretsFromDB(election_id);
-        leaves = await calculateLeaves(secrets);
-
-        // 3. --- Try to set the cache (best-effort) ---
-        if (leaves.length > 0) {
-            try {
-                // [SECURITY] Store only the *hashed leaves*, not the secrets.
-                // Set cache to expire in 1 hour (3600 seconds).
-                await redis.set(MERKLE_TREE_CACHE_KEY, JSON.stringify(leaves), 'EX', 3600);
-            } catch (err) {
-                // If Redis SET fails, just log a warning. The function can still proceed.
-                console.warn(`[merkle.js] Redis SET failed for ${election_id}. Cache will not be saved. Error: ${err.message}`);
-            }
-        }
-    }
-
-    // 4. --- Fetch election metadata and build the tree ---
-    const { data: election, error } = await supabase
-        .from("Elections")
-        .select("merkle_tree_depth")
-        .eq("id", election_id)
-        .single();
-
-    if (error || !election) {
-        throw new Error(`[merkle.js] Could not fetch election details for ${election_id}. ${error?.message}`);
-    }
-
-    // 5. --- Return the tree and leaves ---
-    return {
-        tree: new MerkleTree(election.merkle_tree_depth, leaves, {
-            hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
-            zeroElement: ZERO_ELEMENT
-        }),
-        leaves: leaves 
-    };
+async function generateMerkleTree(election_id, options = {}) {
+    return withElectionMerkleLock(election_id, () => buildMerkleTreeFromSource(election_id, options));
 }
 
 /**
@@ -155,100 +191,181 @@ async function generateMerkleTree(election_id) {
  * @param {string} election_id - The UUID of the election.
  * @param {string} user_id - The user's UUID (from auth).
  * @param {string} email - The user's email.
- * @param {string} user_secret - The newly generated user secret.
+ * @param {string} user_secret_commitment - The client-generated H(secret) leaf commitment.
  */
-async function addUserSecret(election_id, user_name, user_id, email, user_secret) {
-    // --- Lock Configuration ---
-    const MERKLE_LOCK_KEY = `merkle_lock:${election_id}`;
-    const MERKLE_TREE_CACHE_KEY = `merkle_cache:leaves:${election_id}`;
-    const LOCK_TIMEOUT_SECONDS = 10;    // A lock will auto-expire after 10 seconds.
-    const POLLING_INTERVAL_MS = 100;    // Wait 100ms between lock acquisition attempts.
-    const POLLING_TIMEOUT_MS = 5000;    // Give up acquiring the lock after 5 seconds.
-    const startTime = Date.now();
+async function addUserSecret(election_id, user_name, user_id, email, user_secret_commitment) {
+    return withElectionMerkleLock(election_id, async (lock) => {
+        const { data: election, error: electionError } = await supabase
+            .from("Elections")
+            .select("registration_end_time, merkle_root")
+            .eq("id", election_id)
+            .single();
 
-    // --- 1. Acquire Distributed Lock (with polling) ---
-    while(true) {
-        // Attempt to acquire the lock atomically.
-        // 'NX': Set only if the key does not exist.
-        // 'EX': Set an expiration time in seconds.
-        const lockAcquired = await redis.set(
-            MERKLE_LOCK_KEY, 
-            'locked', 
-            'NX', // Set only if the key does not exist
-            'EX', // Set an expiration time
-            LOCK_TIMEOUT_SECONDS 
-        );
-
-        if (lockAcquired) {
-            console.log(`[merkle.js] Lock acquired for election: ${election_id}.`);
-            break; // Exit loop and proceed with the critical section.
+        if (electionError || !election) {
+            throw Object.assign(
+                new Error(`[merkle.js] Could not fetch election during registration: ${electionError?.message || "not found"}`),
+                { status: electionError?.code === "PGRST116" ? 404 : 500, code: "ELECTION_NOT_FOUND" }
+            );
         }
 
-        // Check for timeout if lock is not acquired.
-        if (Date.now() - startTime > POLLING_TIMEOUT_MS) {
-            throw new Error(`[merkle.js] Failed to acquire Merkle tree lock for ${election_id} (timeout).`);
+        if (election.merkle_root) {
+            throw Object.assign(new Error("This election has already been finalized."), {
+                status: 409,
+                code: "ALREADY_FINALIZED"
+            });
         }
 
-        // Wait before retrying.
-        await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL_MS));
-    }
+        if (await isOnchainConfigured(election_id)) {
+            throw Object.assign(new Error("This election has already been finalized on-chain."), {
+                status: 409,
+                code: "ALREADY_FINALIZED"
+            });
+        }
 
-    try {
-        // --- 2. CRITICAL SECTION START ---
-        // This block is now atomic. No other request can build a tree
-        // while we are in the middle of this update.
+        if (new Date() > new Date(election.registration_end_time)) {
+            throw Object.assign(new Error("The registration period for this election has ended."), {
+                status: 403,
+                code: "REGISTRATION_PERIOD_ENDED"
+            });
+        }
 
-        // [A] Update the database with the new voter's secret and ID.
-        const { error: dbError } = await supabase
+        if (!(await isRedisLockHeld(lock))) {
+            throw Object.assign(new Error("Registration lock expired before the update started."), {
+                status: 409,
+                code: "REGISTRATION_LOCK_EXPIRED"
+            });
+        }
+
+        const { data: updatedVoter, error: dbError } = await supabase
             .from("Voters")
             .update({ 
                 name: user_name,
                 user_id: user_id,
-                user_secret: user_secret 
+                // Column kept for compatibility; value is H(secret), not the plaintext secret.
+                user_secret: BigInt(user_secret_commitment).toString()
             })
             .eq('email', email)
-            .eq('election_id', election_id);
+            .eq('election_id', election_id)
+            .is('user_id', null)
+            .select('id')
+            .maybeSingle();
         
         if (dbError) {
             throw new Error(`[merkle.js] DB update failed inside lock: ${dbError.message}`);
         }
 
-        // [B] Invalidate the stale cache.
-        // The next call to generateMerkleTree() will be forced
-        // to reload from the (now updated) database.
-        await redis.del(MERKLE_TREE_CACHE_KEY);
+        if (!(await isRedisLockHeld(lock))) {
+            throw Object.assign(new Error("Registration lock expired before the update completed."), {
+                status: 409,
+                code: "REGISTRATION_LOCK_EXPIRED"
+            });
+        }
+
+        if (!updatedVoter) {
+            const { data: currentVoter, error: currentError } = await supabase
+                .from("Voters")
+                .select("id, user_id")
+                .eq("email", email)
+                .eq("election_id", election_id)
+                .maybeSingle();
+
+            if (currentError) {
+                throw currentError;
+            }
+
+            if (!currentVoter) {
+                throw Object.assign(new Error("This email is not on the pre-approved list for this election."), {
+                    status: 403,
+                    code: "NOT_ON_VOTER_LIST"
+                });
+            }
+
+            if (currentVoter.user_id) {
+                throw Object.assign(new Error("This voter has already completed registration."), {
+                    status: 409,
+                    code: "ALREADY_REGISTERED"
+                });
+            }
+
+            throw new Error("[merkle.js] Voter update did not modify a row.");
+        }
+
+        await redis.del(merkleCacheKey(election_id));
         
         console.log(`[merkle.js] Voter added to DB and cache invalidated for election ${election_id}.`);
-        // --- 3. CRITICAL SECTION END ---
-    } catch (err) {
-        // Ensure any error during the critical section is logged and thrown.
-        console.error(`[merkle.js] Error during locked operation for ${election_id}: ${err.message}`);
-        throw err; // Re-throw to inform the calling route (register.js) of the failure.
-    } finally {
-        // --- 4. Release the Lock ---
-        // This 'finally' block ensures the lock is *always* released,
-        // even if the critical section failed.
-        await redis.del(MERKLE_LOCK_KEY);
-        console.log(`[merkle.js] Lock released for election ${election_id}.`);
+        return updatedVoter;
+    }, { lockTimeoutSeconds: 60, pollingTimeoutMs: 30000 });
+}
+
+async function buildFinalMerkleSnapshot(election_id, requestedCloseTimeIso) {
+    const poseidon = await getPoseidon();
+    const { data: election, error: electionError } = await supabase
+        .from("Elections")
+        .select("registration_end_time, merkle_root, merkle_tree_depth")
+        .eq("id", election_id)
+        .single();
+
+    if (electionError || !election) {
+        throw Object.assign(
+            new Error(`[merkle.js] Could not fetch election during finalization: ${electionError?.message || "not found"}`),
+            { status: electionError?.code === "PGRST116" ? 404 : 500, code: "ELECTION_NOT_FOUND" }
+        );
     }
+
+    if (election.merkle_root) {
+        throw Object.assign(new Error("This election's registration period has already been finalized."), {
+            status: 409,
+            code: "ALREADY_FINALIZED"
+        });
+    }
+
+    const commitments = await loadLeafCommitmentsFromDB(election_id);
+    const leaves = normalizeLeafCommitments(commitments);
+
+    if (leaves.length === 0) {
+        await redis.del(merkleCacheKey(election_id));
+        return {
+            tree: buildTree(election.merkle_tree_depth, leaves, poseidon),
+            leaves,
+            registrationClosedAt: election.registration_end_time,
+        };
+    }
+
+    const requestedCloseTime = new Date(requestedCloseTimeIso);
+    const currentRegistrationEnd = new Date(election.registration_end_time);
+    const registrationClosedAt = new Date(
+        Math.min(requestedCloseTime.getTime(), currentRegistrationEnd.getTime())
+    ).toISOString();
+
+    await writeLeavesCache(election_id, leaves);
+
+    return {
+        tree: buildTree(election.merkle_tree_depth, leaves, poseidon),
+        leaves,
+        registrationClosedAt,
+    };
+}
+
+async function closeRegistrationAndGenerateMerkleTree(election_id, requestedCloseTimeIso, options = {}) {
+    return withElectionMerkleLock(
+        election_id,
+        () => buildFinalMerkleSnapshot(election_id, requestedCloseTimeIso),
+        options
+    );
 }
 
 /**
- * Generates a Merkle proof for a given user secret.
- * It fetches the (potentially cached) tree and finds the path for the user's leaf.
+ * Generates a Merkle proof for a given voter leaf commitment.
  * @param {string} election_id - The UUID of the election.
- * @param {string} user_secret - The user's secret to generate a proof for.
+ * @param {string} leafCommitment - The client's H(secret) commitment.
  * @returns {Promise<Object>} The Merkle proof components required by the ZK circuit.
- * (root, pathElements, pathIndices)
  */
-async function generateMerkleProof(election_id, user_secret) {
-    const poseidon = await getPoseidon();
-
+async function generateMerkleProof(election_id, leafCommitment) {
     // 1. Get the latest (possibly cached) tree and leaves.
     const { tree, leaves } = await generateMerkleTree(election_id);
 
-    // 2. Hash the user's secret to find the corresponding leaf in the tree.
-    const currentUserLeaf = poseidon.F.toString(poseidon([BigInt(user_secret)]));
+    // 2. Find the committed leaf. The backend never receives the plaintext secret.
+    const currentUserLeaf = BigInt(leafCommitment).toString();
     const index = leaves.indexOf(currentUserLeaf);
 
     // 3. Check if the user is part of the tree.
@@ -269,7 +386,12 @@ async function generateMerkleProof(election_id, user_secret) {
 }
 
 module.exports = {
+    calculateLeafCommitment,
+    calculateNullifierHash,
+    buildFinalMerkleSnapshot,
+    closeRegistrationAndGenerateMerkleTree,
     generateMerkleTree,
     addUserSecret,
-    generateMerkleProof
+    generateMerkleProof,
+    withElectionMerkleLock
 };

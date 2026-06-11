@@ -1,49 +1,31 @@
 /**
  * @file server/routes/register.js
  * @desc Route handler for completing a voter's registration for a specific election.
- * This involves verifying eligibility, generating a unique secret, and updating
- * the database and Merkle cache atomically via the merkle utility.
+ * The client generates and keeps the voter secret; the backend stores only the
+ * leaf commitment H(secret) needed for Merkle membership.
  */
 
 const express = require("express");
 const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
-const crypto = require("crypto");
 const { addUserSecret } = require("../utils/merkle");
 const auth = require("../middleware/auth");
+const { normalizeEmail } = require("../utils/email");
 require("dotenv").config();
 
-/**
- * Generates a deterministic, unique secret for a user based on their UUID and a secret salt.
- * This secret serves as a private input for the ZK-SNARK circuit and is used
- * to build the Merkle tree leaf for the voter.
- * Ensures the secret is consistent for the same user across different actions.
- * @param {string} userId - The unique user ID (UUID) from the Supabase auth user object.
- * @returns {string} A large number (derived from SHA256 hash) represented as a string.
- * @throws {Error} If the SECRET_SALT environment variable is not set.
- */
-const generateUserSecret = (userId) => {
-    // Ensure the required environment variable is present.
-    if (!process.env.SECRET_SALT) {
-        throw new Error("SECRET_SALT environment variable is not defined.");
-    }
-    // Combine user ID and salt to create a unique seed.
-    const seed = userId + process.env.SECRET_SALT;
-    // Hash the seed using SHA256.
-    const hash = crypto.createHash("sha256").update(seed).digest("hex");
-    // Convert the hexadecimal hash to a BigInt and then to a string.
-    return BigInt("0x" + hash).toString();
-};
+function isFieldElementString(value) {
+    return typeof value === "string" && /^(0x[0-9a-fA-F]+|[0-9]+)$/.test(value);
+}
 
 /**
  * @route   POST /api/elections/:election_id/register
  * @desc    Allows a logged-in user (identified by JWT) to complete their registration
- * for the specified election. It verifies eligibility, generates the user's secret
- * and then calls the `addUserSecret` utility function to atomically
- * update the database and invalidate the Merkle cache.
+ * for the specified election. It verifies eligibility, stores the client
+ * supplied leaf commitment, and invalidates the Merkle cache atomically.
  * @access  Private (Requires standard user authentication via `auth` middleware)
  * @param   {string} req.params.election_id - The UUID of the election to register for.
- * @param   {string} req.body.name - The name the voter wishes to register under (for display/optional).
+ * @param   {string} req.body.name - The name the voter wishes to register under.
+ * @param   {string} req.body.secretCommitment - Poseidon H(secret), generated client-side.
  * @param   {object} req.user - The authenticated Supabase user object (attached by `auth` middleware).
  * @returns {object} Success message or error details.
  */
@@ -52,14 +34,28 @@ router.post("/", auth, async (req, res) => {
     const { election_id } = req.params;
     const user = req.user;
 
-    const { name } = req.body;
+    const { name, secretCommitment } = req.body;
+    const normalizedUserEmail = normalizeEmail(user.email);
     if (!name || typeof name !== 'string' || name.trim() === '') {
         return res.status(400).json({ 
             error: "VALIDATION_ERROR", 
             details: "A non-empty 'name' must be provided in the request body." 
         });
     }
+    if (!normalizedUserEmail) {
+        return res.status(400).json({
+            error: "VALIDATION_ERROR",
+            details: "The authenticated user email is invalid."
+        });
+    }
+    if (!isFieldElementString(secretCommitment)) {
+        return res.status(400).json({
+            error: "VALIDATION_ERROR",
+            details: "A valid client-generated secretCommitment is required."
+        });
+    }
     const trimmedName = name.trim();
+    const normalizedCommitment = BigInt(secretCommitment).toString();
 
     try {
         // --- Pre-checks before attempting the critical section ---
@@ -92,12 +88,12 @@ router.post("/", auth, async (req, res) => {
         const { data: voterRecord, error: voterSelectError } = await supabase
             .from("Voters")
             .select("id, user_id")
-            .eq("email", user.email)
+            .eq("email", normalizedUserEmail)
             .eq("election_id", election_id)
             .single();
 
         if (voterSelectError) {
-            console.error(`[register.js] Error fetching voter record for email ${user.email} in election ${election_id}:`, voterSelectError.message);
+            console.error(`[register.js] Error fetching voter record for email ${normalizedUserEmail} in election ${election_id}:`, voterSelectError.message);
             if (voterSelectError.code === 'PGRST116') {
                  return res.status(403).json({ 
                     error: "NOT_ON_VOTER_LIST", 
@@ -115,15 +111,12 @@ router.post("/", auth, async (req, res) => {
             });
         }
 
-        // --- All pre-checks passed. Proceed to generate secret and call the atomic update function ---
+        // --- All pre-checks passed. Store the client-held secret commitment. ---
 
-        // 4. Generate the unique, deterministic user_secret based on the user's UUID.
-        const user_secret = generateUserSecret(user.id);
-
-        // 5. Call the `addUserSecret` utility.
+        // 4. Call the `addUserSecret` utility.
         //    This function handles acquiring a lock, updating the DB *atomically*,
-        //    and invalidating the cache. We pass all necessary info.
-        await addUserSecret(election_id, name, user.id, user.email, user_secret);
+        //    and invalidating the cache. The stored value is H(secret), not the secret.
+        await addUserSecret(election_id, trimmedName, user.id, normalizedUserEmail, normalizedCommitment);
         
         // 6. Return a success response upon successful completion of the atomic operation.
         return res.status(200).json({ // Use 200 OK for successful update
@@ -133,6 +126,12 @@ router.post("/", auth, async (req, res) => {
     } catch (err) {
         // Catch errors from pre-checks or the addUserSecret function.
         console.error(`[register.js] Voter registration failed for user ${user.id} in election ${election_id}:`, err.message);
+        if (err.status && err.code) {
+            return res.status(err.status).json({
+                error: err.code,
+                details: err.message
+            });
+        }
         // Provide a generic error message to the client for security.
         return res.status(500).json({ 
             error: "REGISTRATION_PROCESS_ERROR", 
