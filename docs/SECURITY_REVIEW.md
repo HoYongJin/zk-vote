@@ -76,5 +76,6 @@ Architecture-review items closed since rev5:
 
 스테이징 의존(전부 PROJECT_PLAN에 귀속): Phase 16(Cloud Run 배포 — 비용
 승인 필요), AR-M2 측정 + 클라이언트 지터, AR-M1 최종 결정, Phase 19
-ETL/롤백 리허설(AR-H3), Phase 20 운영 준비. 로컬 범위의 알려진 잔여
-Low: AR-L9/L11(플랜 게이트 문구), `/api/zkp-files` 마운트 범위 축소.
+ETL/롤백 리허설(AR-H3), Phase 20 운영 준비. 로컬 범위 잔여 Low는 모두 해소됨(2026-06-12): AR-L9/L11 플랜 게이트 문구
+정정, `/api/zkp-files` 마운트를 build_* 산출물 3종으로 축소(실측: 산출물
+200 / 스크립트·소스·circuit_0000 404).

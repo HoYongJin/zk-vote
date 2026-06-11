@@ -345,8 +345,10 @@ Verification gate:
 - Invalid election date ordering is rejected.
 - Node-style election creation data can be represented without a
   `circuit_id` not-null failure.
-- BigInt field elements round-trip through the API in the expected string
-  format.
+- BigInt field elements round-trip byte-identically at the storage layer
+  (text + format CHECK; measured by `scripts/local/db-verify.sh`). The
+  API-level round-trip is re-verified when the Phase 13 routes exist
+  (AR-L11: the original wording was untestable at Phase 3).
 - The runtime database role cannot execute DDL; migrations run only under the
   owner role.
 
@@ -495,7 +497,9 @@ Deliverables:
 
 Verification gate:
 
-- Frontend can read from Rust for these routes behind a config flag.
+- Frontend can read from Rust for these routes behind the existing
+  `REACT_APP_API_BASE_URL` flag (AR-L9: the flag predates Phase 15; no
+  forward dependency remains).
 - Existing Node route behavior remains unchanged.
 
 Definition of done:

@@ -41,7 +41,16 @@ const completedVoteRouter = require('./routes/completedVote');
 const artifactInfoRouter = require('./routes/artifactInfo');
 const meRouter = require('./routes/me');
 
-app.use('/api/zkp-files', express.static(path.join(__dirname, 'zkp')));
+// 증명 아티팩트 정적 제공 — build_<depth>_<candidates>/ 산출물만 노출한다.
+// (audit Low: 전체 zkp/ 디렉토리를 노출하면 setUpZk.sh, .circom 소스,
+// 기여 전 circuit_0000.zkey, ceremony.json 외 레거시 파일까지 새어 나간다.)
+app.use('/api/zkp-files', (req, res, next) => {
+    const allowed = /^\/build_\d+_\d+\/(VoteCheck_temp_js\/VoteCheck_temp\.wasm|circuit_final\.zkey|verification_key\.json)$/;
+    if (!allowed.test(req.path)) {
+        return res.status(404).json({ error: "NOT_FOUND", details: "Not a served proving artifact." });
+    }
+    return next();
+}, express.static(path.join(__dirname, 'zkp')));
 app.use('/api/me', meRouter); // 역할 조회 (AR-H4: 프론트 직접 테이블 읽기 대체)
 app.use("/api/management/addAdmins", addAdminsRouter);
 app.use("/api/elections/set", setVoteRouter); // (관리자) 새 선거 생성: POST /api/elections
