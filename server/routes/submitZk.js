@@ -10,18 +10,43 @@ const express = require("express");
 const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
 const { ethers } = require("ethers");
-const redisClient = require("../redisClient");
+const {
+    consumeSubmissionTicket,
+    readSubmissionTicket,
+} = require("../utils/submissionTickets");
+const {
+    validateFormattedProof,
+    validateSubmitPayload,
+    PUBLIC_SIGNAL_NULLIFIER_INDEX,
+    PUBLIC_SIGNAL_COUNT,
+} = require("../utils/submitValidation");
+const { withRedisLock } = require("../utils/redisLock");
 const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/VotingTally.json").abi;
+const SUBMIT_LOCK_OPTIONS = {
+    lockTimeoutSeconds: 1800,
+    pollingTimeoutMs: 5000,
+};
 
-// --- 1. Initialize Provider and Wallet as Singletons ---
-// Validate required environment variables at server startup
-if (!process.env.SEPOLIA_RPC_URL || !process.env.PRIVATE_KEY) {
-    console.error("CRITICAL ERROR: SEPOLIA_RPC_URL or PRIVATE_KEY is not set.");
-    throw new Error("Server configuration error: Missing RPC_URL or PRIVATE_KEY.");
+let provider = null;
+let wallet = null;
+
+function assertRelayerConfigured() {
+    if (!process.env.SEPOLIA_RPC_URL || !process.env.PRIVATE_KEY) {
+        throw Object.assign(
+            new Error("Server is missing SEPOLIA_RPC_URL or PRIVATE_KEY."),
+            { status: 500, code: "SERVER_CONFIGURATION_ERROR" }
+        );
+    }
 }
-//Create provider and wallet instances
-const provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+
+function getRelayerWallet() {
+    assertRelayerConfigured();
+    if (!provider || !wallet) {
+        provider = new ethers.providers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
+        wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    }
+    return wallet;
+}
 
 /**
  * Creates a contract instance connected to the server's gas-paying wallet.
@@ -29,8 +54,26 @@ const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
  * @returns {ethers.Contract} An Ethers.js Contract instance.
  */
 const getContract = (contractAddress) => {
-    return new ethers.Contract(contractAddress, votingTallyAbi, wallet);
+    return new ethers.Contract(contractAddress, votingTallyAbi, getRelayerWallet());
 };
+
+function submitLockKey(electionId, nullifierHash) {
+    return `submit:nullifier:${electionId}:${nullifierHash}`;
+}
+
+function ticketLockKey(submissionTicket) {
+    return `submit:ticket:${submissionTicket}`;
+}
+
+function extractEthersReason(err) {
+    if (err.reason) {
+        return err.reason;
+    }
+    if (err.data && typeof err.data === 'string') {
+        return err.data;
+    }
+    return err.message || "An unknown error occurred.";
+}
 
 /**
  * @route   POST /api/elections/:election_id/submit
@@ -51,10 +94,7 @@ router.post("/", async (req, res) => {
 
     // --- 2. Validate ProofData ---
     // Basic validation of the proof structure.
-    if (!formattedProof || !publicSignals || 
-        !formattedProof.a || !formattedProof.b || !formattedProof.c ||
-        !Array.isArray(publicSignals)) 
-    {
+    if (!validateFormattedProof(formattedProof) || !Array.isArray(publicSignals) || publicSignals.length !== PUBLIC_SIGNAL_COUNT) {
         return res.status(400).json({ error: "INVALID_PAYLOAD", details: "Proof or public signals are missing or malformed." });
     }
 
@@ -68,26 +108,13 @@ router.post("/", async (req, res) => {
         });
     }
 
-    const ticketKey = `submission-ticket:${submissionTicket}`;
-    let ticketValue;
     try {
-        // Use GETDEL to atomically get the ticket's value AND delete it.
-        // This prevents replay attacks with the same ticket.
-        ticketValue = await redisClient.getdel(ticketKey);
-    } catch (redisError) {
-        console.error(`[${election_id}] Redis GETDEL error:`, redisError.message);
-        return res.status(500).json({ 
-            error: "SERVER_ERROR", 
-            details: "Failed to validate submission ticket." 
-        });
-    }
-
-    // If the ticket didn't exist (null) or wasn't 'valid'
-    if (!ticketValue || ticketValue !== "valid") {
-        console.warn(`[${election_id}] Submission attempt failed: Invalid or expired ticket provided (Ticket: ${submissionTicket}).`);
-        return res.status(403).json({ 
-            error: "INVALID_OR_EXPIRED_TICKET", 
-            details: "The submission ticket is invalid, has expired, or has already been used." 
+        assertRelayerConfigured();
+    } catch (configError) {
+        console.error(`[${election_id}] Submit relayer is not configured:`, configError.message);
+        return res.status(configError.status || 500).json({
+            error: configError.code || "SERVER_CONFIGURATION_ERROR",
+            details: "Server is missing required blockchain relayer configuration."
         });
     }
 
@@ -95,7 +122,7 @@ router.post("/", async (req, res) => {
         // --- 4. Fetch Election Details & Perform Off-Chain Validation ---
         const { data: election, error: electionError } = await supabase
             .from("Elections")
-            .select("contract_address, voting_start_time, voting_end_time, merkle_root")
+            .select("contract_address, voting_start_time, voting_end_time, merkle_root, num_candidates")
             .eq("id", election_id)
             .single();
 
@@ -115,7 +142,7 @@ router.post("/", async (req, res) => {
                 details: "Voting for this election is not yet finalized by the admin." 
             });
         }
-        
+
         // Check 2: Ensure the voting period is active.
         const now = new Date();
         const votingStartTime = new Date(election.voting_start_time);
@@ -131,27 +158,91 @@ router.post("/", async (req, res) => {
         // --- 5. Submit On-Chain Transaction (Gas Relaying) ---
         const votingTallyContract = getContract(election.contract_address);
         const { a, b, c } = formattedProof;
-        const tx = await votingTallyContract.submitTally(a, b, c, publicSignals);
-        const receipt = await tx.wait();
+        const nullifierHash = publicSignals[PUBLIC_SIGNAL_NULLIFIER_INDEX].toString();
 
-        // --- Success Response ---
-        return res.status(200).json({
-            success: true,
-            message: "Your vote has been successfully and anonymously cast.",
-            transactionHash: receipt.transactionHash
-        });
+        return await withRedisLock(ticketLockKey(submissionTicket), async () => {
+            let ticketPayload;
+            try {
+                ticketPayload = await readSubmissionTicket(submissionTicket);
+            } catch (redisError) {
+                console.error(`[${election_id}] Redis ticket read error:`, redisError.message);
+                return res.status(500).json({
+                    error: "SERVER_ERROR",
+                    details: "Failed to validate submission ticket."
+                });
+            }
+
+            if (!ticketPayload) {
+                console.warn(`[${election_id}] Submission attempt failed: Invalid or expired ticket provided (Ticket: ${submissionTicket}).`);
+                return res.status(403).json({
+                    error: "INVALID_OR_EXPIRED_TICKET",
+                    details: "The submission ticket is invalid, has expired, or has already been used."
+                });
+            }
+
+            const payloadValidation = validateSubmitPayload({
+                electionId: election_id,
+                formattedProof,
+                publicSignals,
+                ticketPayload,
+                election,
+            });
+            if (!payloadValidation.ok) {
+                return res.status(payloadValidation.status).json({
+                    error: payloadValidation.error,
+                    details: payloadValidation.details,
+                });
+            }
+
+            return await withRedisLock(submitLockKey(election_id, nullifierHash), async () => {
+                const alreadyUsed = await votingTallyContract.usedNullifiers(nullifierHash);
+                if (alreadyUsed) {
+                    return res.status(409).json({
+                        error: "VOTE_ALREADY_CAST",
+                        details: "This nullifier has already been used for this election."
+                    });
+                }
+
+                try {
+                    await votingTallyContract.callStatic.submitTally(a, b, c, publicSignals);
+                } catch (callError) {
+                    return res.status(400).json({
+                        error: "PROOF_REJECTED",
+                        details: extractEthersReason(callError)
+                    });
+                }
+
+                const consumedPayload = await consumeSubmissionTicket(submissionTicket);
+                if (!consumedPayload) {
+                    return res.status(403).json({
+                        error: "INVALID_OR_EXPIRED_TICKET",
+                        details: "The submission ticket was already used or expired."
+                    });
+                }
+
+                const tx = await votingTallyContract.submitTally(a, b, c, publicSignals);
+                const receipt = await tx.wait();
+
+                // --- Success Response ---
+                return res.status(200).json({
+                    success: true,
+                    message: "Your vote has been successfully and anonymously cast.",
+                    transactionHash: receipt.transactionHash
+                });
+            }, SUBMIT_LOCK_OPTIONS);
+        }, SUBMIT_LOCK_OPTIONS);
 
     } catch (err) {
         console.error(`Error submitting vote:`, err);
-        let reason = "An unknown error occurred.";
-        if (err.reason) {
-            reason = err.reason;
-        } else if (err.data && typeof err.data === 'string') {
-            reason = err.data;
+        if (err.message && err.message.includes("Failed to acquire Redis lock")) {
+            return res.status(429).json({
+                error: "SUBMISSION_IN_PROGRESS",
+                details: "A submission for this nullifier is already being processed."
+            });
         }
         return res.status(500).json({
             error: "An on-chain error occurred while submitting your vote.",
-            details: reason
+            details: extractEthersReason(err)
         });
     }
 });
