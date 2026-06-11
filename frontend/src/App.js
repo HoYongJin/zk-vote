@@ -8,6 +8,7 @@ import { useDispatch } from 'react-redux';
 import { setUser, setAdmin, clearUser, setRedirectComplete } from './store/authSlice';
 import { supabase } from './supabase';
 import { store } from './store/store';
+import axios from './api/axios';
 
 // Page and Component Imports
 import LoginPage from './pages/LoginPage';
@@ -24,14 +25,22 @@ function AuthHandler({ children }) {
   const navigate = useNavigate();
 
   useEffect(() => {
+    // 역할 조회는 백엔드의 /api/me가 단일 출처다 (AR-H4: Supabase 테이블
+    // 직접 읽기를 제거해 Cloud SQL 마이그레이션 후에도 게이팅이 유지되고,
+    // H5 초대 승격이 첫 인증 요청에서 즉시 반영된다).
+    const fetchIsAdmin = async () => {
+      try {
+        const { data } = await axios.get('/me');
+        return Boolean(data.is_admin);
+      } catch (error) {
+        console.error('Failed to resolve role from /api/me:', error.response?.data || error.message);
+        return false; // fail-closed: 역할 확인 실패 시 관리자 아님으로 처리
+      }
+    };
+
     // 관리자인지 확인하고, 로그인 직후라면 적절한 페이지로 리디렉션하는 함수
     const checkAdminAndRedirect = async (user) => {
-      const { data } = await supabase
-        .from('Admins')
-        .select('id')
-        .eq('id', user.id);
-
-      const isAdminUser = data && data.length > 0;
+      const isAdminUser = await fetchIsAdmin();
       dispatch(setAdmin(isAdminUser));
 
       const { postLoginRedirectComplete } = store.getState().auth;
@@ -65,10 +74,7 @@ function AuthHandler({ children }) {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
             dispatch(setUser({ user: session.user, session }));
-            
-            const { data } = await supabase.from('Admins').select('id').eq('id', session.user.id);
-            dispatch(setAdmin(data && data.length > 0));
-
+            dispatch(setAdmin(await fetchIsAdmin()));
         } else {
             dispatch(clearUser());
         }

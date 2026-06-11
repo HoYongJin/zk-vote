@@ -39,8 +39,10 @@ const submitZkRouter = require("./routes/submitZk");
 const completeVoteRouter = require('./routes/completeVote');
 const completedVoteRouter = require('./routes/completedVote');
 const artifactInfoRouter = require('./routes/artifactInfo');
+const meRouter = require('./routes/me');
 
 app.use('/api/zkp-files', express.static(path.join(__dirname, 'zkp')));
+app.use('/api/me', meRouter); // 역할 조회 (AR-H4: 프론트 직접 테이블 읽기 대체)
 app.use("/api/management/addAdmins", addAdminsRouter);
 app.use("/api/elections/set", setVoteRouter); // (관리자) 새 선거 생성: POST /api/elections
 app.use("/api/elections/registerable", registerableVoteRouter); // 등록 가능한 선거 목록: GET /api/elections/registerable
