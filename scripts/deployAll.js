@@ -1,6 +1,30 @@
 const hre = require("hardhat");
-const supabase = require("../server/supabaseClient"); // Import Supabase client from the server directory.
 require("dotenv").config();
+const supabase = require("../server/supabaseClient"); // Import Supabase client from the server directory.
+const { recordElectionArtifacts } = require("../server/utils/zkArtifacts");
+
+function isMissingColumnError(error) {
+    return error && (
+        error.code === "PGRST204" ||
+        error.code === "42703" ||
+        /column|schema cache/i.test(error.message || "")
+    );
+}
+
+async function updateOptionalElectionFields(electionUUID, fields) {
+    const { error } = await supabase
+        .from("Elections")
+        .update(fields)
+        .eq("id", electionUUID);
+
+    if (error) {
+        if (isMissingColumnError(error)) {
+            console.warn(`Skipping optional election field update because the DB schema does not expose the column yet: ${Object.keys(fields).join(", ")}`);
+            return;
+        }
+        throw error;
+    }
+}
 
 async function main() {
     // --- 1. Get Election UUID ---
@@ -16,22 +40,26 @@ async function main() {
     // MODIFIED: Also select `candidates` to pass to the VotingTally constructor and find the correct Verifier.
     const { data: election, error } = await supabase
         .from("Elections")
-        .select("id, merkle_tree_depth, num_candidates") 
+        .select("id, merkle_tree_depth, num_candidates, contract_address") 
         .eq("id", electionUUID)
         .single();
 
     if (error) {
         console.error("Supabase query failed! Details:", error);
-        return;
+        throw new Error("Supabase query failed while loading the election.");
     }
     if (!election) {
         console.error("Could not find the specified election in the database.");
-        return;
+        throw new Error("Could not find the specified election in the database.");
     }
     // MODIFIED: Add a validation check for `num_candidates`.
     if (typeof election.num_candidates !== 'number' || election.num_candidates <= 0) {
         console.error("Error: `num_candidates` for the election is not set or is invalid in the database.");
-        return;
+        throw new Error("Election num_candidates is invalid.");
+    }
+    if (election.contract_address) {
+        console.error(`Election already has a contract address: ${election.contract_address}`);
+        throw new Error("Election contract has already been deployed.");
     }
 
     // --- Convert UUID to uint256 for the contract ---
@@ -71,16 +99,32 @@ async function main() {
     console.log(`VotingTally deployed to: ${votingTallyAddress}`);
 
     // --- 5. Update the Database with the Deployed Contract Address ---
-    const { error: updateError } = await supabase
+    const { data: updatedElection, error: updateError } = await supabase
         .from("Elections")
         .update({ contract_address: votingTallyAddress })
-        .eq("id", electionUUID);
+        .eq("id", electionUUID)
+        .is("contract_address", null)
+        .select("id, contract_address")
+        .single();
 
-    if (updateError) {
+    if (updateError || !updatedElection) {
         console.error("Failed to update contract address in DB:", updateError);
-    } else {
-        console.log("Successfully updated the contract address in the database.");
+        throw new Error("Failed to persist deployed contract address in the database.");
     }
+    await updateOptionalElectionFields(electionUUID, { verifier_address: verifierAddress });
+    console.log("Successfully updated the contract address in the database.");
+
+    // --- 5b. Bind this election to the exact artifacts it was deployed with (audit M5) ---
+    // If the shared (depth, candidates) artifacts are ever regenerated, /proof
+    // detects the hash drift and fails with ARTIFACT_MISMATCH instead of letting
+    // voters generate proofs the deployed verifier can never accept.
+    const artifactRecord = recordElectionArtifacts(electionUUID, {
+        merkleTreeDepth: election.merkle_tree_depth,
+        numCandidates: election.num_candidates,
+        contractAddress: votingTallyAddress,
+        verifierAddress,
+    });
+    console.log(`Recorded deployed artifact hashes (zkey ${artifactRecord.zkeySha256.slice(0, 12)}…) in the artifact manifest.`);
 
     // --- 6. Verify Contracts on Etherscan ---
     console.log("\nStarting contract verification on Etherscan (will wait 30s)...");
