@@ -1,5 +1,13 @@
+const path = require("path");
 const { expect } = require("chai");
 const { invokeJson, withMockedModule } = require("./routeTestUtils");
+
+// submitZk.js resolves ethers from server/node_modules (v5). When a contract
+// mock is needed, replace THAT module — never the root ethers (v6), which
+// hardhat-chai-matchers depends on.
+const serverEthersPath = require.resolve("ethers", {
+    paths: [path.join(__dirname, "..", "server", "routes")],
+});
 
 function createElectionSupabaseMock() {
     const chain = {
@@ -23,6 +31,7 @@ function loadSubmitRoute({
     supabaseMock = {},
     ticketMock,
     redisLockMock,
+    contractMock,
 } = {}) {
     const restoreSupabase = withMockedModule("../server/supabaseClient", supabaseMock);
     const restoreTickets = ticketMock
@@ -30,6 +39,15 @@ function loadSubmitRoute({
         : () => {};
     const restoreRedisLock = redisLockMock
         ? withMockedModule("../server/utils/redisLock", redisLockMock)
+        : () => {};
+    const restoreEthers = contractMock
+        ? withMockedModule(serverEthersPath, {
+            ethers: {
+                providers: { JsonRpcProvider: function JsonRpcProvider() {} },
+                Wallet: function Wallet() {},
+                Contract: function Contract() { return contractMock; },
+            },
+        })
         : () => {};
 
     const routePath = require.resolve("../server/routes/submitZk");
@@ -40,10 +58,34 @@ function loadSubmitRoute({
         router,
         cleanup: () => {
             delete require.cache[routePath];
+            restoreEthers();
             restoreRedisLock();
             restoreTickets();
             restoreSupabase();
         },
+    };
+}
+
+function withRelayerEnv() {
+    const previousRpc = process.env.SEPOLIA_RPC_URL;
+    const previousKey = process.env.PRIVATE_KEY;
+    process.env.SEPOLIA_RPC_URL = "http://127.0.0.1:8545";
+    process.env.PRIVATE_KEY = "0x" + "11".repeat(32);
+    return () => {
+        process.env.SEPOLIA_RPC_URL = previousRpc;
+        process.env.PRIVATE_KEY = previousKey;
+    };
+}
+
+// Election UUID whose electionIdToBigInt value is 0x7b = 123.
+const ELECTION_UUID = "00000000-0000-0000-0000-00000000007b";
+
+function validSubmitBody() {
+    return {
+        formattedProof: { a: ["1", "2"], b: [["3", "4"], ["5", "6"]], c: ["7", "8"] },
+        // [root, candidateIndex, nullifierHash, electionId]
+        publicSignals: ["123", "1", "456", "123"],
+        submissionTicket: "ticket",
     };
 }
 
@@ -137,6 +179,111 @@ describe("submitZk route", function () {
 
         expect(response.status).to.equal(400);
         expect(response.body.error).to.equal("ELECTION_ID_MISMATCH");
+        expect(calls.consumed).to.equal(0);
+    });
+
+    it("rejects a replayed or expired ticket with 403 (audit M1)", async function () {
+        const restoreEnv = withRelayerEnv();
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock(),
+            ticketMock: {
+                // GETDEL already happened (or TTL expired): nothing to read.
+                readSubmissionTicket: async () => null,
+                consumeSubmissionTicket: async () => null,
+            },
+            redisLockMock: { withRedisLock: async (_key, fn) => fn() },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(403);
+        expect(response.body.error).to.equal("INVALID_OR_EXPIRED_TICKET");
+    });
+
+    it("does not consume the ticket when the contract preflight rejects the proof (audit M1)", async function () {
+        const restoreEnv = withRelayerEnv();
+        const calls = { consumed: 0 };
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock(),
+            ticketMock: {
+                readSubmissionTicket: async () => ({
+                    electionId: ELECTION_UUID,
+                    merkleRoot: "123",
+                    nullifierHash: null,
+                }),
+                consumeSubmissionTicket: async () => {
+                    calls.consumed += 1;
+                    return null;
+                },
+            },
+            redisLockMock: { withRedisLock: async (_key, fn) => fn() },
+            contractMock: {
+                usedNullifiers: async () => false,
+                callStatic: {
+                    submitTally: async () => {
+                        throw Object.assign(new Error("execution reverted"), {
+                            reason: "VotingTally: Invalid proof",
+                        });
+                    },
+                },
+            },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(400);
+        expect(response.body.error).to.equal("PROOF_REJECTED");
+        expect(calls.consumed).to.equal(0);
+    });
+
+    it("rejects an already-used on-chain nullifier without consuming the ticket", async function () {
+        const restoreEnv = withRelayerEnv();
+        const calls = { consumed: 0 };
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock(),
+            ticketMock: {
+                readSubmissionTicket: async () => ({
+                    electionId: ELECTION_UUID,
+                    merkleRoot: "123",
+                    nullifierHash: null,
+                }),
+                consumeSubmissionTicket: async () => {
+                    calls.consumed += 1;
+                    return null;
+                },
+            },
+            redisLockMock: { withRedisLock: async (_key, fn) => fn() },
+            contractMock: {
+                usedNullifiers: async () => true,
+                callStatic: { submitTally: async () => true },
+            },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(409);
+        expect(response.body.error).to.equal("VOTE_ALREADY_CAST");
         expect(calls.consumed).to.equal(0);
     });
 });

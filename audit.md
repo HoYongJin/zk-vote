@@ -12,6 +12,7 @@
 > - rev2 (2026-06-11) — 코드 리뷰 피드백을 실제 코드로 재검증해 C1 fix 범위, H1 전제조건, M1 fix 원자성, 검증표(cargo test), M2/검증표(snarkjs), 문서 불일치 #8·#11을 정정.
 > - rev3 (2026-06-11) — 요약표 M2 줄을 본문과 일치(`circom/snarkjs` → `circom`)시키고, C1 evidence의 `component main`을 source(`Main(3,3)`) vs 빌드 산출물(`build_4_5`=`Main(4,5)`, `build_5_4`=`Main(5,4)`)로 구분해 정정.
 > - rev4 (2026-06-11) — 요약표 M11 줄을 본문과 일치(백엔드 EC2 단독 → 백엔드 EC2 + 프런트 S3/CloudFront)시킴.
+> - rev5 (2026-06-12) — **Phase 1 클로저 기록**: C1·H1~H5 전체 및 M1~M5/M9~M13 수정 완료(코드+테스트 증거, 아래 클로저 매트릭스). M6~M8은 Rust 스키마 항목으로 Phase 3에서 처리(스테이징 블로커로 명시 추적). 본문 발견 서술은 감사 시점 기준 원문 그대로 유지한다 — 현재 상태는 매트릭스가 우선.
 
 ---
 
@@ -38,6 +39,36 @@
 | M11 | Medium | `.github/workflows/deploy-backend.yml` + `deploy-frontend.yml` | main push마다 라이브 AWS 자동 배포 (백엔드 EC2 + 프런트 S3/CloudFront), `appleboy/ssh-action@master` 가변 ref |
 | M12 | Medium | `VotePage.js:111-157` | submit 에러 미처리 → 영구 로딩 + 티켓 소비됨 |
 | M13 | Medium | `redisLock.js` + `merkle.js` | 등록 락 10초 TTL + fencing 부재 → H4 레이스 강화 |
+
+---
+
+## Phase 1 클로저 매트릭스 (rev5, 2026-06-12)
+
+> 기준 브랜치 `codex/phase1-c1-h1-circuit-contract-v2`. 증거 테스트는 `npx hardhat test` **64 passing** 기준. 본문 발견 서술은 감사 시점(rev4) 원문이며, 현재 상태는 이 표를 따른다.
+
+| ID | 상태 | 수정 요지 / 위치 | 테스트 증거 |
+|----|------|------------------|-------------|
+| C1 | **CLOSED** | 회로 `{public [election_id]}` + `VotingTally.submitTally`가 `publicInputs[3]==electionId` 검증 (`VoteCheck.circom`, `VotingTally.sol`), 백엔드 `ELECTION_ID_MISMATCH` 선검증 | `voteCircuit.js` "rejects a real proof generated for a different election_id"(실증명 온체인 거부), `VotingTally.js` wrong-election, `submitValidation.js` C1 케이스 |
+| H1 | **CLOSED** | MerkleProof 전 레벨 `pathIndices[i]*(1-pathIndices[i])===0` + 아티팩트 재생성(nPublic=4) | `voteCircuit.js` "rejects a witness whose pathIndices is non-boolean" (witness 생성 실패 실측) |
+| H2 | **CLOSED** | secret은 클라이언트 생성·localStorage 보관(`frontend/src/utils/voterSecret.js`), 서버는 `H(secret)` 커밋먼트만 저장(`register.js`/`merkle.js`), `/proof` 평문 무반환·nullifier 미계산(`proof.js`), 티켓은 election+root만 바인딩(AR-H5) | `registerRoute.js`, `proofRoute.js`(no `user_secret`), `submissionTickets.js`, `poseidonCompat.js`(프론트 poseidon-lite ↔ 백엔드 circomlibjs 비트동일) |
+| H3 | **CLOSED** | `/setZkDeploy` 전체를 `zkdeploy:artifact:<depth>:<cand>` Redis 락으로 직렬화 + 락 내 `ALREADY_DEPLOYED` 재확인 + 아티팩트 스키마 게이트(nPublic=4, uint[4]) (`setupAndDeploy.js`) | `setupAndDeployRoute.js` (pre-lock 거부 + in-lock TOCTOU 재확인) |
+| H4 | **CLOSED** | 온체인 부수효과 **이전** Postgres `registration_end_time` 내구 마감, 락 fencing 재확인, tx 후 스냅샷 재검증(불일치 시 중단), 컨트랙트 기구성 시 멱등 복구 (`finalizeVote.js`) | `finalizeVoteRoute.js` 4케이스(ordering / idempotent recovery / root mismatch 거부 / snapshot-changed 중단) |
+| H5 | **CLOSED** | `AdminInvitations`를 인증 시점에 소비·승격 — `auth`+`authAdmin` 양쪽(프론트가 admin UI를 숨겨도 첫 인증 요청에서 발동), 기존 사용자 승격 실패는 `ADMIN_PROMOTION_FAILED`로 가시화 (`adminInvitations.js`, `middleware/auth*.js`, `addAdmins.js`) | `authMiddleware.js`, `adminInvitations.js`, `addAdminsRoute.js` |
+| M1 | **CLOSED** | 티켓별 락 안에서 read(peek)→검증→통과 시에만 GETDEL 소비; preflight/의미 검증 실패는 티켓 보존 (`submitZk.js`) | `submitZkRoute.js` (semantic-fail 미소비 / replay 403 / preflight-fail 미소비 / 온체인 중복 미소비) |
+| M2 | **CLOSED**(local) | circom 2.2.3 소스 빌드, `_12.ptau` blake2b-512 검증본 프로비저닝, `/setZkDeploy` 사전점검(circom 바이너리 + depth별 ptau) (`setupAndDeploy.js`) | 사전점검 코드 경로 + 실증명 테스트가 로컬 툴체인으로 통과. 스테이징 프로비저닝은 Phase 2/16 추적 |
+| M3 | **CLOSED**(설계 변경) | Redis 마커 대신 **Postgres `registration_end_time` 내구 마감이 fail-closed 게이트**(tx 브로드캐스트 전 설정). Redis 마커는 보조로 유지 | `registerRoute.js`/`registerByAdminRoute.js` durable-close 거부, `finalizeVoteRoute.js` ordering |
+| M4 | **CLOSED** | 후보 수 상한(5)·트림 후 대소문자 무시 중복 거부·depth 상한 (`setVote.js`), 배포측 상한 재검증 (`setupAndDeploy.js`) | `setVote` 검증 로직 + 배포측 캡 (코드 경로) |
+| M5 | **CLOSED**(Phase 1 범위) | 배포 시 zkey/vkey/wasm sha256을 선거별 manifest에 기록(`deployAll.js`→`zkArtifacts.js`), `/proof`가 드리프트 시 `ARTIFACT_MISMATCH` 409 | `zkArtifacts.js` 5케이스, `proofRoute.js` ARTIFACT_MISMATCH. 완전한 manifest 저장은 Phase 10 |
+| M6 | **OPEN→Phase 3** | Rust 마이그레이션 스키마 항목(PascalCase↔snake_case). Node 경로에 영향 없음 — 스테이징 블로커로 추적 | Phase 3 게이트에서 실측 |
+| M7 | **OPEN→Phase 3** | `circuit_id` NOT NULL — 위와 동일 | Phase 3 게이트에서 실측 |
+| M8 | **OPEN→Phase 3** | `numeric(78,0)` 직렬화 — 위와 동일 | Phase 3 게이트에서 실측 |
+| M9 | **CLOSED** | `secretAccessor`를 `zkvote-staging-*` 비밀별 부여로 전환 (`zkvote-staging-setup.sh`) | 스크립트 검토: 프로젝트 레벨 잔여 부여는 cloudsql.client/logging/monitoring뿐 |
+| M10 | **CLOSED** | `gcloud sql users create` 직후 database-url secret 버전 기록 | 스크립트 검토 (`SQL_USER_CREATED`/`DATABASE_URL_SECRET_WRITTEN` 가드) |
+| M11 | **CLOSED** | 두 워크플로우 `workflow_dispatch` 전용 + `legacy-aws-production` environment + `ssh-action@v1.2.0` 핀 | `.github/workflows/*` diff — main push 트리거 제거 |
+| M12 | **CLOSED** | submit await try/catch, 실패 시 로딩 해제 + `details` 표시 (`VotePage.js`) | 코드 경로 + `cd frontend && npm run build` 통과 |
+| M13 | **CLOSED** | 등록 임계구역 60s 락 + `Voters` UPDATE 전·후 `isRedisLockHeld` fencing 재확인 (`merkle.js`) | `redisLock.js` 단위 테스트(토큰 스코프) + `merkle.js` 코드 경로 |
+
+추가로 아키텍처 리뷰의 Phase 1 즉시 항목 반영: **AR-H2**(2^depth 용량 가드, `OVER_CAPACITY` — `registerByAdminRoute.js` 테스트), **AR-H5**(티켓 nullifier 바인딩 제거), **AR-L10**(M13 위 참조).
 
 ---
 
@@ -279,6 +310,8 @@
 ---
 
 ## 결론
+
+> **rev5 갱신 (2026-06-12)**: 아래 결론은 감사 시점(rev4) 기준이다. Phase 1 재기준선 이후 **Critical/High 전체와 M1~M5/M9~M13이 닫혔다**(클로저 매트릭스 참조). 그러나 스테이징 진입에는 여전히 (a) M6~M8 스키마 패리티(Phase 3), (b) trusted setup 단독 기여 문제 AR-H1의 beacon/MPC(Phase 10), (c) Phase 16 게이트 충족이 선행되어야 한다 — **여전히 로컬 데모/개발 전용**이며, 그 이유가 "투표 무결성 결함"에서 "스테이징 준비 미완"으로 바뀌었을 뿐이다.
 
 **현 상태: 로컬 데모/개발 지속에는 적합하나, 스테이징·프로덕션에는 부적합(not ready).**
 
