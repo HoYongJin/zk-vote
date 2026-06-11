@@ -211,3 +211,67 @@ pub async fn set_zk_deploy(
         "Contract deployment through the Rust API lands with the Phase 11 chain layer.".to_string(),
     ))
 }
+
+// ---------------------------------------------------------------------------
+// POST /api/elections/:election_id/complete  (Phase 14)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct CompleteResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+pub async fn complete_election(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Path(election_id): Path<Uuid>,
+) -> Result<Json<CompleteResponse>, ApiError> {
+    let election = ElectionRepo::find(&state.pg, election_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Election with ID {election_id} not found.")))?;
+
+    use zkvote_domain::services::{check_completion, CompletionRejection};
+    if let Err(rejection) = check_completion(
+        OffsetDateTime::now_utc(),
+        election.voting_end_time,
+        election.completed,
+    ) {
+        let (status, code, details): (u16, &'static str, &str) = match rejection {
+            CompletionRejection::AlreadyCompleted => (
+                409,
+                "ALREADY_COMPLETED",
+                "This election is already marked as completed.",
+            ),
+            CompletionRejection::VotingNotStarted => (
+                400,
+                "VOTING_NOT_STARTED",
+                "This election does not have a voting end time yet.",
+            ),
+            CompletionRejection::VotingActive => (
+                403,
+                "VOTING_PERIOD_ACTIVE",
+                "Cannot complete the election before voting ends.",
+            ),
+        };
+        return Err(ApiError::Coded {
+            status,
+            code,
+            details: details.to_string(),
+        });
+    }
+
+    // Guarded, idempotent (Node parity: `.eq("completed", false)`).
+    if !ElectionRepo::mark_completed(&state.pg, election_id).await? {
+        return Err(ApiError::Coded {
+            status: 409,
+            code: "ALREADY_COMPLETED",
+            details: "This election was completed by a concurrent request.".to_string(),
+        });
+    }
+
+    Ok(Json(CompleteResponse {
+        success: true,
+        message: "Election marked as completed.".to_string(),
+    }))
+}

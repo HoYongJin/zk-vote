@@ -40,6 +40,10 @@ pub fn router(state: AppState) -> Router {
             "/api/elections/:election_id/finalize",
             post(finalize::finalize),
         )
+        .route(
+            "/api/elections/:election_id/complete",
+            post(manage::complete_election),
+        )
         .route("/api/elections/:election_id/proof", post(vote::proof))
         // Anonymous by design: no auth extractor on submit (privacy model).
         .route("/api/elections/:election_id/submit", post(vote::submit))

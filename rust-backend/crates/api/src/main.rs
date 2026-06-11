@@ -1422,6 +1422,129 @@ mod tests {
             .unwrap();
     }
 
+    /// Phase 14 gates: completion lifecycle. Run with docker PG.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn completion_rejects_early_and_is_idempotent() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+        use zkvote_db::repos::{ElectionRepo, NewElection, VoterRepo};
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let election = ElectionRepo::create(
+            &pool,
+            &NewElection {
+                name: format!("p14 election {admin_id}"),
+                merkle_tree_depth: 4,
+                candidates: vec!["A".to_string(), "B".to_string()],
+                registration_end_time: now + Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        VoterRepo::insert_allowlisted(&pool, election.id, &format!("p14-{admin_id}@example.com"))
+            .await
+            .unwrap();
+        let path = format!("/api/elections/{}/complete", election.id);
+
+        // No voting end time yet.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "VOTING_NOT_STARTED");
+
+        // Voting still active.
+        ElectionRepo::finalize_sync(
+            &pool,
+            election.id,
+            "42",
+            now + Duration::minutes(1),
+            now - Duration::hours(1),
+            now + Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["error"], "VOTING_PERIOD_ACTIVE");
+
+        // Voting ended -> completes once, then 409 on replay.
+        sqlx::query("UPDATE elections SET voting_end_time = $2 WHERE id = $1")
+            .bind(election.id)
+            .bind(now - Duration::minutes(1))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "complete failed: {json}");
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ALREADY_COMPLETED");
+
+        // The completed list (Phase 7 surface) now carries the row.
+        let (status, rows) = get_json(
+            routes::router(state.clone()),
+            "/api/elections/completed",
+            &admin_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(row_by_id(&rows, &election.id.to_string()).is_some());
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn api_error_shape_matches_node_contract() {
         let response = axum::response::IntoResponse::into_response(error::ApiError::Validation(
