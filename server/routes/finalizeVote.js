@@ -9,12 +9,18 @@ const express = require("express");
 const router = express.Router({ mergeParams: true });
 const validator = require('validator');
 const supabase = require("../supabaseClient");
-const { generateMerkleTree } = require("../utils/merkle"); 
+const { buildFinalMerkleSnapshot, withElectionMerkleLock } = require("../utils/merkle");
+const { isRedisLockHeld } = require("../utils/redisLock");
+const { markOnchainConfigured } = require("../utils/finalizationState");
 const { ethers } = require("ethers");
 const authAdmin = require("../middleware/authAdmin");
 
 // Load contract ABI (ensure path is correct relative to this file)
 const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/VotingTally.json").abi;
+const FINALIZE_LOCK_OPTIONS = {
+    lockTimeoutSeconds: 1800,
+    pollingTimeoutMs: 30000,
+};
 
 /**
  * @route   POST /api/elections/:election_id/finalize
@@ -55,48 +61,91 @@ router.post("/", authAdmin, async (req, res) => {
    }
 
     try {
+        const result = await withElectionMerkleLock(election_id, async (lock) => {
+        const finalizationTime = new Date();
+        if (votingEndTime <= finalizationTime) {
+            return {
+                status: 400,
+                body: {
+                    error: "VALIDATION_ERROR",
+                    details: "`voteEndTime` must still be in the future when finalization starts."
+                }
+            };
+        }
         // --- 2. Fetch Election Details and Perform Pre-condition Checks ---
         const { data: election, error: electionError } = await supabase
             .from("Elections")
-            .select("contract_address, merkle_tree_depth, merkle_root, registration_end_time")
+            .select("contract_address, merkle_root, registration_end_time")
             .eq("id", election_id)
             .single();
 
         if (electionError) {
             console.error(`[${election_id}] Error fetching election:`, electionError.message);
             if (electionError.code === 'PGRST116') {
-                return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
+                return { status: 404, body: { error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` } };
             }
             throw electionError;
         }
         if (!election) {
-            return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
+            return { status: 404, body: { error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` } };
         }
 
         // Check 1: Ensure the smart contract address exists (meaning deployment was successful).
         if (!election.contract_address) {
             console.warn(`[${election_id}] Attempted to finalize election before contract deployment.`);
-            return res.status(400).json({ error: "STATE_ERROR", details: "The smart contract for this election has not been deployed yet. Run setup/deploy first." });
+            return { status: 400, body: { error: "STATE_ERROR", details: "The smart contract for this election has not been deployed yet. Run setup/deploy first." } };
         }
         // Check 2: Ensure the election hasn't already been finalized (merkle_root is null).
         if (election.merkle_root) {
             console.warn(`[${election_id}] Attempted to finalize an already finalized election.`);
-            return res.status(409).json({ // 409 Conflict
+            return { status: 409, body: { // 409 Conflict
                 error: "ALREADY_FINALIZED", 
                 details: "This election's registration period has already been finalized." 
-            });
+            } };
         }
 
-        // --- 3. Generate the Final Merkle Root Off-Chain ---
-        const { tree, leaves } = await generateMerkleTree(election_id);
+        const currentRegistrationEnd = new Date(election.registration_end_time);
+        const registrationClosedAt = new Date(
+            Math.min(finalizationTime.getTime(), currentRegistrationEnd.getTime())
+        ).toISOString();
+
+        // Durable fail-closed marker before any on-chain side effect. Even if the
+        // process crashes after the transaction succeeds, registration remains
+        // closed in Postgres and late voters cannot silently diverge from the
+        // on-chain Merkle root.
+        const { data: closedElection, error: closeError } = await supabase
+            .from("Elections")
+            .update({ registration_end_time: registrationClosedAt })
+            .eq("id", election_id)
+            .is("merkle_root", null)
+            .select("id")
+            .single();
+
+        if (closeError || !closedElection) {
+            const details = closeError?.message || "Registration close update returned no row.";
+            console.error(`[${election_id}] Failed to durably close registration before finalization: ${details}`);
+            return {
+                status: 409,
+                body: {
+                    error: "FINALIZATION_STATE_CONFLICT",
+                    details: "Could not durably close registration before finalization."
+                }
+            };
+        }
+
+        // --- 3. Generate the final Merkle root off-chain under the same election lock. ---
+        const { tree, leaves } = await buildFinalMerkleSnapshot(
+            election_id,
+            registrationClosedAt
+        );
 
         // Check if any voters actually registered. Cannot finalize with zero voters.
         if (!leaves || leaves.length === 0) {
             console.warn(`[${election_id}] Attempted to finalize election with zero registered voters.`);
-            return res.status(400).json({ 
+            return { status: 400, body: { 
                 error: "NO_VOTERS_REGISTERED", 
                 details: "Cannot finalize: No voters have completed their registration for this election." 
-            });
+            } };
         }
         const finalMerkleRoot = tree.root.toString();
 
@@ -107,67 +156,138 @@ router.post("/", authAdmin, async (req, res) => {
         const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
         const votingTallyContract = new ethers.Contract(election.contract_address, votingTallyAbi, wallet);
         
-        // --- [Tx 1] Set the Merkle Root on the contract ---
-        let txReceiptRoot, txReceiptPeriod;
+        // --- [Tx] Atomically set the Merkle root and voting period on the contract ---
+        let txReceiptConfigure;
+        let votingStartTimeIso = finalizationTime.toISOString();
+        let votingEndTimeIso = votingEndTime.toISOString();
+        let onchainConfigured = false;
         try {
-            const txRoot = await votingTallyContract.setMerkleRoot(finalMerkleRoot);
-            txReceiptRoot = await txRoot.wait(); // Wait for the transaction to be mined
-            console.log(`[${election_id}] Merkle Root set successfully on-chain. Gas used: ${txReceiptRoot.gasUsed.toString()}`);
+            onchainConfigured = await votingTallyContract.configured();
+            if (onchainConfigured) {
+                const onchainRoot = await votingTallyContract.merkleRoot();
+                if (BigInt(onchainRoot.toString()) !== BigInt(finalMerkleRoot)) {
+                    return {
+                        status: 409,
+                        body: {
+                            error: "ON_CHAIN_STATE_MISMATCH",
+                            details: "The contract is already configured with a different Merkle root. Manual reconciliation is required."
+                        }
+                    };
+                }
+
+                const onchainStart = await votingTallyContract.votingStartTime();
+                const onchainEnd = await votingTallyContract.votingEndTime();
+                votingStartTimeIso = new Date(Number(onchainStart.toString()) * 1000).toISOString();
+                votingEndTimeIso = new Date(Number(onchainEnd.toString()) * 1000).toISOString();
+                await markOnchainConfigured(election_id, {
+                    merkleRoot: finalMerkleRoot,
+                    registrationClosedAt,
+                    votingStartTime: votingStartTimeIso,
+                    votingEndTime: votingEndTimeIso,
+                });
+            } else {
+                const votingStartTimeSeconds = Math.floor(finalizationTime.getTime() / 1000);
+                const votingEndTimeSeconds = Math.floor(votingEndTime.getTime() / 1000);
+                const txConfigure = await votingTallyContract.configureElection(
+                    finalMerkleRoot,
+                    votingStartTimeSeconds,
+                    votingEndTimeSeconds
+                );
+                txReceiptConfigure = await txConfigure.wait();
+                console.log(`[${election_id}] Election configured successfully on-chain. Gas used: ${txReceiptConfigure.gasUsed.toString()}`);
+                await markOnchainConfigured(election_id, {
+                    merkleRoot: finalMerkleRoot,
+                    registrationClosedAt,
+                    votingStartTime: votingStartTimeIso,
+                    votingEndTime: votingEndTimeIso,
+                    configureTransactionHash: txReceiptConfigure.transactionHash,
+                });
+            }
         } catch (contractError) {
-             console.error(`[${election_id}] Error setting Merkle Root on contract:`, contractError.reason || contractError.message);
-             throw new Error(`On-chain error during setMerkleRoot: ${contractError.reason || contractError.message}`);
+             console.error(`[${election_id}] Error configuring election on contract:`, contractError.reason || contractError.message);
+             throw new Error(`On-chain error during configureElection: ${contractError.reason || contractError.message}`);
         }
 
-        // --- [Tx 2] Set the Voting Period on the contract ---
-        // Convert JS Dates to Unix timestamps (seconds).
-        const votingStartTimeSeconds = Math.floor(now.getTime() / 1000);
-        const votingEndTimeSeconds = Math.floor(votingEndTime.getTime() / 1000);;
+        if (!(await isRedisLockHeld(lock))) {
+            console.error(`[${election_id}] Finalization lock expired before DB sync after on-chain configuration.`);
+            return {
+                status: 500,
+                body: {
+                    error: "FINALIZATION_LOCK_EXPIRED",
+                    details: "On-chain finalization may have succeeded, but the finalization lock expired before database synchronization."
+                }
+            };
+        }
 
-        try {
-            const txPeriod = await votingTallyContract.setVotingPeriod(votingStartTimeSeconds, votingEndTimeSeconds);
-            txReceiptPeriod = await txPeriod.wait();
-            console.log(`[${election_id}] Voting Period set successfully on-chain. Gas used: ${txReceiptPeriod.gasUsed.toString()}`);
-        } catch(contractError) {
-             console.error(`[${election_id}] Error setting Voting Period on contract:`, contractError.reason || contractError.message);
-             // If setting the period fails after setting the root, the state is inconsistent.
-             // Log critical error. DB update will still be attempted but state needs review.
-              console.error(`[${election_id}] CRITICAL: Merkle root set, but failed to set voting period! Manual intervention may be needed.`);
-             throw new Error(`On-chain error during setVotingPeriod: ${contractError.reason || contractError.message}`);
+        const revalidatedSnapshot = await buildFinalMerkleSnapshot(election_id, registrationClosedAt);
+        const revalidatedRoot = revalidatedSnapshot.tree.root.toString();
+        if (BigInt(revalidatedRoot) !== BigInt(finalMerkleRoot) || revalidatedSnapshot.leaves.length !== leaves.length) {
+            console.error(`[${election_id}] CRITICAL ERROR: voter snapshot changed after on-chain finalization. originalRoot=${finalMerkleRoot}, revalidatedRoot=${revalidatedRoot}`);
+            return {
+                status: 500,
+                body: {
+                    error: "FINALIZATION_SNAPSHOT_CHANGED",
+                    details: "On-chain finalization succeeded, but the voter snapshot changed before database synchronization. Manual reconciliation is required.",
+                    merkleRoot: finalMerkleRoot,
+                    revalidatedRoot,
+                }
+            };
         }
         
         // --- 5. Update the Database (Off-Chain) - Only after successful on-chain updates ---
         // Update the election record with the Merkle root and the actual voting times.
         // Also update registration_end_time to 'now' to definitively close registration in the DB.
-        const { error: updateDbError } = await supabase
+        const { data: updatedElection, error: updateDbError } = await supabase
             .from("Elections")
             .update({ 
                 merkle_root: finalMerkleRoot,
-                registration_end_time: now.toISOString(),
-                voting_start_time: now.toISOString(),
-                voting_end_time: votingEndTime.toISOString()
+                registration_end_time: registrationClosedAt,
+                voting_start_time: votingStartTimeIso,
+                voting_end_time: votingEndTimeIso
             })
-            .eq("id", election_id);
+            .eq("id", election_id)
+            .is("merkle_root", null)
+            .select("id")
+            .single();
 
-        let responseMessage = "Election finalized and voting has started successfully.";
-        if (updateDbError) {
+        if (updateDbError || !updatedElection) {
             // CRITICAL STATE: The contract is finalized, but the DB failed to reflect this.
             // This requires monitoring and potentially manual DB correction.
-            console.error(`[${election_id}] CRITICAL ERROR: On-chain finalization succeeded (Root Tx: ${txReceiptRoot?.transactionHash}, Period Tx: ${txReceiptPeriod?.transactionHash}), but database update failed: ${updateDbError.message}`);
-            // Modify the success message to indicate the partial failure.
-            responseMessage = "On-chain updates succeeded, but database update failed. Please check server logs.";
-            // Still return 200 OK because the critical on-chain part succeeded, but alert the admin.
+            const details = updateDbError?.message || "Database update returned no row.";
+            console.error(`[${election_id}] CRITICAL ERROR: On-chain finalization succeeded (Configure Tx: ${txReceiptConfigure?.transactionHash}), but database update failed: ${details}`);
+            return {
+                status: 500,
+                body: {
+                    error: "FINALIZATION_DB_SYNC_FAILED",
+                    details: "On-chain finalization succeeded, but the database could not be updated. Manual reconciliation is required.",
+                    merkleRoot: finalMerkleRoot,
+                    configureTransactionHash: txReceiptConfigure?.transactionHash,
+                }
+            };
         }
 
         // --- 6. Success Response ---
-        return res.status(200).json({
+        return {
+            status: 200,
+            body: {
             success: true,
-            message: responseMessage,
+            message: "Election finalized and voting has started successfully.",
             merkleRoot: finalMerkleRoot,
-        });
+            }
+        };
+        }, FINALIZE_LOCK_OPTIONS);
+
+        return res.status(result.status).json(result.body);
 
     } catch (err) {
         // --- 7. General Error Handling ---
         console.error(`[${election_id}] Failed to finalize election:`, err.message);
+        if (err.status && err.code) {
+            return res.status(err.status).json({
+                error: err.code,
+                details: err.message
+            });
+        }
         
         // Check for common Ethers.js/blockchain errors
         // (err.code might be useful, e.g., 'CALL_EXCEPTION' indicates contract revert)
