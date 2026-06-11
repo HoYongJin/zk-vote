@@ -6,7 +6,7 @@
 - **방법**: 실제 소스 정독 + 10개 영역 병렬 리뷰 → 발견별 적대적 검증(verdict) → 완전성 비평. 총 51개 고유 발견 검증.
 - **요약**: Critical 1, High 5, Medium 13, Low/개선 다수. 거짓 양성 1건은 강등 처리(아래 명시).
 
-> 이 문서(repo 루트 `audit.md`)는 `docs/PROJECT_PLAN.md`의 "Phase 18. Security Re-audit and Privacy Review"(및 "Phase 1. Audit Blocker Rebaseline")가 산출물로 계획한 `docs/SECURITY_REVIEW.md`에 담길 내용을 제공한다. 정식 산출물로 승격하려면 `docs/SECURITY_REVIEW.md`로 이동/복제할 것.
+> **승격 완료 (2026-06-12)**: 정식 산출물 `docs/SECURITY_REVIEW.md`가 생성되었다 — 클로저 상태·신뢰 경계·위협 모델은 그쪽이 권위이며, 이 파일은 발견 본문·증거의 원본으로 유지된다.
 >
 > **개정 이력**:
 > - rev2 (2026-06-11) — 코드 리뷰 피드백을 실제 코드로 재검증해 C1 fix 범위, H1 전제조건, M1 fix 원자성, 검증표(cargo test), M2/검증표(snarkjs), 문서 불일치 #8·#11을 정정.
