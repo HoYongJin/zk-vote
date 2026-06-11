@@ -154,9 +154,10 @@ secrets=(
   zkvote-staging-supabase-jwks-url
   zkvote-staging-sepolia-rpc-url
   zkvote-staging-relayer-private-key
-  zkvote-staging-secret-salt
   zkvote-staging-artifact-bucket
 )
+# zkvote-staging-secret-salt was removed: the server no longer derives voter
+# secrets (audit H2 / architecture review AR-L5).
 for secret_name in "${secrets[@]}"; do
   ensure_secret "${secret_name}"
   gcloud secrets add-iam-policy-binding "${secret_name}" \
@@ -179,7 +180,6 @@ add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 [[ -n "${SUPABASE_JWKS_URL:-}" ]] && add_secret_version zkvote-staging-supabase-jwks-url "${SUPABASE_JWKS_URL}"
 [[ -n "${SEPOLIA_RPC_URL:-}" ]] && add_secret_version zkvote-staging-sepolia-rpc-url "${SEPOLIA_RPC_URL}"
 [[ -n "${RELAYER_PRIVATE_KEY:-}" ]] && add_secret_version zkvote-staging-relayer-private-key "${RELAYER_PRIVATE_KEY}"
-[[ -n "${SECRET_SALT:-}" ]] && add_secret_version zkvote-staging-secret-salt "${SECRET_SALT}"
 
 echo "GCP staging setup complete."
 echo "Project: ${PROJECT_ID}"

@@ -47,6 +47,41 @@ Apply Rust migrations to local Postgres:
 bash scripts/local/migrate.sh
 ```
 
+## ZK Toolchain
+
+Check what is installed (informational, never fails):
+
+```bash
+CIRCOM_BIN=/path/to/circom bash scripts/local/check-toolchain.sh
+```
+
+- `circom`: build from source (https://docs.circom.io) and either put it on
+  `PATH` or export `CIRCOM_BIN=/path/to/circom` (honored by `setUpZk.sh` and
+  the `/setZkDeploy` preflight).
+- `snarkjs`: the repo always uses the local `node_modules/.bin/snarkjs`; do
+  not install it globally.
+- Powers of Tau: `.ptau` files are gitignored and must be provisioned
+  per environment with checksum verification (audit M2):
+
+```bash
+bash scripts/local/fetch-ptau.sh 12   # Merkle depth <= 5 (build_4_5/build_5_4)
+bash scripts/local/fetch-ptau.sh 16   # depth <= 10
+bash scripts/local/fetch-ptau.sh 20   # depth <= 20
+```
+
+The script downloads from the official mirror and verifies the blake2b-512
+hash published in the snarkjs README; it fails closed on any mismatch.
+
+- Noir (`nargo`) is POC-only: install via `noirup` if you work on the POC,
+  but nothing in the production path may depend on it.
+
+## Environment Files
+
+- Root `.env` (see `.env.example`): Rust backend + Hardhat
+  (`SEPOLIA_RPC_URL`, `PRIVATE_KEY`, `ETHERSCAN_API_KEY`).
+- `server/.env` (see `server/.env.example`): the ONLY file the Node API
+  loads — Supabase keys, Redis, relayer key, `PORT`, `CIRCOM_BIN`.
+
 ## Verification
 
 Node and scripts:
@@ -76,6 +111,10 @@ cargo clippy --workspace -- -D warnings
 - Production ZK path is Circom/Groth16.
 - Noir is reserved for POC work and must not affect production artifact
   selection.
-- Submit remains anonymous and is authorized by a short-lived Redis submission
-  ticket bound to election, Merkle root, and nullifier hash.
+- Submit remains anonymous and is authorized by a short-lived, single-use
+  Redis submission ticket bound to the election and Merkle root only — the
+  server never learns a voter's nullifier before submit (post-audit privacy
+  model, audit H2 / AR-H5).
+- Voter secrets are generated and kept client-side (localStorage); the server
+  stores only the Poseidon commitment `H(secret)`.
 - Do not commit real secrets. Use `.env` locally and Secret Manager in staging.
