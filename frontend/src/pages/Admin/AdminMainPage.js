@@ -202,7 +202,7 @@ function AdminMainPage() {
         setActionLoading(prev => ({ ...prev, isFinalizing: finalizingVote.id }));
         try {
             // This API call generates the Merkle root and sets times on the contract
-            await axios.post(`/elections/${finalizingVote.id}/finalize`, { voteEndTime });
+            await axios.post(`/elections/${finalizingVote.id}/finalize`, { voteEndTime: new Date(voteEndTime).toISOString() });
             alert('등록이 마감되었으며 투표가 시작되었습니다.');
             setIsFinalizeModalOpen(false); // Close modal on success
             fetchAllVotes(); // Refresh lists (vote moves from Registerable to Votable)

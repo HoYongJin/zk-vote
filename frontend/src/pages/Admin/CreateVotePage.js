@@ -23,6 +23,7 @@ const candidateInputStyle = { ...inputStyle, flex: 1 };
 // [UX] Styled buttons for add/remove
 const secondaryButtonStyle = { padding: '8px 12px', border: '1px solid #007bff', borderRadius: '4px', backgroundColor: '#fff', color: '#007bff', cursor: 'pointer' };
 const removeButtonStyle = { ...secondaryButtonStyle, borderColor: '#dc3545', color: '#dc3545' };
+const MAX_SUPPORTED_CANDIDATES = 5;
 
 
 /**
@@ -92,6 +93,15 @@ function CreateVotePage() {
             alert('후보자를 최소 1명 이상 입력해야 합니다.');
             return;
         }
+        if (finalCandidates.length > MAX_SUPPORTED_CANDIDATES) {
+            alert(`후보자는 최대 ${MAX_SUPPORTED_CANDIDATES}명까지 지원됩니다.`);
+            return;
+        }
+        const candidateKeys = finalCandidates.map(c => c.trim().toLocaleLowerCase());
+        if (new Set(candidateKeys).size !== candidateKeys.length) {
+            alert('중복된 후보자 이름은 사용할 수 없습니다.');
+            return;
+        }
         // Check for other fields (already covered by 'required' attribute, but good for safety)
         if (!name || !merkleTreeDepth || !regEndTime) {
             alert('모든 필수 항목을 입력해주세요.');
@@ -111,7 +121,7 @@ function CreateVotePage() {
                 name: name.trim(),
                 merkleTreeDepth: parseInt(merkleTreeDepth, 10), // Ensure it's a number
                 candidates: finalCandidates,
-                regEndTime: regEndTime, // Already in ISO format from datetime-local input
+                regEndTime: new Date(regEndTime).toISOString(),
             });
         
             // [UX] Simplified success message
@@ -172,7 +182,7 @@ function CreateVotePage() {
                 style={inputStyle} 
                 type="number" 
                 min="2" // A depth of 1 is not very useful
-                max="32" // Max depth for practical purposes
+                max="5" // Matches currently provisioned Powers of Tau/artifacts
                 value={merkleTreeDepth} 
                 onChange={(e) => setMerkleTreeDepth(e.target.value)} 
                 placeholder="예: 10 (2^10 = 1024명 지원)" 
@@ -210,6 +220,7 @@ function CreateVotePage() {
                 type="button" 
                 style={{...secondaryButtonStyle, marginTop: '10px'}}
                 onClick={addCandidate}
+                disabled={candidates.length >= MAX_SUPPORTED_CANDIDATES}
             >
                 후보자 추가
             </button>

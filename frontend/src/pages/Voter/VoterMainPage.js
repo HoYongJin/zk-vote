@@ -9,6 +9,12 @@ import { useSelector } from 'react-redux';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../../supabase';
 import axios from '../../api/axios';
+import {
+  calculateSecretCommitment,
+  clearVoterSecret,
+  getOrCreateVoterSecret,
+  getVoterSecret,
+} from '../../utils/voterSecret';
 
 // --- 스타일 정의 ---
 const pageStyle = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '800px', margin: 'auto' };
@@ -86,14 +92,25 @@ function VoterMainPage() {
       }
   
       setRegisteringId(electionId); // Set loading state for this specific button
+      let generatedSecret = null;
+      const hadStoredSecret = !!getVoterSecret(electionId);
       try {
+        generatedSecret = getOrCreateVoterSecret(electionId);
+        const secretCommitment = await calculateSecretCommitment(generatedSecret);
+
         // Call the register API
-        await axios.post(`/elections/${electionId}/register`, { name: name.trim() });
+        await axios.post(`/elections/${electionId}/register`, {
+          name: name.trim(),
+          secretCommitment,
+        });
         alert(`'${electionName}' 투표에 '${name}' 이름으로 성공적으로 등록되었습니다.`);
         
         // Refresh all lists to reflect the new state (e.g., isRegistered will be true)
         fetchAllVotesForVoter(); 
       } catch (error) {
+        if (generatedSecret && !hadStoredSecret) {
+          clearVoterSecret(electionId);
+        }
         console.error("Registration failed:", error.response?.data);
         alert(`등록 실패: ${error.response?.data?.details || '오류가 발생했습니다.'}`);
       } finally {

@@ -11,6 +11,7 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from '../../api/axios'; // Our configured axios instance (baseURL: /api)
+import { getVoterSecret } from '../../utils/voterSecret';
 
 // --- (Style definitions are omitted for brevity) ---
 const pageStyle = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '600px', margin: 'auto' };
@@ -54,13 +55,17 @@ function VotePage() {
             const serverResponse = await axios.post(`/elections/${electionId}/proof`);
             
             // Destructure all required data from the response
-            const { 
-                user_secret, 
+            const {
                 root, 
                 pathElements, 
                 pathIndices,
                 submissionTicket: receivedTicket // Get the single-use ticket
             } = serverResponse.data;
+
+            const userSecret = getVoterSecret(electionId);
+            if (!userSecret) {
+                throw new Error("이 브라우저에 저장된 투표 secret이 없습니다. 등록했던 브라우저에서 다시 시도해주세요.");
+            }
 
             // [MODIFICATION] Store the ticket for the anonymous submit call later.
             submissionTicket = receivedTicket;
@@ -81,7 +86,7 @@ function VotePage() {
                 root_in: root,
 
                 // Private inputs for the circuit
-                user_secret: user_secret,
+                user_secret: userSecret,
                 vote: voteArray,
                 pathElements: pathElements,
                 pathIndices: pathIndices,
@@ -112,8 +117,21 @@ function VotePage() {
                 const { status, proof, publicSignals, message } = event.data;
 
                 if (status === 'success') {
+                    // Sanity check: the v2 circuit exposes 4 public signals,
+                    // [root_out, vote_index, nullifier_hash, election_id]. A
+                    // different length means stale wasm/zkey artifacts are being
+                    // served; submitting would only be rejected on-chain.
+                    if (!Array.isArray(publicSignals) || publicSignals.length !== 4) {
+                        setLoadingMessage('');
+                        setErrorMessage('증명 형식이 올바르지 않습니다. 페이지를 새로고침한 뒤 다시 시도해주세요. (예상 공개 신호 4개)');
+                        worker.terminate();
+                        return;
+                    }
+
                     setLoadingMessage('생성된 증명을 안전하게 제출하는 중...');
-                    
+
+                    // Pass publicSignals to the contract verbatim in snarkjs order
+                    // (do NOT reorder): [root, vote_index, nullifier_hash, election_id].
                     // Format the proof object for the Solidity verifier contract
                     const formattedProof = {
                         a: proof.pi_a.slice(0, 2),
@@ -121,32 +139,40 @@ function VotePage() {
                         c: proof.pi_c.slice(0, 2)
                     };
 
-                    // --- 6. [MODIFIED] Submit Proof (Anonymous) ---
-                    // This call is anonymous (no JWT) but sends the single-use ticket
-                    // to the gas relayer endpoint for authorization.
-                    await axios.post(`/elections/${electionId}/submit`, { 
-                        formattedProof, 
-                        publicSignals,
-                        submissionTicket: submissionTicket // Pass the ticket
-                    });
-                    
-                    setLoadingMessage('');
-                    alert('투표가 성공적으로 제출되었습니다!');
-
-                    // --- 7. [NEW] Set localStorage Flag for UX ---
-                    // This is the UX improvement discussed. It marks this election
-                    // as 'voted' *on this browser* so VoterMainPage can hide the button.
                     try {
-                        const storageKey = `voted_${electionId}`;
-                        localStorage.setItem(storageKey, 'true');
-                        console.log(`[VotePage] Set ${storageKey} in localStorage.`);
-                    } catch (e) {
-                        // This is not critical, just log the error.
-                        console.error("Failed to save vote status to localStorage:", e);
+                        // --- 6. [MODIFIED] Submit Proof (Anonymous) ---
+                        // This call is anonymous (no JWT) but sends the single-use ticket
+                        // to the gas relayer endpoint for authorization.
+                        await axios.post(`/elections/${electionId}/submit`, { 
+                            formattedProof, 
+                            publicSignals,
+                            submissionTicket: submissionTicket // Pass the ticket
+                        });
+                        
+                        setLoadingMessage('');
+                        alert('투표가 성공적으로 제출되었습니다!');
+
+                        // --- 7. [NEW] Set localStorage Flag for UX ---
+                        // This is the UX improvement discussed. It marks this election
+                        // as 'voted' *on this browser* so VoterMainPage can hide the button.
+                        try {
+                            const storageKey = `voted_${electionId}`;
+                            localStorage.setItem(storageKey, 'true');
+                            console.log(`[VotePage] Set ${storageKey} in localStorage.`);
+                        } catch (e) {
+                            // This is not critical, just log the error.
+                            console.error("Failed to save vote status to localStorage:", e);
+                        }
+                        
+                        // Navigate back to the main page
+                        navigate('/');
+                    } catch (submitError) {
+                        setLoadingMessage('');
+                        console.error("Failed to submit proof:", submitError.response?.data || submitError);
+                        setErrorMessage(`투표 제출 실패: ${submitError.response?.data?.details || submitError.message}`);
+                        worker.terminate();
+                        return;
                     }
-                    
-                    // Navigate back to the main page
-                    navigate('/');
 
                 } else {
                     // Handle errors *from the worker* (proof generation failed)

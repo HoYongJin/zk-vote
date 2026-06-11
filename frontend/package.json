@@ -11,6 +11,7 @@
     "@testing-library/user-event": "^13.5.0",
     "axios": "^1.12.2",
     "http-proxy-middleware": "^3.0.5",
+    "poseidon-lite": "0.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-redux": "^9.2.0",
@@ -39,7 +40,10 @@
           "no-restricted-globals": "off"
         }
       }
-    ]
+    ],
+    "globals": {
+      "BigInt": "readonly"
+    }
   },
   "browserslist": {
     "production": [
