@@ -1,0 +1,35 @@
+services:
+  zkvote-postgres:
+    image: postgres:16-alpine
+    container_name: zkvote-postgres
+    environment:
+      POSTGRES_DB: zkvote
+      POSTGRES_USER: zkvote
+      POSTGRES_PASSWORD: zkvote_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - zkvote-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zkvote -d zkvote"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  zkvote-redis:
+    image: redis:7-alpine
+    container_name: zkvote-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - zkvote-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  zkvote-postgres-data:
+  zkvote-redis-data:

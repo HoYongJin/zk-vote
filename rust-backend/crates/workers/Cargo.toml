@@ -1,0 +1,9 @@
+[package]
+name = "zkvote-workers"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+zkvote-domain = { path = "../domain" }

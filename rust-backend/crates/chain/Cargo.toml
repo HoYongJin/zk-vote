@@ -1,0 +1,9 @@
+[package]
+name = "zkvote-chain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+alloy.workspace = true
+thiserror.workspace = true
