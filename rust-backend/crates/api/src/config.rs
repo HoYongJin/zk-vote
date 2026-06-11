@@ -8,6 +8,13 @@ pub struct AppConfig {
     pub redis_url: String,
     pub artifact_store: String,
     pub cors_allowed_origins: Vec<String>,
+    /// Supabase JWKS endpoint; auth-protected routes require it.
+    pub supabase_jwks_url: Option<String>,
+    /// Expected token issuer. Defaults to `{SUPABASE_URL}/auth/v1` when
+    /// SUPABASE_URL is set; None disables the issuer check.
+    pub supabase_issuer: Option<String>,
+    /// Expected token audience (Supabase default role audience).
+    pub supabase_audience: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,12 +57,20 @@ impl AppConfig {
             .filter(|origin| !origin.is_empty())
             .collect();
 
+        let supabase_issuer = get("SUPABASE_JWT_ISSUER").or_else(|| {
+            get("SUPABASE_URL").map(|url| format!("{}/auth/v1", url.trim_end_matches('/')))
+        });
+
         Ok(Self {
             bind_addr,
             database_url: get("DATABASE_URL").ok_or(ConfigError::Missing("DATABASE_URL"))?,
             redis_url: get("REDIS_URL").ok_or(ConfigError::Missing("REDIS_URL"))?,
             artifact_store: get("ARTIFACT_STORE").unwrap_or_else(|| "local".to_string()),
             cors_allowed_origins,
+            supabase_jwks_url: get("SUPABASE_JWKS_URL"),
+            supabase_issuer,
+            supabase_audience: get("SUPABASE_JWT_AUDIENCE")
+                .unwrap_or_else(|| "authenticated".to_string()),
         })
     }
 }

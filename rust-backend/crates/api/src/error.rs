@@ -8,10 +8,21 @@ use serde::Serialize;
 /// the frontend error handling carries over unchanged during parity work.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
+    // Validation/NotFound/Conflict gain production call sites with the
+    // Phase 7+ business routes; their contract is locked by tests below.
+    #[allow(dead_code)]
     #[error("{0}")]
     Validation(String),
+    #[error("No token provided.")]
+    MissingAuth,
+    #[error("{0}")]
+    InvalidAuth(String),
+    #[error("You do not have the necessary permissions to perform this action.")]
+    AdminRequired,
+    #[allow(dead_code)]
     #[error("{0}")]
     NotFound(String),
+    #[allow(dead_code)]
     #[error("{0}")]
     Conflict(String),
     #[error("database error")]
@@ -32,6 +43,11 @@ impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
+            // Same codes the Node middlewares emit, so frontend handling
+            // carries over unchanged.
+            Self::MissingAuth => (StatusCode::UNAUTHORIZED, "AUTHENTICATION_REQUIRED"),
+            Self::InvalidAuth(_) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN"),
+            Self::AdminRequired => (StatusCode::FORBIDDEN, "ADMIN_PRIVILEGES_REQUIRED"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
             Self::Database(_) | Self::Redis(_) | Self::Internal(_) => {
