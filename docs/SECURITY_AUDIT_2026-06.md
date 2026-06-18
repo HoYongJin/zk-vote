@@ -47,6 +47,13 @@ Status legend: ✅ Fixed · 🛡️ Mitigated/hardened · 📄 Accepted+document
 | FE-1 | Artifact integrity manifest fetched from the same API it validates (no independent anchor) | 📄 transport-only by design |
 | XCUT-3 | No durable reconciler for stuck `FINALIZATION_DB_SYNC_FAILED`/`SNAPSHOT_CHANGED` states | 📄 manual runbook (workers crate stub) |
 
+## Discovered during final verification
+
+| ID | Title | Status |
+|---|---|---|
+| VERIFY-1 | `vote_pipeline` E2E was ~50% flaky (random leaf ordering); masked a need to confirm Merkle correctness | ✅ test made deterministic; **`merkle.rs` independently verified bit-exact** with the circuit/JS root (no production bug) |
+| XCUT-4 (Medium, cutover) | Both Node and Rust build the Merkle tree from `voters ... ORDER BY id`. The Phase-19 Supabase→Postgres ETL **MUST preserve voter `id` values** — if it reassigns them, the leaf order (hence the Merkle root and every registered voter's path) changes and all in-flight proofs break on cutover. | 📄 documented — verify before running ETL (`scripts/migration/etl-supabase-to-postgres.js` must carry `voters.id`); this is a hard cutover invariant |
+
 ## Refuted by verification (not real)
 
 - SOL-DOS-1 (anon `/submit` cost-exhaustion DoS) — infra/LB-level rate limiting is the right layer.
