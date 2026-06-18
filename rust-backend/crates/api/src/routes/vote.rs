@@ -491,12 +491,19 @@ pub async fn submit(
                 transaction_hash: Some(tx_hash),
             }))
         }
-        Err(ChainError::Reverted(reason)) => {
-            // AR-L8: a third party may have copied the calldata from the
-            // mempool and landed it first. The vote IS counted; report
-            // success instead of a spurious failure.
-            let used = onchain.nullifier_used(nullifier).await.unwrap_or(false);
-            if used {
+        Err(err) => {
+            // The single-use ticket is already consumed at this point. Before
+            // surfacing ANY failure, check whether the vote actually landed
+            // on-chain — two distinct cases leave the nullifier used despite an
+            // Err here, and both must report success, not a spurious failure:
+            //   * AR-L8: a third party copied the calldata from the mempool and
+            //     mined it first (typically classified Reverted on our send).
+            //   * CHAIN-2: send() succeeded but get_receipt() failed transiently
+            //     (RPC dropped/timed out/lagging node) — classified Transport —
+            //     yet the broadcast may have been mined.
+            // Reconciling on every error (not just Reverted) means a receipt-fetch
+            // blip no longer burns the voter's ticket for a vote that succeeded.
+            if onchain.nullifier_used(nullifier).await.unwrap_or(false) {
                 let _ = zkvote_db::repos::SubmissionRepo::record(
                     &state.pg,
                     election_id,
@@ -513,9 +520,11 @@ pub async fn submit(
                     transaction_hash: None,
                 }));
             }
-            Err(coded(400, "PROOF_REJECTED", reason))
+            match err {
+                ChainError::Reverted(reason) => Err(coded(400, "PROOF_REJECTED", reason)),
+                other => Err(chain_unavailable(other)),
+            }
         }
-        Err(err) => Err(chain_unavailable(err)),
     }
 }
 

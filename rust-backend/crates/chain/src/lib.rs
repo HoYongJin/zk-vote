@@ -55,8 +55,21 @@ impl ChainError {
 }
 
 fn classify(err: alloy::contract::Error) -> ChainError {
+    // Prefer STRUCTURED revert detection over substring matching of RPC-formatted
+    // strings (CHAIN-1): a genuine EVM revert carries revert data. Every
+    // VotingTally rejection uses `require(cond, "msg")`, so it reverts with
+    // Error(string) data and is detected here reliably, independent of how the
+    // RPC node phrases the error.
+    if err.as_revert_data().is_some() {
+        return ChainError::Reverted(err.to_string());
+    }
+    // Fallback for data-less reverts (e.g. a bare `require`/`revert()`): keep the
+    // substring heuristic, but default everything not clearly a revert to
+    // Transport (retryable). The submit path rechecks the on-chain nullifier on
+    // ANY error and finalize recovery is idempotent, so an ambiguous error is
+    // safely re-driven rather than treated as a permanent failure.
     let text = err.to_string();
-    if text.contains("revert") || text.contains("execution reverted") {
+    if text.contains("execution reverted") || text.contains("revert") {
         ChainError::Reverted(text)
     } else {
         ChainError::Transport(text)
