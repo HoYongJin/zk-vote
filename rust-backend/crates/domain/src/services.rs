@@ -10,8 +10,16 @@ use time::OffsetDateTime;
 // Field elements (decimal or 0x-hex strings at every API boundary)
 // ---------------------------------------------------------------------------
 
+/// BN254 SCALAR field Fr — the domain of public signals (root, nullifier, …).
 pub const FIELD_ELEMENT_MODULUS_DEC: &str =
     "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+
+/// BN254 BASE field Fq — the domain of G1/G2 point coordinates, i.e. the Groth16
+/// proof elements a/b/c. Fq > Fr, so validating proof coordinates against Fr
+/// (SOL-VAL-3) spuriously rejects a valid proof whose coordinate falls in
+/// [Fr, Fq). Proof points must be checked against Fq; only public SIGNALS are Fr.
+pub const BASE_FIELD_MODULUS_DEC: &str =
+    "21888242871839275222246405745257275088696311157297823662689037894645226208583";
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FieldElementError {
@@ -26,18 +34,38 @@ fn field_modulus() -> BigUint {
         .expect("valid BN254 scalar field modulus")
 }
 
-pub fn parse_field_element(value: &str) -> Result<BigUint, FieldElementError> {
-    let parsed = if let Some(hex) = value
+fn base_field_modulus() -> BigUint {
+    BigUint::parse_bytes(BASE_FIELD_MODULUS_DEC.as_bytes(), 10)
+        .expect("valid BN254 base field modulus")
+}
+
+fn parse_integer(value: &str) -> Result<BigUint, FieldElementError> {
+    if let Some(hex) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        BigUint::parse_bytes(hex.as_bytes(), 16).ok_or(FieldElementError::Parse)?
+        BigUint::parse_bytes(hex.as_bytes(), 16).ok_or(FieldElementError::Parse)
     } else {
         value
             .parse::<BigUint>()
-            .map_err(|_| FieldElementError::Parse)?
-    };
+            .map_err(|_| FieldElementError::Parse)
+    }
+}
+
+/// Parse a public-SIGNAL field element (decimal or 0x-hex), bounded by the BN254
+/// SCALAR field Fr.
+pub fn parse_field_element(value: &str) -> Result<BigUint, FieldElementError> {
+    let parsed = parse_integer(value)?;
     if parsed >= field_modulus() {
+        return Err(FieldElementError::OutOfRange);
+    }
+    Ok(parsed)
+}
+
+/// Parse a Groth16 PROOF coordinate (a/b/c), bounded by the BN254 BASE field Fq.
+pub fn parse_base_field_element(value: &str) -> Result<BigUint, FieldElementError> {
+    let parsed = parse_integer(value)?;
+    if parsed >= base_field_modulus() {
         return Err(FieldElementError::OutOfRange);
     }
     Ok(parsed)
@@ -590,6 +618,23 @@ mod tests {
             parse_field_element(FIELD_ELEMENT_MODULUS_DEC),
             Err(FieldElementError::OutOfRange)
         );
+    }
+
+    #[test]
+    fn proof_points_use_the_larger_base_field_fq() {
+        // SOL-VAL-3 boundary: Fr (the scalar modulus) is a valid base-field (Fq)
+        // coordinate but NOT a valid scalar-field signal. Proof points must use Fq.
+        assert_eq!(
+            parse_field_element(FIELD_ELEMENT_MODULUS_DEC),
+            Err(FieldElementError::OutOfRange)
+        );
+        assert!(parse_base_field_element(FIELD_ELEMENT_MODULUS_DEC).is_ok());
+        // Fq itself is out of range for the base field.
+        assert_eq!(
+            parse_base_field_element(BASE_FIELD_MODULUS_DEC),
+            Err(FieldElementError::OutOfRange)
+        );
+        assert_eq!(parse_base_field_element("0x7b").unwrap().to_string(), "123");
     }
 
     #[test]

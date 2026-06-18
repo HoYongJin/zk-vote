@@ -299,16 +299,28 @@ pub struct SubmitResponse {
     pub transaction_hash: Option<String>,
 }
 
+fn invalid_payload() -> ApiError {
+    coded(
+        400,
+        "INVALID_PAYLOAD",
+        "Proof or public signals are missing or malformed.",
+    )
+}
+
+/// Public SIGNALS live in the BN254 scalar field Fr.
 fn parse_u256(value: &str) -> Result<U256, ApiError> {
-    let invalid = || {
-        coded(
-            400,
-            "INVALID_PAYLOAD",
-            "Proof or public signals are missing or malformed.",
-        )
-    };
-    let parsed = zkvote_domain::services::parse_field_element(value).map_err(|_| invalid())?;
-    U256::from_str_radix(&parsed.to_string(), 10).map_err(|_| invalid())
+    let parsed =
+        zkvote_domain::services::parse_field_element(value).map_err(|_| invalid_payload())?;
+    U256::from_str_radix(&parsed.to_string(), 10).map_err(|_| invalid_payload())
+}
+
+/// Groth16 proof COORDINATES (a/b/c) are G1/G2 points over the BN254 base field
+/// Fq, which is larger than Fr — validating them against Fr would spuriously
+/// reject valid proofs (SOL-VAL-3).
+fn parse_u256_base(value: &str) -> Result<U256, ApiError> {
+    let parsed =
+        zkvote_domain::services::parse_base_field_element(value).map_err(|_| invalid_payload())?;
+    U256::from_str_radix(&parsed.to_string(), 10).map_err(|_| invalid_payload())
 }
 
 #[derive(Debug)]
@@ -336,12 +348,19 @@ fn parse_proof(proof: &FormattedProof, signals: &[String]) -> Result<ProofArgs, 
         return Err(invalid());
     }
     Ok(ProofArgs {
-        a: [parse_u256(&proof.a[0])?, parse_u256(&proof.a[1])?],
+        // Proof coordinates: base field Fq. Public signals: scalar field Fr.
+        a: [parse_u256_base(&proof.a[0])?, parse_u256_base(&proof.a[1])?],
         b: [
-            [parse_u256(&proof.b[0][0])?, parse_u256(&proof.b[0][1])?],
-            [parse_u256(&proof.b[1][0])?, parse_u256(&proof.b[1][1])?],
+            [
+                parse_u256_base(&proof.b[0][0])?,
+                parse_u256_base(&proof.b[0][1])?,
+            ],
+            [
+                parse_u256_base(&proof.b[1][0])?,
+                parse_u256_base(&proof.b[1][1])?,
+            ],
         ],
-        c: [parse_u256(&proof.c[0])?, parse_u256(&proof.c[1])?],
+        c: [parse_u256_base(&proof.c[0])?, parse_u256_base(&proof.c[1])?],
         signals: [
             parse_u256(&signals[0])?,
             parse_u256(&signals[1])?,
