@@ -11,7 +11,7 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from '../../api/axios'; // Our configured axios instance (baseURL: /api)
-import { getVoterSecret } from '../../utils/voterSecret';
+import { getVoterSecret, clearVoterSecret } from '../../utils/voterSecret';
 import { fetchVerifiedArtifact } from '../../utils/artifactIntegrity';
 import { getApiBaseUrl, resolveArtifactApiPath } from '../../utils/apiBaseUrl';
 import { calculateSubmissionJitterMs, delay } from '../../utils/submissionJitter';
@@ -184,7 +184,18 @@ function VotePage() {
                             publicSignals,
                             submissionTicket: submissionTicket // Pass the ticket
                         }, { skipAuth: true });
-                        
+
+                        // FE-3: the secret has served its purpose once the vote is
+                        // on-chain. Remove it from localStorage so it does not sit
+                        // there indefinitely, shrinking the XSS / shared-device
+                        // exposure window. (Only cleared AFTER a confirmed submit —
+                        // a registered-but-unvoted secret must be preserved.)
+                        try {
+                            clearVoterSecret(electionId);
+                        } catch (e) {
+                            console.error('Failed to clear voter secret after vote:', e);
+                        }
+
                         setLoadingMessage('');
                         alert('투표가 성공적으로 제출되었습니다!');
 
