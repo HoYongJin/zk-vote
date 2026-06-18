@@ -226,9 +226,12 @@ router.post("/", async (req, res) => {
                 try {
                     await votingTallyContract.callStatic.submitTally(a, b, c, publicSignals);
                 } catch (callError) {
+                    // NODE-2: do not reflect raw on-chain/RPC error strings to
+                    // anonymous callers; log the reason server-side only.
+                    console.warn(`[${election_id}] submitTally preflight rejected:`, extractEthersReason(callError));
                     return res.status(400).json({
                         error: "PROOF_REJECTED",
-                        details: extractEthersReason(callError)
+                        details: "The submitted proof was rejected on-chain."
                     });
                 }
 
@@ -247,9 +250,11 @@ router.post("/", async (req, res) => {
                     try {
                         await votingTallyContract.callStatic.submitTally(a, b, c, publicSignals);
                     } catch (callError) {
+                        // NODE-2: scrub raw on-chain/RPC strings from the client response.
+                        console.warn(`[${election_id}] submitTally re-check rejected:`, extractEthersReason(callError));
                         return res.status(400).json({
                             error: "PROOF_REJECTED",
-                            details: extractEthersReason(callError)
+                            details: "The submitted proof was rejected on-chain."
                         });
                     }
 
@@ -282,9 +287,11 @@ router.post("/", async (req, res) => {
                 details: "A submission for this nullifier is already being processed."
             });
         }
+        // NODE-2: err is already logged above (console.error); return a generic
+        // detail so RPC/relayer internals are not disclosed to anonymous callers.
         return res.status(500).json({
             error: "An on-chain error occurred while submitting your vote.",
-            details: extractEthersReason(err)
+            details: "The vote could not be submitted due to a server or network error. Please try again."
         });
     }
 });
