@@ -1903,6 +1903,29 @@ mod tests {
                 .unwrap();
         }
 
+        // finalize and /proof build the tree from `... ORDER BY id`. The voter
+        // rows get gen_random_uuid ids, so without this the two leaves land in a
+        // random order and the tree (Poseidon is not commutative) only matches
+        // the fixture root ~half the time. Pin the ids so ORDER BY id yields the
+        // fixture's leaf order [l0, l1] and the bound fixture proof is valid.
+        for (i, leaf) in leaves.iter().enumerate() {
+            // Election-scoped ordered id: the election uuid prefix + the leaf
+            // index in the last byte, so the two rows sort as [l0, l1] yet never
+            // collide with another election's rows (avoids cross-run PK clashes).
+            let mut bytes = *election_id.as_bytes();
+            bytes[15] = i as u8;
+            let ordered_id = uuid::Uuid::from_bytes(bytes);
+            sqlx::query(
+                "UPDATE voters SET id = $1 WHERE election_id = $2 AND user_secret_commitment = $3",
+            )
+            .bind(ordered_id)
+            .bind(election_id)
+            .bind(leaf)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
         // Deploy with the REAL Groth16 verifier and finalize via the route.
         let chain_config = zkvote_chain::ChainConfig {
             rpc_url: RPC.to_string(),
