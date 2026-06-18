@@ -80,7 +80,12 @@ deploy_args=(
   --allow-unauthenticated
   --min-instances 0
   --max-instances 2
-  --set-env-vars "^|^APP_ENV=staging|ARTIFACT_STORE=gcs|CHAIN_ID=11155111|REQUIRE_BEACON=true|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}"
+  # INFRA-2: APP_ENV and REQUIRE_BEACON were inert here — the Rust binary reads
+  # neither (REQUIRE_BEACON is a Node-only flag). Setting REQUIRE_BEACON=true
+  # implied a trusted-setup beacon enforcement the deployed service does not
+  # perform; dropped to avoid a false sense of assurance. The beacon ceremony
+  # gate lives in the artifact pipeline, not the API runtime.
+  --set-env-vars "^|^ARTIFACT_STORE=gcs|CHAIN_ID=11155111|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}"
 )
 
 secret_bindings=(
