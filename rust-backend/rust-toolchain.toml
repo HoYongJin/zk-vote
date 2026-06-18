@@ -1,0 +1,8 @@
+# Pin the Rust toolchain so CI (dtolnay/rust-toolchain reads this file) and the
+# release container (rust:1.96-slim-bookworm, see Dockerfile) compile on the same
+# compiler. Without this, CI floated on `stable` and could diverge from the
+# version that builds the shipped image. (DOC_DEBT #34 / infra-cicd review.)
+[toolchain]
+channel = "1.96"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
