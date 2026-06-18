@@ -14,3 +14,17 @@ server/zkp/input/
 server/zkp/circomlib/
 *.ptau
 zk-vote-key.pem
+
+# Secrets — never sweep local env/key material into the Cloud Build source bucket.
+# gcloud uses .gcloudignore EXCLUSIVELY when present and does NOT fall back to
+# .gitignore, so `.env` being gitignored is not enough. See SECURITY_AUDIT_2026-06
+# (INFRA-1): `gcloud builds submit .` would otherwise upload server/.env
+# (SUPABASE_SERVICE_ROLE_KEY, relayer PRIVATE_KEY) to gs://<project>_cloudbuild.
+.env
+*.env
+.env.*
+**/.env
+server/.env
+frontend/.env
+*.pem
+*.key

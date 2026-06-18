@@ -36,6 +36,12 @@ jobs:
             echo "Deploy/build paths must use npm ci against committed lockfiles." >&2
             exit 1
           fi
+      - name: Secret-hygiene gate (SECURITY_AUDIT INFRA-1)
+        run: |
+          if ! grep -qxF '.env' .gcloudignore; then
+            echo ".gcloudignore must exclude .env — gcloud builds submit ignores .gitignore and would upload secrets to the source bucket." >&2
+            exit 1
+          fi
       - name: Circuit/contract schema gate (audit C1)
         run: bash scripts/ci/check-artifact-schema.sh
       - name: Hardhat + helper/route tests
