@@ -96,6 +96,22 @@ impl FromRequestParts<AppState> for CurrentUser {
             .map(|email| email.trim().to_lowercase())
             .filter(|email| !email.is_empty());
 
+        // RUST-AUTH-2: never trust an explicitly-unverified e-mail as an identity
+        // join key. is_admin_or_promote and the voter allowlist match on this
+        // e-mail, so an unverified claim must not be able to consume an admin
+        // invitation or a voter slot for an inbox the caller does not control.
+        let email = match email {
+            Some(addr) if claims.email_explicitly_unverified() => {
+                tracing::warn!(
+                    user_id = %id,
+                    "ignoring unverified e-mail claim; it will not match admin invitations or the voter allowlist (RUST-AUTH-2)"
+                );
+                let _ = addr;
+                None
+            }
+            other => other,
+        };
+
         Ok(CurrentUser { id, email })
     }
 }

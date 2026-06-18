@@ -3,13 +3,38 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Claims the API relies on. Supabase access tokens carry the user id in
-/// `sub` and the e-mail in `email`; everything else is ignored.
+/// `sub` and the e-mail in `email`; verification status appears top-level
+/// and/or in `user_metadata.email_verified`.
 #[derive(Debug, Deserialize)]
 pub struct Claims {
     pub sub: String,
     pub email: Option<String>,
+    #[serde(default)]
+    pub email_verified: Option<bool>,
+    #[serde(default)]
+    pub user_metadata: Option<UserMetadata>,
     #[allow(dead_code)]
     pub exp: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserMetadata {
+    #[serde(default)]
+    pub email_verified: Option<bool>,
+}
+
+impl Claims {
+    /// True only when the token EXPLICITLY marks the e-mail unverified
+    /// (top-level `email_verified` or Supabase `user_metadata.email_verified`).
+    /// Absent verification is treated as "unknown", not "unverified", so the
+    /// check never breaks a correctly-configured project — the operational
+    /// requirement that Supabase e-mail confirmation is enabled is the primary
+    /// control (RUST-AUTH-2). An unverified e-mail must not be trusted as the
+    /// admin-invitation / voter-allowlist join key.
+    pub fn email_explicitly_unverified(&self) -> bool {
+        self.email_verified == Some(false)
+            || self.user_metadata.as_ref().and_then(|m| m.email_verified) == Some(false)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -158,6 +183,27 @@ pub mod test_support {
             "iss": issuer,
             "exp": now + exp_offset_secs,
         });
+        sign(claims)
+    }
+
+    /// Like `mint_token` but stamps `email_verified: false` (the email-change /
+    /// pre-confirmation shape) for RUST-AUTH-2 tests.
+    pub fn mint_token_unverified(sub: &str, email: &str) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        sign(json!({
+            "sub": sub,
+            "email": email,
+            "email_verified": false,
+            "aud": TEST_AUDIENCE,
+            "iss": TEST_ISSUER,
+            "exp": now + 300,
+        }))
+    }
+
+    fn sign(claims: serde_json::Value) -> String {
         let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some(TEST_KID.to_string());
         encode(
@@ -224,6 +270,35 @@ mod tests {
         let err =
             validate_token("not-a-jwt", &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap_err();
         assert!(matches!(err, AuthError::InvalidToken(_)));
+    }
+
+    #[test]
+    fn explicit_email_unverified_is_detected_and_absent_is_unknown() {
+        // RUST-AUTH-2: an explicit email_verified:false token must be flagged...
+        let unverified = mint_token_unverified(SUB, "v@example.com");
+        let claims =
+            validate_token(&unverified, &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap();
+        assert!(claims.email_explicitly_unverified());
+
+        // ...while a normal token with no verification claim is "unknown", not
+        // unverified (must not break a correctly-configured project).
+        let normal = mint_token(SUB, "v@example.com", TEST_AUDIENCE, TEST_ISSUER, 300);
+        let claims = validate_token(&normal, &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap();
+        assert!(!claims.email_explicitly_unverified());
+    }
+
+    #[test]
+    fn user_metadata_email_verified_false_is_detected() {
+        let claims = Claims {
+            sub: SUB.to_string(),
+            email: Some("v@example.com".to_string()),
+            email_verified: None,
+            user_metadata: Some(UserMetadata {
+                email_verified: Some(false),
+            }),
+            exp: 0,
+        };
+        assert!(claims.email_explicitly_unverified());
     }
 
     #[test]
