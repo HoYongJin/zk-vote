@@ -29,29 +29,27 @@ restarts from registration (normal case) or is being voided entirely.
      state = 'failed' WHERE id = '<election_id>';`
    - Hosted Supabase (Node era): add/maintain a `superseded_at timestamptz`
      column on `Elections` (dashboard SQL editor); set it the same way.
-   A superseded election MUST NOT accept app-relayed votes: the Rust submit
-   path (Phase 13) rejects on `superseded_at IS NOT NULL`; on the Node era
-   this freeze is operational (frontend hides the election once
-   `voting_end_time` is corrected or the row is completed).
-3. **Clear the deployment binding so a replacement can deploy without DB
-   surgery beyond this step:**
-   `UPDATE elections SET contract_address = NULL, verifier_address = NULL,
-    merkle_root = NULL, voting_start_time = NULL, voting_end_time = NULL
-    WHERE id = '<election_id>' AND superseded_at IS NOT NULL;`
-   (The `superseded_at IS NOT NULL` guard is what "lifts" the
-   ALREADY_DEPLOYED protection — never run this on a live election.)
-4. **Remove the stale artifact binding** for the election from
-   `server/zkp/artifact-manifest.json` (M5) if the artifacts themselves are
-   being regenerated; otherwise leave it and reuse the same artifacts.
-5. **Re-deploy** through the normal flow (`/setZkDeploy` → finalize). The
-   deploy path's `contract_address IS NULL` guard now passes; a fresh
-   `VotingTally` (with the correct explicit owner, AR-M4) is deployed and
-   re-bound in the manifest.
+   A superseded election MUST NOT accept app-relayed votes or be marked
+   completed later: Rust rejects `superseded_at IS NOT NULL`, and the Node
+   fallback hides it from read lists and rejects `/proof`, `/submit`, and
+   `/complete` when the optional `superseded_at` column exists.
+3. **Leave the abandoned deployment binding intact.** Do not clear
+   `contract_address`, `verifier_address`, `merkle_root`, or voting times on
+   the superseded row. Rust and Node fallback read lists hide it, and both
+   backends reject `/proof`, `/submit`, and `/complete`, so reusing the same
+   row would also block the replacement election.
+4. **Create a replacement election row** through the normal creation flow,
+   reusing the intended candidates/depth and allowlist as needed. If artifacts
+   are being regenerated, remove only the replacement row's stale artifact
+   binding from `server/zkp/artifact-manifest.json` (M5).
+5. **Deploy the replacement** through the normal flow (`/setZkDeploy` →
+   finalize). A fresh `VotingTally` (with the correct explicit owner, AR-M4)
+   is deployed and bound to the replacement election.
 6. **Record the incident**: old contract address, reason, tx hashes, and the
    new contract address, in the election's audit note.
 
 ## Invariants this runbook preserves
 
 - No owner key ever gains the power to mutate a configured, live election.
-- `ALREADY_DEPLOYED` stays absolute for non-superseded elections.
+- `ALREADY_DEPLOYED` stays absolute; replacements use a new election row.
 - The abandoned contract remains on-chain as an immutable audit record.

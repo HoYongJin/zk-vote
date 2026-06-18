@@ -4,7 +4,9 @@
 
 `zk-vote` is a zero-knowledge voting project that currently has a working
 Node/Express backend, React frontend, Solidity contracts, Circom/snarkjs ZK
-artifacts, and a newly scaffolded Rust backend for the planned migration.
+artifacts, and a Rust backend that has reached **full API route parity** with
+the Node backend (Phases 4–15 of the migration plan are implemented on this
+branch, with a Phase 5–13 integration-test suite).
 
 The intended target architecture is:
 
@@ -18,9 +20,12 @@ TypeScript React frontend
       -> Solidity VotingTally + Groth16 verifier
 ```
 
-The existing Node backend is still the active app surface. The Rust backend is
-an initial scaffold and must not replace Node routes until API parity is built
-and verified.
+The existing Node backend is still the **active app surface** — not because the
+Rust backend is unfinished, but because the GCP staging deploy (Phase 16),
+residual privacy measurements (Phase 18), and the live migration cutover +
+data ETL (Phase 19) have **not been executed**. Nothing runs on real GCP infra
+yet. Do not switch the frontend to the Rust API or remove Node routes until that
+staged cutover is done and verified.
 
 ## Top-Level Structure
 
@@ -72,8 +77,12 @@ server/utils/email.js               shared email normalization
 State-sensitive invariants:
 
 - Registration and finalize share the same election Redis lock.
-- Submit tickets are bound to `electionId`, `merkleRoot`, and `nullifierHash`.
-- `/submit` must reject election/root/nullifier/candidate mismatches before relaying.
+- Submit tickets are bound to `electionId` and `merkleRoot` only. They must
+  not bind `nullifierHash`, because `/proof` must not learn or store the
+  voter's nullifier under the post-H2 client-held-secret privacy model.
+- `/submit` must reject election/root/candidate mismatches and verify the
+  nullifier against the proof's public signals before relaying — the ticket
+  itself never carries the nullifier (post-H2 / AR-H5 privacy model).
 - `VotingTally.configureElection()` is the preferred one-shot finalize path.
 - On-chain configured elections must not accept additional voter registration.
 - `/complete` must not mark an election completed before `voting_end_time`.
@@ -111,7 +120,7 @@ server/zkp/prove.sh
 
 Production v1 remains Circom/snarkjs. Noir is planned as a POC only.
 
-## Rust Backend Scaffold
+## Rust Backend
 
 Rust workspace root:
 
@@ -128,29 +137,37 @@ rust-backend/
     └── workers/
 ```
 
-Current Rust API:
+Current Rust API (full parity — see `rust-backend/crates/api/src/routes/mod.rs`):
 
 ```text
-GET /healthz
-GET /readyz
+GET  /healthz                                  GET  /readyz
+GET  /api/me                                   GET  /api/admin/ping
+GET  /api/elections/registerable|finalized|completed
+POST /api/elections/set                        POST /api/management/addAdmins
+POST /api/elections/:id/setZkDeploy            POST /api/elections/:id/voters
+POST /api/elections/:id/register               POST /api/elections/:id/finalize
+POST /api/elections/:id/complete               GET  /api/elections/:id/artifact-info
+GET  /api/zkp-files/*artifact_path             POST /api/elections/:id/proof
+POST /api/elections/:id/submit   (anonymous — no auth extractor, by design)
 ```
 
-`/readyz` verifies:
+`/readyz` verifies config loaded, Postgres connection works, and Redis responds
+to `PING`.
 
-- config loaded
-- Postgres connection works
-- Redis responds to `PING`
+Single binary: only `zkvote-api` is built. `crates/workers` is a **placeholder
+stub** (a lone `WorkerError` enum) — finalize and deploy run **inline** in the
+request handlers under Redis leases + pg advisory locks; `finalization_jobs` is
+an audit/retry trail, not a consumed queue.
 
-Planned migration order:
+Remaining migration work (executable, not yet done):
 
-1. shared config, errors, tracing, OpenAPI
-2. Supabase JWT/JWKS auth middleware
-3. DB repositories and domain services
-4. read-only election APIs
-5. create/add voters/register APIs
-6. proof ticket and submit APIs
-7. finalize/relayer workers
-8. frontend API client switch
+1. Phase 16 — stand up GCP staging (Cloud Run / Cloud SQL / Memorystore) and
+   measure its gates. **Incurs cost; needs explicit user approval.**
+2. Phase 18 — residual privacy measurements (AR-M1 unlinkable-auth decision,
+   AR-M2 timing correlation, AR-H1 public-beacon ceremony for a staging election).
+3. Phase 19 — live Supabase→Postgres ETL, rollback rehearsal, and one full Rust
+   staging-election E2E (the Milestone E exit criterion).
+4. Phase 20 — production readiness (backup/restore, load test, monitoring).
 
 ## Database
 
@@ -248,25 +265,38 @@ service account: zkvote-staging-api@scopeball-registry-poc-g.iam.gserviceaccount
 Provision/update staging:
 
 ```bash
-bash scripts/gcp/zkvote-staging-setup.sh
+CONFIRM_COSTS=yes bash scripts/gcp/zkvote-staging-setup.sh
 ```
 
-The script is intended to be idempotent for existing resources. If the Cloud SQL
-user already exists and no `DB_PASSWORD` is provided, it skips adding a new
-database-url secret version to avoid writing an invalid password.
+The script is intended to be idempotent for existing resources. It provisions
+separate Cloud SQL users for runtime (`SQL_APP_USER`, default `zkvote_app`) and
+migrations (`SQL_MIGRATOR_USER`, default `zkvote_migrator`). If either user
+already exists and no matching password env is provided
+(`SQL_APP_PASSWORD`/legacy `DB_PASSWORD`, or `SQL_MIGRATOR_PASSWORD`), it skips
+adding a new database-url secret version to avoid writing an invalid password.
+Manual SQL passwords used by this script must be URL-safe
+(`[A-Za-z0-9._~-]`), otherwise the script refuses to write a broken
+`DATABASE_URL` secret.
+Apply `rust-backend/db/roles.sql` with `psql -v migrator_password=... -v
+app_password=...` after migrations so the runtime role has DML-only access.
 
 Required staging secrets follow the `zkvote-staging-*` prefix:
 
 ```text
 zkvote-staging-database-url
+zkvote-staging-migrator-database-url
 zkvote-staging-redis-url
 zkvote-staging-supabase-url
 zkvote-staging-supabase-jwks-url
 zkvote-staging-sepolia-rpc-url
 zkvote-staging-relayer-private-key
-zkvote-staging-secret-salt
+zkvote-staging-owner-private-key
 zkvote-staging-artifact-bucket
 ```
+
+Deploying the Rust API to staging requires
+`OWNER_PRIVATE_KEY_SECRET=zkvote-staging-owner-private-key`; the deploy script
+also verifies that the secret has a latest version before mounting it.
 
 ## Verification Commands
 

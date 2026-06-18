@@ -2,7 +2,7 @@
 
 Zero-knowledge voting project with the current Node/Express backend, React
 frontend, Circom/Groth16 proof pipeline, Solidity contracts, and a Rust backend
-migration scaffold.
+that has reached full API route parity and is awaiting a staged cutover.
 
 ## Current Architecture
 
@@ -15,9 +15,17 @@ React frontend
     -> Solidity VotingTally + Groth16 verifier
 ```
 
-The planned backend target is Rust with PostgreSQL, Redis, GCS artifact storage,
-and a typed relayer/worker layer. The Node backend remains the active API until
-Rust route parity is verified.
+The backend target is Rust with PostgreSQL, Redis, GCS artifact storage, and a
+typed alloy relayer layer. The Rust backend already implements the full route
+surface (16 routes) with a Phase 5–13 integration-test suite on the feature
+branch. The Node backend remains the **active API** only until the GCP staging
+deploy and live migration cutover are executed — not because Rust is unfinished.
+Nothing runs on real GCP infrastructure yet; this is local-demo/dev-only.
+
+**Frontend hosting:** the committed frontend CD currently targets legacy AWS
+S3/CloudFront (`frontend/buildspec.yml`, `.github/workflows/deploy-frontend.yml`),
+while the backend moves to GCP. The post-cutover frontend hosting target is an
+open decision (see `docs/TECH_STACK.md` §6).
 
 ## Important Docs
 

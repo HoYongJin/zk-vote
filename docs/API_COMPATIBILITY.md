@@ -29,6 +29,8 @@ Base path:
 
 | Route | Method | Auth | Current owner | Rust parity priority |
 | --- | --- | --- | --- | --- |
+| `/me` | GET | User | `server/routes/me.js` | Frontend cutover |
+| `/admin/ping` | GET | Admin | Rust-only extractor gate | Test/support |
 | `/management/addAdmins` | POST | Admin | `server/routes/addAdmins.js` | Medium |
 | `/elections/set` | POST | Admin | `server/routes/setVote.js` | High |
 | `/elections/registerable` | GET | User | `server/routes/registerableVote.js` | First read parity |
@@ -38,6 +40,7 @@ Base path:
 | `/elections/:election_id/voters` | POST | Admin | `server/routes/registerByAdmin.js` | High |
 | `/elections/:election_id/register` | POST | User | `server/routes/register.js` | High |
 | `/elections/:election_id/finalize` | POST | Admin | `server/routes/finalizeVote.js` | Critical |
+| `/elections/:election_id/artifact-info` | GET | User | `server/routes/artifactInfo.js` | Critical for browser proving |
 | `/elections/:election_id/proof` | POST | User | `server/routes/proof.js` | Critical |
 | `/elections/:election_id/submit` | POST | Anonymous ticket | `server/routes/submitZk.js` | Critical |
 | `/elections/:election_id/complete` | POST | Admin | `server/routes/completeVote.js` | High |
@@ -74,6 +77,35 @@ explicitly migrated. Note: the plaintext voter secret is client-held (H2); the
 `user_secret` column name survives only as legacy storage for the commitment.
 
 ## Route Details
+
+### `GET /api/me`
+
+Response:
+
+```json
+{ "id": "uuid", "email": "user@example.com", "is_admin": true }
+```
+
+Behavior:
+
+- Requires a Supabase JWT.
+- Resolves admin status server-side instead of letting the frontend read admin
+  tables directly.
+- In the Rust backend, this is also the auth-time promotion point for pending
+  admin invitations.
+
+### `GET /api/admin/ping`
+
+Response:
+
+```json
+{ "status": "ok" }
+```
+
+Behavior:
+
+- Rust-only support endpoint proving the `AdminUser` extractor end to end.
+- Not a product workflow; Phase 8 admin routes are the real admin surface.
 
 ### `POST /api/management/addAdmins`
 
@@ -170,7 +202,9 @@ Response:
 Behavior:
 
 - Admin gets all active voting elections plus voter counts.
-- Non-admin gets only elections where they completed registration.
+- Non-admin gets only elections where they completed registration and omits
+  admin-only `total_voters` / `registered_voters` fields, matching the Node
+  route shape.
 
 ### `GET /api/elections/completed`
 
@@ -199,18 +233,25 @@ Behavior:
 
 - Loads election depth and candidate count.
 - Requires no existing `contract_address`.
-- Requires Circom library files.
+- Requires a registered Circom artifact row for the election shape.
 - Ensures required ZK artifacts exist:
   - Solidity verifier
   - wasm
   - zkey
   - verification key
-- Runs ZK setup if artifacts are missing.
-- Runs Hardhat deployment script.
+- Requires the artifact manifest to declare the v2 public signal schema
+  (`publicSignalCount = 4`, `election_id` at index 3).
+- Deploys Groth16 verifier + `VotingTally`, then records `elections` and
+  `contract_deployments` metadata.
+- Rejects duplicate deployment.
 
 Rust notes:
 
-- Replace shell execution with an artifact/deployment job before production.
+- The Rust port uses the typed `zkvote-chain` layer instead of shelling out to
+  Hardhat scripts.
+- Deployment is serialized with Redis election/relayer leases and a guarded DB
+  transaction. A future durable background job may replace the synchronous
+  request, but the current route is no longer a placeholder.
 
 ### `POST /api/elections/:election_id/voters`
 
@@ -270,7 +311,34 @@ Behavior:
 
 Rust notes:
 
-- Convert this to a retry-safe `finalization_jobs` worker.
+- Rust records retry/recovery state in `finalization_jobs` and keeps the route
+  fail-closed before on-chain configuration. A future background worker can
+  replace the synchronous request without changing the public route shape.
+
+### `GET /api/elections/:election_id/artifact-info`
+
+Response:
+
+```json
+{
+  "success": true,
+  "wasmPath": "/api/zkp-files/build_4_5/VoteCheck_temp_js/VoteCheck_temp.wasm",
+  "zkeyPath": "/api/zkp-files/build_4_5/circuit_final.zkey",
+  "wasmSha256": "hex",
+  "zkeySha256": "hex",
+  "verificationKeySha256": "hex",
+  "publicSignalCount": 4
+}
+```
+
+Behavior:
+
+- Requires a Supabase JWT.
+- Returns browser proving artifact paths and hashes recorded for the election.
+- Rust can serve local artifacts or stream GCS objects behind the same
+  `/api/zkp-files/*` API path.
+- Missing manifest/deployment metadata returns `ARTIFACTS_NOT_RECORDED` rather
+  than falling through to unverified proving.
 
 ### `POST /api/elections/:election_id/proof`
 

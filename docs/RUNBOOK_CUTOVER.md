@@ -12,17 +12,28 @@
    the freeze window is the chosen strategy (decision AR-H3): traffic is
    low and a short freeze is simpler and safer than dual-write conflict
    resolution.
-2. **ETL**: run `scripts/migration/etl-supabase-to-postgres.js` with
-   `TARGET_DATABASE_URL` pointing at Cloud SQL.
+2. **Schema + ETL**: run schema migrations with the
+   `zkvote-staging-migrator-database-url` secret, then run
+   `rust-backend/db/roles.sql` with an admin/owner connection so
+   `zkvote_app` loses DDL privileges and receives only the runtime grants;
+   then run `scripts/migration/etl-supabase-to-postgres.js` with
+   `TARGET_DATABASE_URL` set to the runtime `zkvote-staging-database-url`
+   secret.
    - The script ABORTS on any non-field-element `Voters.user_secret`
      (pre-H2 plaintext-era row) — investigate before proceeding.
    - Gate: it must print `ETL complete: all row counts and checksums match`.
-     A non-empty/diverging target fails closed (verified behavior).
+     The checksum gate runs before `COMMIT`, so a non-empty/diverging target
+     rolls back instead of leaving partially migrated rows behind.
    - v1 `uint256[3]`-era elections: mark completed or superseded
      (`docs/RUNBOOK_SUPERSEDE.md`) during the freeze — v2 contracts are
      required for live elections.
 3. **Side-by-side**: run Node and Rust against the migrated data; compare
    the three read lists + `/api/me` for an admin and a voter account.
+   - For Cloud Run staging, deploy with `CORS_ALLOWED_ORIGINS` set to the
+     staging frontend origin and
+     `OWNER_PRIVATE_KEY_SECRET=zkvote-staging-owner-private-key` so finalize
+     can call `configureElection` with the explicit contract owner key. The
+     owner key must differ from the hot relayer key in staging/production.
 4. **Switch reads**: point the frontend at Rust (`REACT_APP_API_BASE_URL`).
    Verify lists + role routing.
 5. **Switch writes by lifecycle**: set/addAdmins → voters/register →

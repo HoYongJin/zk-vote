@@ -9,7 +9,7 @@
 ## 1. Audit closure matrix
 
 Authoritative table: **`audit.md` rev5 "Phase 1 클로저 매트릭스"** —
-C1, H1–H5, M1–M13 are ALL CLOSED with code + test evidence (70 hardhat
+C1, H1-H5, M1-M13 are ALL CLOSED with code + test evidence (79 hardhat
 tests; M6–M8 closed by Phase 3 with `scripts/local/db-verify.sh` gates).
 
 Architecture-review items closed since rev5:
@@ -24,12 +24,12 @@ Architecture-review items closed since rev5:
 | AR-H7 | CLOSED | light-poseidon(circom 파라미터) + 교차 언어 벡터 커밋 | 5 벡터 게이트 바이트 동일 |
 | AR-H8 | CLOSED | CI npm ci/감사 잡, snarkjs/circomlibjs/circomlib/fixed-merkle-tree 정확 핀 | ci.yml, package.json |
 | AR-M4 | CLOSED | VotingTally 명시적 `_owner`; 릴레이어 키 onlyOwner 무권한 | hardhat + alloy 게이트(릴레이어 configure revert) |
-| AR-M5 | CLOSED (local) | Rust 릴레이 전송 직렬화(`relay_lock`) | vote.rs; 스테이징은 send/wait 분리 최적화 여지 |
-| AR-M6 | CLOSED | `/artifact-info` + 브라우저 WebCrypto 해시 검증, 불일치 시 증명 거부 | artifactInfoRoute 테스트 + VotePage |
+| AR-M5 | CLOSED (local) | Node `submit:relayer-wallet` lock + Rust `relay_lock` | submitZk.js / vote.rs; 스테이징은 send/wait 분리 최적화 여지 |
+| AR-M6 | CLOSED | Node/Rust `/artifact-info` + 제한된 local/GCS `/api/zkp-files` + 브라우저 WebCrypto 해시 검증, 불일치 시 증명 거부 | artifactInfoRoute 테스트 + Rust local/GCS artifacts route 테스트 + VotePage |
 | AR-M7 | CLOSED | 온체인 불변 + supersede runbook + `superseded_at`(제출 거부) + finalize 30일 상한 | RUNBOOK_SUPERSEDE.md, Phase 12/13 게이트 |
 | AR-H3 | OPEN → Phase 19 | 데이터 ETL/dual-write/롤백 — 컷오버 시점 작업 | 계획 수립됨(PROJECT_PLAN Phase 19) |
 | AR-M1 | OPEN (by design) | 비연결 인가(blind signature) 채택 여부 — 스테이징 타이밍 측정 후 결정 | identity↔ticket 비로깅 원칙은 적용됨 |
-| AR-M2 | PARTIAL | 티켓에 발급 타임스탬프 없음(Rust). 잔여: 클라이언트 제출 지터, 발급 순서 비보존 큐 — 스테이징 전 적용 + 측정 | v1 잔여 상관 수용(결정 2026-06-12) |
+| AR-M2 | PARTIAL | `VotePage`가 ticket TTL 안전 예산 안에서 client-side submission jitter 적용. 잔여: 발급 순서 비보존 큐의 스테이징 검증 + 시간 상관 측정 | v1 잔여 상관 수용(결정 2026-06-12) |
 
 ## 2. Trust boundaries
 
@@ -68,14 +68,14 @@ Architecture-review items closed since rev5:
 
 - 커밋된 파일에 릴레이어 키/DB 비밀번호 없음 — 위 4절 예외만 존재 ✅
 - 아티팩트 버킷 IAM 버킷 스코프(M9) ✅ (스크립트 수준; 실배포는 Phase 16)
-- submit 경로 replay/mismatch 테스트 ✅ (Node 70 + Rust E2E 게이트)
+- submit 경로 replay/mismatch/relayer 직렬화 테스트 ✅ (Node 81 + Rust E2E 게이트)
 - C1/H1/H2 회귀 테스트 존재, 실패 버전 이해됨 ✅
-- finalize 부분 실패 테스트 존재 ✅ (Node 4케이스 + Rust 게이트)
+- finalize 부분 실패 테스트 존재 ✅ (Node 5케이스 + Rust 게이트)
 
 ## 6. Remaining pre-production work
 
 스테이징 의존(전부 PROJECT_PLAN에 귀속): Phase 16(Cloud Run 배포 — 비용
-승인 필요), AR-M2 측정 + 클라이언트 지터, AR-M1 최종 결정, Phase 19
+승인 필요), AR-M2 시간 상관 측정 + 릴레이 큐 순서 검증, AR-M1 최종 결정, Phase 19
 ETL/롤백 리허설(AR-H3), Phase 20 운영 준비. 로컬 범위 잔여 Low는 모두 해소됨(2026-06-12): AR-L9/L11 플랜 게이트 문구
 정정, `/api/zkp-files` 마운트를 build_* 산출물 3종으로 축소(실측: 산출물
 200 / 스크립트·소스·circuit_0000 404).

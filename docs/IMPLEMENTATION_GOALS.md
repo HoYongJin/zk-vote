@@ -136,7 +136,9 @@ zk-vote Phase 1 audit-blocker 중 C1+H1 회로/컨트랙트 v2를 구현하라.
   - `PUBLIC_SIGNAL_ELECTION_ID_INDEX`
 - route `election_id`를 `electionIdToBigInt` 방식과 동일하게 BigInt로 변환하고, public signal의 election id와 비교하라.
 - mismatch 시 400 계열 에러를 반환하라. 예: `ELECTION_ID_MISMATCH`.
-- 기존 ticket election/root/nullifier 검증은 유지하라.
+- 기존 ticket election/root 검증은 유지하되, ticket payload가 nullifier를
+  담으면 거부하라. Nullifier는 공개 신호와 온체인/durable uniqueness로만
+  검증한다.
 - submit route에서 nullifier lock key도 새 index 상수를 사용하도록 바꿔라.
 - anonymous submit 모델은 유지하라.
 

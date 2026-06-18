@@ -2,7 +2,7 @@
 
 > Decision record for `docs/PROJECT_PLAN.md` Phase 3. Implements audit
 > M6/M7/M8 and architecture review AR-M3. Schema source of truth:
-> `rust-backend/migrations/0001..0003`. Gates are executable:
+> `rust-backend/migrations/0001..0004`. Gates are executable:
 > `bash scripts/local/db-verify.sh`.
 
 ## 1. Naming decision (audit M6)
@@ -22,6 +22,7 @@ Node↔Rust mapping (used by the one-time ETL in Phase 19):
 | ------------------------- | --------------------------- | ----- |
 | `Elections`               | `elections`                 | `registration/voting_*_time` carry over 1:1 |
 | `Elections.merkle_root`   | `elections.merkle_root`     | decimal string (see §3) |
+| `Elections.superseded_at` | `elections.superseded_at`   | optional AR-M7 marker; absent source columns migrate as `NULL` |
 | `Voters`                  | `voters`                    | |
 | `Voters.user_secret`      | `voters.user_secret_commitment` | post-H2 the legacy column holds `H(secret)`; the plaintext-named column does **not** exist in the target schema (dropped in `0003`) |
 | `Admins`                  | `admins`                    | |
@@ -69,10 +70,10 @@ Two login roles, **no RLS** (`rust-backend/db/roles.sql`, applied locally by
 | `zkvote_app` | runtime API | per-table `SELECT/INSERT/UPDATE` (+`DELETE` only on `admin_invitations` for H5 consumption); **no** `CREATE` |
 
 Gates: the runtime role cannot execute DDL but can perform granted DML
-(`db-verify.sh`). Staging must connect the API as `zkvote_app` and run
-migrations as `zkvote_migrator` (the single `zkvote_app`-does-everything user
-in `scripts/gcp/zkvote-staging-setup.sh` predates this model and is updated
-at Phase 16).
+(`db-verify.sh`). Staging connects the API with
+`zkvote-staging-database-url` (`zkvote_app`) and keeps DDL/migration access in
+`zkvote-staging-migrator-database-url` (`zkvote_migrator`). The migrator
+secret is intentionally not mounted on the Cloud Run API service.
 
 ### Replaced hosted-Supabase RLS posture (inventory)
 
@@ -96,11 +97,13 @@ draft -> artifacts_ready -> contract_deployed -> registration_open
 (any state) -> failed
 ```
 
-The DB enforces membership via the `elections.state` CHECK; order is enforced
-in the domain layer (and exercised by `cargo test --workspace`). The Node
-backend predates the state column and infers lifecycle from
-`contract_address`/`merkle_root`/timestamps — the ETL derives the closest
-state per row at cutover (Phase 19).
+The DB enforces membership via the `elections.state` CHECK, and the domain
+crate owns the allowed transition table. The Rust repository layer now persists
+the durable states reached by deploy, finalization, voting-end reconciliation,
+and completion, while read parity still follows the Node-compatible
+`contract_address`/`merkle_root`/timestamp/`completed` fields until cutover.
+The Node backend predates the state column and infers lifecycle from those
+fields — the ETL derives the closest state per row at cutover (Phase 19).
 
 ## 6. Existing-data migration notes (feeds Phase 19)
 
@@ -113,6 +116,9 @@ state per row at cutover (Phase 19).
 - Elections deployed against the v1 `uint256[3]` boundary must be marked
   completed/superseded at migration time; v2 contracts are required for any
   live election (see `docs/API_COMPATIBILITY.md` v2 note).
+- The ETL derives `elections.state` from the migrated Node lifecycle fields
+  and carries optional `verifier_address`/`superseded_at` when the source
+  schema exposes them.
 - Redis state (tickets, locks, Merkle leaf cache) is intentionally NOT
   migrated: tickets are short-lived, locks are runtime-only, and the leaf
   cache rebuilds from Postgres.
@@ -126,4 +132,4 @@ bash scripts/local/db-verify.sh  # runs every Phase 3 gate, rolls back
 ```
 
 All gates measured passing on 2026-06-12 (legacy-shaped local volume AND a
-fresh database created from 0001→0003).
+fresh database created from 0001→0004).

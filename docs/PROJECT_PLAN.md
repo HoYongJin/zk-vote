@@ -698,9 +698,9 @@ Tasks:
   because a mid-election mutable owner is a larger governance risk than
   immutability. Compensating controls: finalize-time duration bounds
   (Phase 12) and a documented "supersede election" runbook — mark the
-  election superseded in the DB and deploy a replacement contract through an
-  explicit admin flow that lifts the `ALREADY_DEPLOYED` guard only for
-  superseded elections.
+  election superseded in the DB and create a replacement election row for the
+  new contract. The superseded row remains immutable and hidden from vote
+  flows.
 
 Deliverables:
 
@@ -718,7 +718,7 @@ Verification gate:
 - The hot relayer key cannot call `configureElection` on a freshly deployed
   `VotingTally`.
 - A superseded election cannot accept app-relayed votes, and a replacement
-  contract can be deployed for it without manual DB surgery.
+  election can be deployed without mutating the abandoned row.
 
 Definition of done:
 

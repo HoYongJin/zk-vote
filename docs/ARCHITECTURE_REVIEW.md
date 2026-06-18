@@ -19,7 +19,7 @@
 | AR-H7 | High | 플랜 공백 | Rust가 비트동일 circom Poseidon 필요한데 crate/테스트벡터 무계획 | Phase 12 ✅ |
 | AR-H8 | High | 플랜 공백 | npm 암호 스택 공급망 통제 0 (caret + `npm install` CD) | Phase 17 ✅ |
 | AR-M1 | Medium | 아키텍처 | 제출 티켓 = 연결 가능한 bearer 토큰 (운영자 deanonymization 조인 키) | Phase 13 부분 ✅ / Phase 18 결정 |
-| AR-M2 | Medium | 플랜 공백 | 300초 TTL + 즉시 릴레이 + 실시간 VoteCast = 타이밍 채널 | Phase 13 완화 + Phase 18 측정 ✅ (잔여 수용) |
+| AR-M2 | Medium | 플랜 공백 | 300초 TTL + 단일 릴레이 + 실시간 VoteCast = 타이밍 채널 | Phase 13 완화 + Phase 18 측정 ✅ (잔여 수용) |
 | AR-M3 | Medium | 아키텍처 | Cloud SQL 권한 모델(ROLE/GRANT/RLS 대체) 부재 | Phase 3 ✅ (no-RLS·2-role 결정) |
 | AR-M4 | Medium | 아키텍처 | 단일 hot EOA가 릴레이어+배포자+모든 컨트랙트 영구 owner | Phase 11 ✅ |
 | AR-M5 | Medium | 아키텍처 | 릴레이어 nonce 직렬화 부재 (동시 제출 시 충돌) | Phase 13 ✅ |
@@ -76,7 +76,7 @@
 - **Evidence**:
   - `docs/PROJECT_PLAN.md:722` — "Issue single-use ticket bound to election, Merkle root, **and nullifier hash**", `:731` "Validate nullifier against ticket", `:753` 게이트 "Nullifier mismatch is rejected"
   - H2 설계(`:182-186`) — "backend no longer derives nullifiers from server-held secrets" → 서버는 /proof 시점에 nullifier를 **알 수 없음** (알게 만들면 identity↔nullifier 연결이 부활해 H2가 무효)
-  - 워크트리 현실: `server/routes/proof.js:129-132`는 ticket을 (election, root)에만 바인딩; `submitValidation.js:73-75,109`는 ticket nullifier를 optional 처리(죽은 체크)
+  - 워크트리 현실: `server/routes/proof.js:129-132`와 `server/utils/submissionTickets.js`는 ticket을 (election, root)에만 바인딩하고 nullifier-bearing ticket payload를 거부
   - `docs/PROJECT_PLAN.md:1095-1097` — Milestone D 출구 기준이 한 문장에서 "anonymous under the post-audit privacy model"과 "nullifier-bound"를 동시 요구 (자기모순)
 - **문제**: Phase 13을 스펙대로 구현하면 H2가 깨지고, H2대로 구현하면 Phase 13 게이트가 영원히 미충족. Rust 포팅 팀이 어느 쪽을 따라야 할지 결정 불가.
 - **수정**: 티켓은 (election, root, 1회성)만 바인딩, nullifier 검증은 온체인 유일성으로 재해석. → **Phase 13 태스크·게이트·Milestone D 문구 정정됨.**
@@ -121,34 +121,34 @@
 - **문제**: H2를 완료해도 **티켓 UUID 자체가 양 엔드포인트의 조인 키**다. 운영자가 (identity→ticket)을 로깅하면 전 유권자 deanonymization. Phase 18 리뷰 한 줄(`:954`)만 존재, 비연결 인가(blind signature/anonymous credential) 요구사항 없음.
 - **수정**: identity↔ticket 연관의 비로깅·비저장 원칙(Phase 13에 반영됨) + 비연결 인가 채택 여부의 명시적 결정(Phase 18에 위임). **운영자 대상 익명성의 현재 상한임을 문서로 인정할 것.**
 
-### AR-M2 — 300초 티켓 TTL + 즉시 단일 릴레이 + 실시간 VoteCast = 타이밍/순서 deanonymization 채널
+### AR-M2 — 300초 티켓 TTL + 단일 릴레이 + 실시간 VoteCast = 타이밍/순서 deanonymization 채널
 
-- **Evidence**: `submissionTickets.js:3` (`TICKET_EXPIRY_SECONDS = 300`), `submitZk.js:223`(배칭/지연 없는 즉시 릴레이), `VotingTally.sol:54,183`(표별 실시간 이벤트), `VotePage.js:55→146`(같은 플로우에서 /proof 직후 /submit)
-- **문제**: /proof 발급 시각(운영자 보유)과 온체인 제출 시각의 강한 시간 결합 + 표별 공개 이벤트 → 교차 추론으로 익명집합이 사실상 1로 축소될 수 있다. 어느 phase도 미소유.
-- **결정(2026-06-12)**: v1은 프로토콜 변경 없이 저비용 완화 + 잔여 수용. **Phase 13에 반영됨** — 클라이언트 제출 지터, 릴레이어 큐(AR-M5)의 발급 순서 비보존, /proof 발급 타임스탬프 비보존. **Phase 18에 반영됨** — staging에서 발급↔온체인 시간 상관 측정 + 최소 익명집합/turnout 임계 정의 + 비연결 인가 채택 여부 최종 결정. 글로벌 수동 관찰자에 대한 잔여 상관은 v1 수용.
+- **Evidence**: `submissionTickets.js:3` (`TICKET_EXPIRY_SECONDS = 300`), `VotingTally.sol:54,183`(표별 실시간 이벤트), `VotePage.js`가 `/proof` 응답 직후 시간을 기록하고 ticket TTL 안전 예산 안에서 랜덤 지터를 적용한 뒤 `/submit` 호출, Node/Rust 릴레이어는 hot wallet 직렬화 경로 사용.
+- **문제**: 클라이언트 지터를 적용해도 /proof 발급 시각(운영자 보유 가능)과 온체인 제출 시각 사이의 시간 결합 + 표별 공개 이벤트는 완전히 사라지지 않는다. turnout이 낮거나 관찰자가 전역 타이밍을 보는 경우 익명집합이 작아질 수 있다.
+- **결정(2026-06-12)**: v1은 프로토콜 변경 없이 저비용 완화 + 잔여 수용. **Phase 13에 반영됨** — TTL-safe 클라이언트 제출 지터, 릴레이어 큐(AR-M5)의 발급 순서 비보존 목표, /proof 발급 타임스탬프 비보존 원칙. **Phase 18에 반영됨** — staging에서 발급↔온체인 시간 상관 측정 + 최소 익명집합/turnout 임계 정의 + 비연결 인가 채택 여부 최종 결정. 글로벌 수동 관찰자에 대한 잔여 상관은 v1 수용.
 
 ### AR-M3 — Cloud SQL 권한 모델 부재: 현 RLS 자세 인벤토리도, 새 ROLE/GRANT/POLICY도 없음
 
-- **Evidence**: `server/supabaseClient.js:6`(서비스롤로 RLS 우회), `frontend/src/App.js:30`(anon 직접 읽기 — 문서화 안 된 RLS 전제), `rust-backend/migrations/*.sql`(GRANT/ROLE/POLICY 0건), `scripts/gcp/zkvote-staging-setup.sh:12,110-121`(만능 단일 `zkvote_app` 유저)
+- **Evidence**: 원 감사 시점에는 `server/supabaseClient.js:6`(서비스롤로 RLS 우회), `frontend/src/App.js:30`(anon 직접 읽기 — 문서화 안 된 RLS 전제), `rust-backend/migrations/*.sql`(GRANT/ROLE/POLICY 0건), `scripts/gcp/zkvote-staging-setup.sh`(만능 단일 `zkvote_app` 유저)가 문제였다. 현재는 `rust-backend/db/roles.sql`과 staging setup의 `zkvote_app`/`zkvote_migrator` secret 분리로 반영됨.
 - **결정(2026-06-12)**: **Phase 3에 반영됨** — Cloud SQL에는 RLS를 도입하지 않는다(PostgREST 소멸 + 모든 접근이 백엔드 경유, 프론트 직접 읽기는 AR-H4의 `/api/me`로 제거). 대신 migration-owner(DDL) / 런타임 앱 role(테이블별 최소 DML) 2-role 분리 + 현 Supabase RLS 자세 인벤토리. 게이트: 런타임 role의 DDL 불가.
 
 ### AR-M4 — 단일 hot EOA = 릴레이어 + 배포자 + 모든 VotingTally의 회수 불가 owner
 
-- **Evidence**: `submitZk.js:46`·`finalizeVote.js:156`·`hardhat.config.js:11`(동일 `PRIVATE_KEY`), `VotingTally.sol:77`(constructor에서 owner=배포자 고정), 컨트랙트 전문에 `transferOwnership` 없음(전문 확인)
+- **Evidence**: 원 감사 시점에는 `submitZk.js`/`finalizeVote.js`/`hardhat.config.js`가 동일 `PRIVATE_KEY`를 사용하고 `VotingTally` owner가 배포자로 고정되어 있었다. 현재는 `VotingTally` constructor가 explicit owner를 받고, `scripts/deployAll.js`/`scripts/deploy_votingtally.js`/Rust `deploy_election`이 `(verifier, electionId, numCandidates, owner)`를 전달하며, finalize는 `OWNER_PRIVATE_KEY`를 우선 사용한다.
 - **문제**: 가장 인터넷 노출이 큰 서명 경로(익명 제출 릴레이)의 키가 유출되면 미구성 선거에 `configureElection(attacker_root,...)`을 선점할 수 있고 `require(!configured)`가 탈취를 영구 고정한다. 키 로테이션 불가, 가스 잔고 모니터링 미계획.
-- **수정**: owner 키(cold/multisig)와 가스 전용 hot 릴레이어 키 분리(constructor에 명시적 owner 또는 2-step transferOwnership), 가스 모니터링. → **Phase 11에 반영됨.**
+- **수정**: owner 키(cold/multisig)와 가스 전용 hot 릴레이어 키 분리, 명시적 owner constructor, Secret Manager owner-key mount, 가스 모니터링 계획. → **Phase 11에 반영됨.**
 
 ### AR-M5 — 릴레이어 nonce 직렬화 부재: 서로 다른 유권자의 동시 제출이 nonce 충돌
 
-- **Evidence**: `submitZk.js:44-47`(NonceManager 없는 모듈 싱글톤 ethers v5 Wallet), `:60-61`(락 키가 (election,nullifier) 스코프라 상이한 유권자 간 직렬화 없음), `finalizeVote.js:156`(같은 키로 별도 Wallet 생성 → 교차 충돌)
+- **Evidence**: 원 감사 시점에는 `submitZk.js`의 lock이 ticket/nullifier 스코프라 상이한 유권자 간 relayer nonce 직렬화가 없었다. 현재 Node submit은 `submit:relayer-wallet` lock을 실제 tx consume/send/wait 구간에 추가했고, Rust submit은 `AppState.relay_lock`으로 동일 wallet send를 직렬화한다.
 - **문제**: RPC 왕복 윈도 안의 동시 send가 같은 nonce를 받아 한쪽이 거부되고, **이미 소비된 티켓**은 복구되지 않는다 (audit M1과 별개의 손실 경로).
-- **수정**: 지갑 단위 송신 직렬화(릴레이어 큐/지갑 락, `tx.wait()`는 직렬화 밖). → **Phase 13에 반영됨.**
+- **수정**: 지갑 단위 송신 직렬화(현재 v1은 단순성을 위해 `tx.wait()`까지 락 안에 둔다; staging queue 최적화는 후속 개선). → **Phase 13에 반영됨.**
 
 ### AR-M6 — wasm/zkey 브라우저 서빙 표면을 어느 phase도 소유하지 않음 + 클라이언트 무결성 검증 부재
 
-- **Evidence**: `VotePage.js:103-104`(Node `/zkp-files` 정적 마운트 하드코딩), `server/index.js:42`(로컬 디스크 express.static — Cloud Run은 ephemeral), `docs/PROJECT_PLAN.md`에 "zkp" 단어 0회(grep), `frontend/src`에 integrity/sha256/checksum 0건(grep)
-- **문제**: (a) 컷오버 후 브라우저가 증명 아티팩트를 받을 경로가 무계획 — Phase 7/13/15 라우트 목록 어디에도 없음. (b) Phase 10의 sha256은 전부 서버측 — **클라이언트는 받은 wasm/zkey를 검증하지 않으므로**, 아티팩트 경로 탈취 시 조작된 prover가 secret을 빼돌려 H2가 무효화된다(웹 전달 신뢰 상한).
-- **수정**: manifest 기반 Rust 서빙 루트 또는 signed URL + 클라이언트 해시 검증·불일치 시 증명 거부. → **Phase 10에 반영됨.**
+- **Evidence**: 원 감사 시점에는 `VotePage.js`가 Node `/zkp-files` 정적 마운트에 직접 의존했고, 컷오버 후 Rust가 브라우저에 wasm/zkey를 제공하는 표면이 없었다. 현재 Node는 `/api/elections/:id/artifact-info`와 제한된 `/api/zkp-files/build_*`만 노출하고, Rust도 `/api/elections/:id/artifact-info` + 제한된 `/api/zkp-files/*artifact_path`를 제공한다. Rust route는 local artifact dir와 `ARTIFACT_STORE=gcs`를 모두 지원하고, GCS 모드에서는 service-account metadata token으로 Storage JSON API에서 artifact bytes를 가져온다. 프런트는 `fetchVerifiedArtifact()`로 wasm/zkey sha256을 검증한 뒤에만 증명을 생성한다.
+- **문제**: 조작된 wasm/zkey를 브라우저가 그대로 실행하면 H2의 client-held secret 모델이 무효화된다(웹 전달 신뢰 상한). 또한 Rust cutover 시 artifact retrieval route가 빠지면 정상 유권자가 proof를 만들 수 없다.
+- **수정**: manifest 기반 artifact-info + 제한된 local/GCS artifact serving + 클라이언트 해시 검증·불일치 시 증명 거부. → **Phase 10/15/16에 반영됨.**
 
 ### AR-M7 — 선거 라이프사이클이 on-chain one-shot: 잘못된 voteEndTime이 선거를 영구 brick (수동 검증 완료)
 
@@ -166,7 +166,7 @@
 | AR-L2 | 플랜 "Current Baseline"·audit.md가 Phase 1 이후 stale (C1/H1 "미수정"을 현재 사실로 서술) → Phase 16 게이트("open Critical/High 없음") 판정 불가 | `PROJECT_PLAN.md:46-48`, `:1122-1126` | audit 클로저 매트릭스(rev5 또는 SECURITY_REVIEW.md) 필요 — Phase 18 |
 | AR-L3 | 실시간 집계·표별 이벤트가 "results only through completed surface"(`:122`)와 모순. 공개 체인 특성상 **수용 또는 완화(커밋-공개/이벤트 제거)를 명시 결정**해야 | `VotingTally.sol:46,54,180` | **v1 수용 결정(2026-06-12)** — §4 Voter Flow 10 문구 정정(온체인 공개 속성 + 유권자 측 영수증 가능성 명시) + Phase 18 위협모델 기록 태스크 반영 |
 | AR-L4 | Rust 인증은 JWKS-only인데 addAdmins parity는 Supabase **Auth Admin API**(service-role) 필요 — staging에 해당 시크릿 미계획 | `addAdmins.js:21,85-94` | Phase 5 결정 항목 |
-| AR-L5 | 사용처 없는 SECRET_SALT가 staging 시크릿·문서에 잔존 (H2 이후 서버 코드 grep 0건) | `zkvote-staging-setup.sh:157,182`, `.env.example:23` | 제거/legacy 표기 |
+| AR-L5 | 사용처 없는 SECRET_SALT가 staging 시크릿·문서에 잔존 (H2 이후 서버 코드 grep 0건) | 현재 setup script와 `.env.example`에서는 제거/legacy 표기 완료 | 제거/legacy 표기 |
 | AR-L6 | v1(uint[3]) 배포 선거가 DB상 투표 가능해 보이나 모든 제출 실패 — 차단 가드/ELECTION_REQUIRES_REDEPLOY 부재 (IMPLEMENTATION_GOALS에만 서술) | `IMPLEMENTATION_GOALS.md:35,37` | Phase 3/10에서 ABI 버전 기록 권장 |
 | AR-L7 | `ETHERSCAN_API_KEY` 어디에도 미문서화, verify 실패는 무해하게 삼켜짐 | `hardhat.config.js:14-15`, `.env.example`(부재) | .env.example 추가 권장 |
 | AR-L8 | front-run(calldata 복사) 시 표는 정상 집계되나 릴레이어 tx revert → 유권자에게 500, 티켓 소비됨 (수동 검증: 후보 변조는 불가능 — 신호가 증명에 고정) | `VotingTally.sol:145-150,168,175` | Phase 13에 success-by-other-tx 처리 반영됨 |
