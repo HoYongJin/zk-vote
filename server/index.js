@@ -2,8 +2,13 @@ require("dotenv").config({ path: __dirname + '/.env' });
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
+// NODE-1: behind Cloud Run / a load balancer the real client IP is in
+// X-Forwarded-For; trust exactly one proxy hop so per-IP rate limiting keys on
+// the client, not the proxy (and cannot be spoofed past that one hop).
+app.set("trust proxy", 1);
 //app.use(cors());
 app.use(express.json());
 //app.use('/zkp-files', express.static(path.join(__dirname, 'zkp')));
@@ -25,6 +30,25 @@ const corsOptions = {
     optionsSuccessStatus: 200
     };
 app.use(cors(corsOptions));
+
+// NODE-1: throttle the cost-sensitive voting endpoints. The on-chain nullifier
+// still prevents double-voting; these caps bound ticket minting (/proof) and
+// relay spam (/submit) that would otherwise degrade availability during the
+// voting window. Infra-level limits (Cloud Run / LB) remain the outer layer.
+const proofLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "RATE_LIMITED", details: "Too many proof requests; please slow down." },
+});
+const submitLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 15,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "RATE_LIMITED", details: "Too many submissions; please slow down." },
+});
 
 const addAdminsRouter = require("./routes/addAdmins");
 const setVoteRouter = require("./routes/setVote");
@@ -62,8 +86,8 @@ app.use("/api/elections/:election_id/voters", registerByAdminRouter); // (관리
 app.use("/api/elections/:election_id/register", registerRouter); // 유권자 등록: POST /api/elections/:id/register
 app.use("/api/elections/:election_id/finalize", finalizeVoteRouter); // (관리자) 등록 마감: POST /api/elections/:id/finalize
 app.use("/api/elections/:election_id/artifact-info", artifactInfoRouter); // 아티팩트 해시/경로 (AR-M6 클라이언트 검증)
-app.use("/api/elections/:election_id/proof", proofRouter); // Merkle 증명 생성: POST /api/elections/:id/proof
-app.use("/api/elections/:election_id/submit", submitZkRouter); // ZK 증명 제출: POST /api/elections/:id/submit
+app.use("/api/elections/:election_id/proof", proofLimiter, proofRouter); // Merkle 증명 생성: POST /api/elections/:id/proof
+app.use("/api/elections/:election_id/submit", submitLimiter, submitZkRouter); // ZK 증명 제출: POST /api/elections/:id/submit
 app.use('/api/elections/:election_id/complete', completeVoteRouter);
 
 app.listen(process.env.PORT, () => {
