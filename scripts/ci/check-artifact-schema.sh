@@ -24,9 +24,20 @@ if [ "$checked" -eq 0 ]; then
   exit 1
 fi
 
-for verifier in contracts/Groth16Verifier_4_5.sol contracts/Groth16Verifier_5_4.sol; do
+# SOL-VERIF-1: EVERY committed Groth16 verifier must take uint[4] public signals.
+# A stale uint[2]/uint[3] verifier name-resolves to the same
+# Groth16Verifier_<depth>_<candidates> pattern as a real one and, wired into the
+# uint256[4] VotingTally, reverts every submitTally — bricking the election. Fail
+# closed on any non-uint[4] verifier rather than allow-listing only the good ones.
+shopt -s nullglob
+verifiers=(contracts/Groth16Verifier*.sol)
+if [ "${#verifiers[@]}" -eq 0 ]; then
+  echo "FAIL: no contracts/Groth16Verifier*.sol found" >&2
+  exit 1
+fi
+for verifier in "${verifiers[@]}"; do
   if ! grep -Eq 'uint\[ *4 *\] +calldata +_pubSignals' "$verifier"; then
-    echo "FAIL: $verifier does not take uint[4] public signals" >&2
+    echo "FAIL: $verifier does not take uint[4] public signals (SOL-VERIF-1: stale uint[2]/uint[3] verifier must not ship; regenerate via setUpZk.sh)" >&2
     exit 1
   fi
   echo "ok: $verifier uint[4]"

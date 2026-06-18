@@ -5,6 +5,7 @@ loadDeployEnv();
 const hre = require("hardhat");
 const supabase = require("../server/supabaseClient"); // Import Supabase client from the server directory.
 const { recordElectionArtifacts } = require("../server/utils/zkArtifacts");
+const { assertUint4Verifier } = require("./assertVerifierArity");
 
 function isMissingColumnError(error) {
     return error && (
@@ -83,6 +84,10 @@ async function main() {
         console.error(`Example: bash server/zkp/setUpZk.sh ${election.merkle_tree_depth} ${election.num_candidates}\n`);
         process.exit(1);
     }
+
+    // SOL-VERIF-1: never deploy a verifier whose verifyProof arity != uint256[4];
+    // a stale uint[3] verifier wired into the uint256[4] VotingTally bricks voting.
+    assertUint4Verifier(Verifier, verifierContractName);
 
     const verifier = await Verifier.deploy();
     await verifier.waitForDeployment();

@@ -1,4 +1,5 @@
 const hre = require("hardhat");
+const { assertUint4Verifier } = require("./assertVerifierArity");
 
 function requiredEnv(name) {
   const value = process.env[name];
@@ -14,6 +15,7 @@ async function main() {
   const contractName = `Groth16Verifier_${depth}_${numCandidates}`;
 
   const Verifier = await hre.ethers.getContractFactory(contractName);
+  assertUint4Verifier(Verifier, contractName);
   const verifier = await Verifier.deploy();
   await verifier.waitForDeployment();
   console.log(`${contractName} deployed at:`, await verifier.getAddress());
