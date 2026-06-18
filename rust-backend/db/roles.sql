@@ -50,6 +50,10 @@ GRANT SELECT, INSERT, UPDATE         ON finalization_jobs    TO zkvote_app;
 GRANT SELECT, INSERT                 ON zk_artifacts         TO zkvote_app;
 GRANT SELECT, INSERT                 ON contract_deployments TO zkvote_app;
 
--- Objects created by future migrations inherit the same runtime grants.
+-- Objects created by future migrations are APPEND-ONLY by default (SQL-1):
+-- granting UPDATE here would silently undo the append-only intent that
+-- zk_artifacts/contract_deployments are given (SELECT, INSERT only). A future
+-- table that genuinely needs mutation must opt in with an explicit
+-- `GRANT ... UPDATE` in roles.sql, exactly like the mutable tables above.
 ALTER DEFAULT PRIVILEGES FOR ROLE zkvote_migrator IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE ON TABLES TO zkvote_app;
+    GRANT SELECT, INSERT ON TABLES TO zkvote_app;
