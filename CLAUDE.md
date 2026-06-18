@@ -82,6 +82,16 @@ consumed queue).
    gated for any staging/production election.
 7. **Poseidon must be bit-identical** across circuit, frontend (poseidon-lite), server
    (circomlibjs), and Rust (light-poseidon) — a 1-bit divergence invalidates every proof.
+8. **Admin promotion & voter eligibility trust the JWT `email` claim.** The Supabase
+   project **MUST** have e-mail confirmation enabled (no autoconfirm) so an `email` claim
+   implies the caller controls that inbox — otherwise an attacker could claim a pending
+   admin invitation or a voter slot for someone else's address. The backend additionally
+   refuses an *explicitly* unverified e-mail (RUST-AUTH-2), but the deployment setting is
+   the primary control.
+
+**Deployment & security findings:** the 2026-06-19 adversarial audit and its remediation
+are tracked in `docs/SECURITY_AUDIT_2026-06.md` (read it before deploy; it lists the
+accepted/deferred items and their rationale).
 
 **Accepted v1 risks (not bugs):** on-chain public running tally + per-vote choice;
 receipt-freeness is broken (a secret-holder can prove their vote → vote-buying); residual
