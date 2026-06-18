@@ -8,6 +8,9 @@ on:
     branches-ignore: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   contracts-and-node:
     name: Hardhat + Node route tests
@@ -23,6 +26,16 @@ jobs:
             server/package-lock.json
       - run: npm ci
       - run: npm ci --prefix server
+      - name: JavaScript syntax gate
+        run: find server scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 node --check
+      - name: Shell syntax gate
+        run: find scripts server/zkp -name '*.sh' -print0 | xargs -0 bash -n
+      - name: Deploy install policy gate (AR-H8)
+        run: |
+          if grep -R -n -E 'npm[[:space:]]+install' .github/workflows frontend/buildspec.yml; then
+            echo "Deploy/build paths must use npm ci against committed lockfiles." >&2
+            exit 1
+          fi
       - name: Circuit/contract schema gate (audit C1)
         run: bash scripts/ci/check-artifact-schema.sh
       - name: Hardhat + helper/route tests
@@ -39,6 +52,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --prefix frontend
+      - run: npm test --prefix frontend -- --watchAll=false
       - run: npm run build --prefix frontend
         env:
           CI: "true"
@@ -93,6 +107,28 @@ jobs:
           count=$(psql -h 127.0.0.1 -U zkvote -d zkvote -t -A -c \
             "SELECT count(*) FROM information_schema.columns WHERE table_name='elections' AND column_name IN ('title','registration_start_at')")
           test "$count" = "0"
+      - name: Runtime role privilege gate (AR-M3)
+        run: |
+          psql -h 127.0.0.1 -U zkvote -d zkvote -v ON_ERROR_STOP=1 \
+            -v migrator_password=ci_migrator_password \
+            -v app_password=ci_app_password \
+            -f rust-backend/db/roles.sql
+          psql -h 127.0.0.1 -U zkvote -d zkvote -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE zkvote_app;
+          DO $$
+          BEGIN
+              BEGIN
+                  CREATE TABLE ci_runtime_role_should_not_create (x int);
+                  RAISE EXCEPTION 'runtime role executed DDL';
+              EXCEPTION WHEN insufficient_privilege THEN
+                  RAISE NOTICE 'runtime role cannot execute DDL';
+              END;
+              INSERT INTO admins (id) VALUES ('00000000-0000-0000-0000-00000000c101');
+              RAISE NOTICE 'runtime role can perform granted DML';
+          END $$;
+          ROLLBACK;
+          SQL
 
   dependency-audit:
     name: Dependency audits (AR-H8)

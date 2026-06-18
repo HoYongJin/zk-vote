@@ -4,6 +4,9 @@ name: Deploy Backend to AWS EC2
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # 수행할 작업(job)들을 정의합니다.
 jobs:
   deploy:
@@ -15,7 +18,7 @@ jobs:
     steps:
       # 1단계: EC2에 접속하여 배포 스크립트를 실행
       - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.AWS_USER }}
@@ -35,8 +38,8 @@ jobs:
             # 3. GitHub 저장소에서 최신 코드를 내려받습니다.
             git pull origin main
 
-            # 4. 프로젝트 루트의 의존성을 설치합니다. (hardhat 등)
-            npm install
+            # 4. 프로젝트 루트의 의존성을 lockfile 기준으로 설치합니다. (hardhat 등)
+            npm ci
 
             # 5. Hardhat을 이용해 스마트 컨트랙트를 컴파일합니다.
             npx hardhat compile
@@ -44,8 +47,8 @@ jobs:
             # 6. 서버(백엔드) 폴더로 이동합니다.
             cd server
 
-            # 7. 서버의 의존성을 설치합니다.
-            npm install
+            # 7. 서버의 의존성을 lockfile 기준으로 설치합니다.
+            npm ci
             
             # 8. .env 파일을 GitHub Secrets를 이용해 생성합니다.
             echo "SEPOLIA_RPC_URL=${{ secrets.SEPOLIA_RPC_URL }}" > .env
@@ -53,7 +56,6 @@ jobs:
             echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
             echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
             echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> .env
-            echo "SECRET_SALT=${{ secrets.SECRET_SALT }}" >> .env
             echo "REDIS_HOST=${{ secrets.REDIS_HOST }}" >> .env
             echo "REDIS_PORT=${{ secrets.REDIS_PORT }}" >> .env
             echo "PORT=${{ secrets.PORT }}" >> .env

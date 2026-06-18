@@ -9,6 +9,7 @@ const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
 const auth = require("../middleware/auth");
+const { filterSupersededElections } = require("../utils/supersede");
 
 /**
  * @route   GET /api/elections/finalized
@@ -83,12 +84,13 @@ router.get("/", auth, async (req, res) => {
         }
 
         // --- 4. Execute the main query to get the list of elections ---
-        const { data: elections, error: electionsError } = await query;
+        const { data: electionRows, error: electionsError } = await query;
 
         if (electionsError) {
             console.error(`[finalizedVote.js] Error executing elections query for user ${user.id}:`, electionsError.message);
             throw electionsError;
         }
+        const elections = await filterSupersededElections(supabase, electionRows);
 
         // If no elections match the criteria, return an empty array.
         if (!elections || elections.length === 0) {

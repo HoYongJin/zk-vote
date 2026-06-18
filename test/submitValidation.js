@@ -3,6 +3,7 @@ const {
     validateFormattedProof,
     validateSubmitPayload,
 } = require("../server/utils/submitValidation");
+const { FIELD_ELEMENT_MODULUS_DEC } = require("../server/utils/fieldElement");
 
 const formattedProof = {
     a: ["1", "2"],
@@ -21,7 +22,6 @@ const validBase = {
     ticketPayload: {
         electionId: ELECTION_UUID,
         merkleRoot: "123",
-        nullifierHash: "456",
     },
     election: {
         merkle_root: "123",
@@ -35,6 +35,10 @@ describe("submitValidation", function () {
         expect(validateFormattedProof({ ...formattedProof, b: [["3"], ["4"]] })).to.equal(false);
     });
 
+    it("rejects proof coordinates outside the BN254 scalar field", function () {
+        expect(validateFormattedProof({ ...formattedProof, a: [FIELD_ELEMENT_MODULUS_DEC, "2"] })).to.equal(false);
+    });
+
     it("accepts a valid submit payload", function () {
         const result = validateSubmitPayload(validBase);
 
@@ -45,6 +49,17 @@ describe("submitValidation", function () {
         const result = validateSubmitPayload({
             ...validBase,
             publicSignals: ["123", "1", "456"],
+        });
+
+        expect(result.ok).to.equal(false);
+        expect(result.status).to.equal(400);
+        expect(result.error).to.equal("INVALID_PAYLOAD");
+    });
+
+    it("rejects public signals outside the BN254 scalar field", function () {
+        const result = validateSubmitPayload({
+            ...validBase,
+            publicSignals: [FIELD_ELEMENT_MODULUS_DEC, "1", "456", "123"],
         });
 
         expect(result.ok).to.equal(false);
@@ -84,14 +99,24 @@ describe("submitValidation", function () {
         expect(result.error).to.equal("MERKLE_ROOT_MISMATCH");
     });
 
-    it("rejects nullifier mismatches", function () {
+    it("does not bind tickets to nullifiers", function () {
         const result = validateSubmitPayload({
             ...validBase,
             publicSignals: ["123", "1", "999", "123"],
         });
 
+        expect(result).to.deep.equal({ ok: true });
+    });
+
+    it("rejects legacy ticket payloads that carry nullifier hashes", function () {
+        const result = validateSubmitPayload({
+            ...validBase,
+            ticketPayload: { ...validBase.ticketPayload, nullifierHash: "456" },
+        });
+
         expect(result.ok).to.equal(false);
-        expect(result.error).to.equal("NULLIFIER_MISMATCH");
+        expect(result.status).to.equal(403);
+        expect(result.error).to.equal("INVALID_TICKET_PAYLOAD");
     });
 
     it("rejects candidate indices outside the election range", function () {

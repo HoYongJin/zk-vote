@@ -21,6 +21,7 @@ const {
     PUBLIC_SIGNAL_COUNT,
 } = require("../utils/submitValidation");
 const { withRedisLock } = require("../utils/redisLock");
+const { isElectionSuperseded } = require("../utils/supersede");
 const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/VotingTally.json").abi;
 const SUBMIT_LOCK_OPTIONS = {
     lockTimeoutSeconds: 1800,
@@ -63,6 +64,10 @@ function submitLockKey(electionId, nullifierHash) {
 
 function ticketLockKey(submissionTicket) {
     return `submit:ticket:${submissionTicket}`;
+}
+
+function relayerWalletLockKey() {
+    return "submit:relayer-wallet";
 }
 
 function extractEthersReason(err) {
@@ -134,6 +139,14 @@ router.post("/", async (req, res) => {
             });
         }
 
+        if (await isElectionSuperseded(supabase, election_id)) {
+            console.warn(`[${election_id}] Vote submission failed: Election is superseded.`);
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded; votes are no longer accepted."
+            });
+        }
+
         // Check 1: Ensure election is finalized
         if (!election.contract_address || !election.merkle_root) {
             console.warn(`[${election_id}] Vote submission failed: Election is not finalized.`);
@@ -147,7 +160,7 @@ router.post("/", async (req, res) => {
         const now = new Date();
         const votingStartTime = new Date(election.voting_start_time);
         const votingEndTime = new Date(election.voting_end_time);
-        if (now < votingStartTime || now > votingEndTime) {
+        if (now < votingStartTime || now >= votingEndTime) {
             console.warn(`[${election_id}] Vote submission failed: Voting period is not active.`);
             return res.status(403).json({ 
                 error: "VOTING_PERIOD_INACTIVE", 
@@ -165,6 +178,13 @@ router.post("/", async (req, res) => {
             try {
                 ticketPayload = await readSubmissionTicket(submissionTicket);
             } catch (redisError) {
+                if (redisError.code === "INVALID_TICKET_PAYLOAD" || redisError.status === 403) {
+                    console.warn(`[${election_id}] Submission attempt failed: Invalid ticket payload (Ticket: ${submissionTicket}).`);
+                    return res.status(403).json({
+                        error: "INVALID_OR_EXPIRED_TICKET",
+                        details: "The submission ticket is invalid, has expired, or has already been used."
+                    });
+                }
                 console.error(`[${election_id}] Redis ticket read error:`, redisError.message);
                 return res.status(500).json({
                     error: "SERVER_ERROR",
@@ -212,23 +232,45 @@ router.post("/", async (req, res) => {
                     });
                 }
 
-                const consumedPayload = await consumeSubmissionTicket(submissionTicket);
-                if (!consumedPayload) {
-                    return res.status(403).json({
-                        error: "INVALID_OR_EXPIRED_TICKET",
-                        details: "The submission ticket was already used or expired."
+                return await withRedisLock(relayerWalletLockKey(), async () => {
+                    // Re-run the permanent on-chain checks after entering the
+                    // wallet queue. Different voters have distinct nullifier
+                    // locks, but they still share one relayer nonce stream.
+                    const stillAlreadyUsed = await votingTallyContract.usedNullifiers(nullifierHash);
+                    if (stillAlreadyUsed) {
+                        return res.status(409).json({
+                            error: "VOTE_ALREADY_CAST",
+                            details: "This nullifier has already been used for this election."
+                        });
+                    }
+
+                    try {
+                        await votingTallyContract.callStatic.submitTally(a, b, c, publicSignals);
+                    } catch (callError) {
+                        return res.status(400).json({
+                            error: "PROOF_REJECTED",
+                            details: extractEthersReason(callError)
+                        });
+                    }
+
+                    const consumedPayload = await consumeSubmissionTicket(submissionTicket);
+                    if (!consumedPayload) {
+                        return res.status(403).json({
+                            error: "INVALID_OR_EXPIRED_TICKET",
+                            details: "The submission ticket was already used or expired."
+                        });
+                    }
+
+                    const tx = await votingTallyContract.submitTally(a, b, c, publicSignals);
+                    const receipt = await tx.wait();
+
+                    // --- Success Response ---
+                    return res.status(200).json({
+                        success: true,
+                        message: "Your vote has been successfully and anonymously cast.",
+                        transactionHash: receipt.transactionHash
                     });
-                }
-
-                const tx = await votingTallyContract.submitTally(a, b, c, publicSignals);
-                const receipt = await tx.wait();
-
-                // --- Success Response ---
-                return res.status(200).json({
-                    success: true,
-                    message: "Your vote has been successfully and anonymously cast.",
-                    transactionHash: receipt.transactionHash
-                });
+                }, SUBMIT_LOCK_OPTIONS);
             }, SUBMIT_LOCK_OPTIONS);
         }, SUBMIT_LOCK_OPTIONS);
 

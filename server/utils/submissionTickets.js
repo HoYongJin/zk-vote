@@ -11,19 +11,27 @@ function normalizeField(value) {
     return value === undefined || value === null ? null : value.toString();
 }
 
+function ticketPayloadError(message) {
+    return Object.assign(new Error(message), {
+        code: "INVALID_TICKET_PAYLOAD",
+        status: 403,
+    });
+}
+
 function buildTicketPayload({ electionId, merkleRoot, nullifierHash }) {
     const normalizedElectionId = normalizeField(electionId);
     const normalizedMerkleRoot = normalizeField(merkleRoot);
-    const normalizedNullifierHash = normalizeField(nullifierHash);
 
     if (!normalizedElectionId || normalizedMerkleRoot === null) {
         throw new Error("Ticket payload requires electionId and merkleRoot.");
+    }
+    if (nullifierHash !== undefined && nullifierHash !== null) {
+        throw ticketPayloadError("Ticket payload must not include nullifierHash.");
     }
 
     return {
         electionId: normalizedElectionId,
         merkleRoot: normalizedMerkleRoot,
-        ...(normalizedNullifierHash === null ? {} : { nullifierHash: normalizedNullifierHash }),
         issuedAt: new Date().toISOString(),
     };
 }
@@ -57,19 +65,19 @@ function parseTicketPayload(rawPayload) {
     try {
         payload = JSON.parse(rawPayload);
     } catch (err) {
-        throw new Error("Submission ticket payload is malformed.");
+        throw ticketPayloadError("Submission ticket payload is malformed.");
     }
 
     if (!payload.electionId || !payload.merkleRoot) {
-        throw new Error("Submission ticket payload is incomplete.");
+        throw ticketPayloadError("Submission ticket payload is incomplete.");
+    }
+    if (payload.nullifierHash !== undefined && payload.nullifierHash !== null) {
+        throw ticketPayloadError("Submission ticket payload must not include nullifierHash.");
     }
 
     return {
         electionId: payload.electionId.toString(),
         merkleRoot: payload.merkleRoot.toString(),
-        nullifierHash: payload.nullifierHash === undefined || payload.nullifierHash === null
-            ? null
-            : payload.nullifierHash.toString(),
         issuedAt: payload.issuedAt,
     };
 }

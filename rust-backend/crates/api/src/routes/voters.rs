@@ -38,6 +38,7 @@ struct ElectionGuardRow {
     registration_end_time: OffsetDateTime,
     merkle_root: Option<String>,
     merkle_tree_depth: i32,
+    superseded_at: Option<OffsetDateTime>,
 }
 
 async fn load_election_for_update(
@@ -45,8 +46,8 @@ async fn load_election_for_update(
     election_id: Uuid,
 ) -> Result<Option<ElectionGuardRow>, DbError> {
     Ok(sqlx::query_as::<_, ElectionGuardRow>(
-        "SELECT registration_end_time, merkle_root, merkle_tree_depth \
-         FROM elections WHERE id = $1",
+        "SELECT registration_end_time, merkle_root, merkle_tree_depth, superseded_at \
+         FROM elections WHERE id = $1 FOR UPDATE",
     )
     .bind(election_id)
     .fetch_optional(&mut **tx)
@@ -54,6 +55,13 @@ async fn load_election_for_update(
 }
 
 fn guard_open_registration(election: &ElectionGuardRow) -> Result<(), ApiError> {
+    if election.superseded_at.is_some() {
+        return Err(coded(
+            409,
+            "ELECTION_SUPERSEDED",
+            "This election was superseded and cannot be modified.",
+        ));
+    }
     if election.merkle_root.is_some() {
         return Err(coded(
             409,
@@ -69,6 +77,38 @@ fn guard_open_registration(election: &ElectionGuardRow) -> Result<(), ApiError> 
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::Duration;
+
+    fn open_election() -> ElectionGuardRow {
+        ElectionGuardRow {
+            registration_end_time: OffsetDateTime::now_utc() + Duration::hours(1),
+            merkle_root: None,
+            merkle_tree_depth: 4,
+            superseded_at: None,
+        }
+    }
+
+    #[test]
+    fn registration_guard_rejects_superseded_elections() {
+        let mut election = open_election();
+        election.superseded_at = Some(OffsetDateTime::now_utc());
+
+        let err = guard_open_registration(&election).expect_err("superseded row must fail");
+
+        assert!(matches!(
+            err,
+            ApiError::Coded {
+                status: 409,
+                code: "ELECTION_SUPERSEDED",
+                ..
+            }
+        ));
+    }
 }
 
 fn election_not_found(election_id: Uuid) -> ApiError {

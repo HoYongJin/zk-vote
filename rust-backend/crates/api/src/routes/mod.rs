@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod artifacts;
 pub mod elections;
 pub mod finalize;
 pub mod health;
@@ -44,6 +45,11 @@ pub fn router(state: AppState) -> Router {
             "/api/elections/:election_id/complete",
             post(manage::complete_election),
         )
+        .route(
+            "/api/elections/:election_id/artifact-info",
+            get(artifacts::artifact_info),
+        )
+        .route("/api/zkp-files/*artifact_path", get(artifacts::zkp_file))
         .route("/api/elections/:election_id/proof", post(vote::proof))
         // Anonymous by design: no auth extractor on submit (privacy model).
         .route("/api/elections/:election_id/submit", post(vote::submit))

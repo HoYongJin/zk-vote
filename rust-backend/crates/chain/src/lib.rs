@@ -83,6 +83,11 @@ fn signer(key: &str) -> Result<PrivateKeySigner, ChainError> {
         .map_err(|err| ChainError::Config(format!("invalid private key: {err}")))
 }
 
+/// Derives the EOA address for config validation and explicit owner wiring.
+pub fn address_for_private_key(key: &str) -> Result<Address, ChainError> {
+    Ok(signer(key)?.address())
+}
+
 fn provider_with(rpc_url: &str, key: &str) -> Result<impl Provider + Clone, ChainError> {
     let url = rpc_url
         .parse()

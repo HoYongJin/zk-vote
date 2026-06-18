@@ -1,0 +1,16 @@
+.git/
+.data/
+node_modules/
+server/node_modules/
+frontend/node_modules/
+rust-backend/target/
+frontend/build/
+coverage/
+cache/
+typechain/
+typechain-types/
+server/zkp/tmp/
+server/zkp/input/
+server/zkp/circomlib/
+*.ptau
+zk-vote-key.pem

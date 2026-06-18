@@ -3,7 +3,7 @@
 //! `cargo test -p zkvote-db -- --ignored`
 
 use time::{Duration, OffsetDateTime};
-use zkvote_db::repos::{ElectionRepo, NewElection, SubmissionRepo, VoterRepo};
+use zkvote_db::repos::{DeploymentRepo, ElectionRepo, NewElection, SubmissionRepo, VoterRepo};
 use zkvote_db::{with_transaction, DbError};
 
 const DATABASE_URL: &str = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
@@ -32,6 +32,120 @@ async fn drop_election(pool: &sqlx::PgPool, id: uuid::Uuid) {
         .execute(pool)
         .await
         .unwrap();
+}
+
+async fn election_state(pool: &sqlx::PgPool, id: uuid::Uuid) -> String {
+    sqlx::query_scalar("SELECT state FROM elections WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires the docker-compose Postgres"]
+async fn election_repo_persists_lifecycle_state_changes() {
+    let pool = pool().await;
+    let active = create_election(&pool).await;
+    let ended = create_election(&pool).await;
+    let now = OffsetDateTime::now_utc();
+
+    assert_eq!(election_state(&pool, active.id).await, "draft");
+
+    let deployed = ElectionRepo::set_contract_address(&pool, active.id, "0xabc", "0xdef")
+        .await
+        .unwrap();
+    assert!(deployed);
+    assert_eq!(election_state(&pool, active.id).await, "contract_deployed");
+
+    let finalized =
+        ElectionRepo::finalize_sync(&pool, active.id, "42", now, now, now + Duration::hours(1))
+            .await
+            .unwrap();
+    assert!(finalized);
+    assert_eq!(election_state(&pool, active.id).await, "voting_active");
+
+    let completed = ElectionRepo::mark_completed(&pool, active.id)
+        .await
+        .unwrap();
+    assert!(completed);
+    assert_eq!(election_state(&pool, active.id).await, "completed");
+
+    let ended_finalized = ElectionRepo::finalize_sync(
+        &pool,
+        ended.id,
+        "43",
+        now,
+        now - Duration::hours(2),
+        now - Duration::hours(1),
+    )
+    .await
+    .unwrap();
+    assert!(ended_finalized);
+    assert_eq!(election_state(&pool, ended.id).await, "voting_ended");
+
+    drop_election(&pool, active.id).await;
+    drop_election(&pool, ended.id).await;
+}
+
+#[tokio::test]
+#[ignore = "requires the docker-compose Postgres"]
+async fn superseded_election_lifecycle_writes_fail_closed() {
+    let pool = pool().await;
+    let election = create_election(&pool).await;
+    let now = OffsetDateTime::now_utc();
+
+    sqlx::query("UPDATE elections SET superseded_at = $2, state = 'failed' WHERE id = $1")
+        .bind(election.id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        !ElectionRepo::set_contract_address(&pool, election.id, "0xabc", "0xdef")
+            .await
+            .unwrap(),
+        "deployment binding must not reactivate a superseded row"
+    );
+    assert!(
+        !DeploymentRepo::record_and_bind(&pool, election.id, None, "0xdef", "0xabc", 31337, "0x1")
+            .await
+            .unwrap(),
+        "deployment metadata insert must not win for a superseded row"
+    );
+    assert!(
+        !ElectionRepo::finalize_sync(&pool, election.id, "42", now, now, now + Duration::hours(1))
+            .await
+            .unwrap(),
+        "finalization sync must not reactivate a superseded row"
+    );
+    assert!(
+        !ElectionRepo::mark_completed(&pool, election.id)
+            .await
+            .unwrap(),
+        "completion must not reactivate a superseded row"
+    );
+
+    let row: (String, Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT state, contract_address, verifier_address, merkle_root, completed \
+         FROM elections WHERE id = $1",
+    )
+    .bind(election.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, ("failed".to_string(), None, None, None, false));
+
+    let deployment_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM contract_deployments WHERE election_id = $1")
+            .bind(election.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(deployment_count, 0);
+
+    drop_election(&pool, election.id).await;
 }
 
 #[tokio::test]

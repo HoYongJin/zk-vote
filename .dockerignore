@@ -1,0 +1,10 @@
+*
+!rust-backend/
+!rust-backend/Dockerfile
+!rust-backend/Cargo.toml
+!rust-backend/Cargo.lock
+!rust-backend/crates/
+!rust-backend/crates/**
+!artifacts/
+!artifacts/contracts/
+!artifacts/contracts/**

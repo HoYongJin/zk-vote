@@ -9,13 +9,19 @@ REGION="${GCP_REGION:-asia-northeast3}"
 BUCKET="${ARTIFACT_BUCKET:-zkvote-staging-artifacts-scopeball-registry-poc-g}"
 SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"
 SQL_DATABASE="${SQL_DATABASE:-zkvote}"
-SQL_USER="${SQL_USER:-zkvote_app}"
+SQL_APP_USER="${SQL_APP_USER:-${SQL_USER:-zkvote_app}}"
+SQL_MIGRATOR_USER="${SQL_MIGRATOR_USER:-zkvote_migrator}"
 REDIS_INSTANCE="${REDIS_INSTANCE:-zkvote-staging-redis}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-staging-vpc}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-staging-api}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
 NETWORK="${NETWORK:-default}"
 VPC_RANGE="${VPC_RANGE:-10.8.0.0/28}"
+
+if [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
+  echo "Refusing to run: set CONFIRM_COSTS=yes after explicit user approval (this creates billable GCP resources)." >&2
+  exit 1
+fi
 
 required_apis=(
   sqladmin.googleapis.com
@@ -24,6 +30,9 @@ required_apis=(
   vpcaccess.googleapis.com
   compute.googleapis.com
   cloudkms.googleapis.com
+  run.googleapis.com
+  cloudbuild.googleapis.com
+  artifactregistry.googleapis.com
 )
 
 ensure_secret() {
@@ -43,6 +52,45 @@ add_secret_version() {
     --project "${PROJECT_ID}" \
     --data-file=- \
     --quiet >/dev/null
+}
+
+secret_has_enabled_version() {
+  local secret_name="$1"
+  local version
+  version="$(gcloud secrets versions list "${secret_name}" \
+    --project "${PROJECT_ID}" \
+    --filter "state:enabled" \
+    --limit 1 \
+    --format "value(name)" 2>/dev/null || true)"
+  [[ -n "${version}" ]]
+}
+
+sql_user_exists() {
+  local user_name="$1"
+  local users
+  users="$(gcloud sql users list \
+    --instance "${SQL_INSTANCE}" \
+    --project "${PROJECT_ID}" \
+    --format="value(name)")"
+  grep -Fxq "${user_name}" <<< "${users}"
+}
+
+assert_database_url_safe_password() {
+  local password="$1"
+  local source_name="$2"
+  if [[ ! "${password}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+    echo "Refusing to write ${source_name} into a DATABASE_URL secret: use URL-safe password characters [A-Za-z0-9._~-] or let the script generate one." >&2
+    exit 1
+  fi
+}
+
+cloud_sql_database_url() {
+  local user_name="$1"
+  local password="$2"
+  local connection_name="$3"
+  assert_database_url_safe_password "${password}" "${user_name} password"
+  printf "postgres://%s:%s@localhost/%s?host=/cloudsql/%s" \
+    "${user_name}" "${password}" "${SQL_DATABASE}" "${connection_name}"
 }
 
 echo "Using project=${PROJECT_ID}, region=${REGION}"
@@ -103,22 +151,60 @@ if ! gcloud sql databases describe "${SQL_DATABASE}" --instance "${SQL_INSTANCE}
     --quiet
 fi
 
-DB_PASSWORD="${DB_PASSWORD:-}"
-SQL_USER_CREATED="false"
-DATABASE_URL_SECRET_WRITTEN="false"
+SQL_APP_PASSWORD="${SQL_APP_PASSWORD:-${DB_PASSWORD:-}}"
+SQL_MIGRATOR_PASSWORD="${SQL_MIGRATOR_PASSWORD:-}"
+SQL_APP_USER_CREATED="false"
+SQL_MIGRATOR_USER_CREATED="false"
+APP_DATABASE_URL_SECRET_WRITTEN="false"
+MIGRATOR_DATABASE_URL_SECRET_WRITTEN="false"
 ensure_secret zkvote-staging-database-url
-if ! gcloud sql users list --instance "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format="value(name)" | grep -Fxq "${SQL_USER}"; then
-  DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
-  gcloud sql users create "${SQL_USER}" \
+ensure_secret zkvote-staging-migrator-database-url
+if sql_user_exists "${SQL_APP_USER}"; then
+  if [[ -n "${SQL_APP_PASSWORD}" ]]; then
+    gcloud sql users set-password "${SQL_APP_USER}" \
+      --instance "${SQL_INSTANCE}" \
+      --project "${PROJECT_ID}" \
+      --password "${SQL_APP_PASSWORD}" \
+      --quiet
+    CONNECTION_NAME_FOR_SECRET="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
+    add_secret_version zkvote-staging-database-url "$(cloud_sql_database_url "${SQL_APP_USER}" "${SQL_APP_PASSWORD}" "${CONNECTION_NAME_FOR_SECRET}")"
+    APP_DATABASE_URL_SECRET_WRITTEN="true"
+  fi
+else
+  SQL_APP_PASSWORD="${SQL_APP_PASSWORD:-$(openssl rand -hex 24)}"
+  gcloud sql users create "${SQL_APP_USER}" \
     --instance "${SQL_INSTANCE}" \
     --project "${PROJECT_ID}" \
-    --password "${DB_PASSWORD}" \
+    --password "${SQL_APP_PASSWORD}" \
     --quiet
-  SQL_USER_CREATED="true"
+  SQL_APP_USER_CREATED="true"
   CONNECTION_NAME_FOR_SECRET="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
-  DATABASE_URL="postgres://${SQL_USER}:${DB_PASSWORD}@localhost/${SQL_DATABASE}?host=/cloudsql/${CONNECTION_NAME_FOR_SECRET}"
-  add_secret_version zkvote-staging-database-url "${DATABASE_URL}"
-  DATABASE_URL_SECRET_WRITTEN="true"
+  add_secret_version zkvote-staging-database-url "$(cloud_sql_database_url "${SQL_APP_USER}" "${SQL_APP_PASSWORD}" "${CONNECTION_NAME_FOR_SECRET}")"
+  APP_DATABASE_URL_SECRET_WRITTEN="true"
+fi
+
+if sql_user_exists "${SQL_MIGRATOR_USER}"; then
+  if [[ -n "${SQL_MIGRATOR_PASSWORD}" ]]; then
+    gcloud sql users set-password "${SQL_MIGRATOR_USER}" \
+      --instance "${SQL_INSTANCE}" \
+      --project "${PROJECT_ID}" \
+      --password "${SQL_MIGRATOR_PASSWORD}" \
+      --quiet
+    CONNECTION_NAME_FOR_SECRET="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
+    add_secret_version zkvote-staging-migrator-database-url "$(cloud_sql_database_url "${SQL_MIGRATOR_USER}" "${SQL_MIGRATOR_PASSWORD}" "${CONNECTION_NAME_FOR_SECRET}")"
+    MIGRATOR_DATABASE_URL_SECRET_WRITTEN="true"
+  fi
+else
+  SQL_MIGRATOR_PASSWORD="${SQL_MIGRATOR_PASSWORD:-$(openssl rand -hex 24)}"
+  gcloud sql users create "${SQL_MIGRATOR_USER}" \
+    --instance "${SQL_INSTANCE}" \
+    --project "${PROJECT_ID}" \
+    --password "${SQL_MIGRATOR_PASSWORD}" \
+    --quiet
+  SQL_MIGRATOR_USER_CREATED="true"
+  CONNECTION_NAME_FOR_SECRET="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
+  add_secret_version zkvote-staging-migrator-database-url "$(cloud_sql_database_url "${SQL_MIGRATOR_USER}" "${SQL_MIGRATOR_PASSWORD}" "${CONNECTION_NAME_FOR_SECRET}")"
+  MIGRATOR_DATABASE_URL_SECRET_WRITTEN="true"
 fi
 
 if ! gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
@@ -147,6 +233,11 @@ CONNECTION_NAME="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${
 REDIS_HOST="$(gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" --format='value(host)')"
 REDIS_URL="redis://${REDIS_HOST}:6379"
 
+if [[ -n "${RELAYER_PRIVATE_KEY:-}" && -n "${OWNER_PRIVATE_KEY:-}" && "${RELAYER_PRIVATE_KEY}" == "${OWNER_PRIVATE_KEY}" ]]; then
+  echo "Refusing to write staging secrets: RELAYER_PRIVATE_KEY and OWNER_PRIVATE_KEY must be different." >&2
+  exit 1
+fi
+
 secrets=(
   zkvote-staging-database-url
   zkvote-staging-redis-url
@@ -154,6 +245,7 @@ secrets=(
   zkvote-staging-supabase-jwks-url
   zkvote-staging-sepolia-rpc-url
   zkvote-staging-relayer-private-key
+  zkvote-staging-owner-private-key
   zkvote-staging-artifact-bucket
 )
 # zkvote-staging-secret-salt was removed: the server no longer derives voter
@@ -167,11 +259,21 @@ for secret_name in "${secrets[@]}"; do
     --quiet >/dev/null
 done
 
-if [[ -n "${DB_PASSWORD}" && "${DATABASE_URL_SECRET_WRITTEN}" == "false" ]]; then
-  DATABASE_URL="postgres://${SQL_USER}:${DB_PASSWORD}@localhost/${SQL_DATABASE}?host=/cloudsql/${CONNECTION_NAME}"
-  add_secret_version zkvote-staging-database-url "${DATABASE_URL}"
-elif [[ "${SQL_USER_CREATED}" == "false" ]]; then
-  echo "Skipping database-url secret version because SQL user already exists and DB_PASSWORD was not provided."
+if [[ "${APP_DATABASE_URL_SECRET_WRITTEN}" == "false" && "${SQL_APP_USER_CREATED}" == "false" ]]; then
+  if secret_has_enabled_version zkvote-staging-database-url; then
+    echo "Keeping existing runtime database-url secret version for existing ${SQL_APP_USER}."
+  else
+    echo "Refusing to continue: ${SQL_APP_USER} already exists but zkvote-staging-database-url has no enabled version. Provide SQL_APP_PASSWORD/DB_PASSWORD so the script can write the runtime DATABASE_URL secret." >&2
+    exit 1
+  fi
+fi
+if [[ "${MIGRATOR_DATABASE_URL_SECRET_WRITTEN}" == "false" && "${SQL_MIGRATOR_USER_CREATED}" == "false" ]]; then
+  if secret_has_enabled_version zkvote-staging-migrator-database-url; then
+    echo "Keeping existing migrator database-url secret version for existing ${SQL_MIGRATOR_USER}."
+  else
+    echo "Refusing to continue: ${SQL_MIGRATOR_USER} already exists but zkvote-staging-migrator-database-url has no enabled version. Provide SQL_MIGRATOR_PASSWORD so the script can write the migrator DATABASE_URL secret." >&2
+    exit 1
+  fi
 fi
 add_secret_version zkvote-staging-redis-url "${REDIS_URL}"
 add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
@@ -180,11 +282,16 @@ add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 [[ -n "${SUPABASE_JWKS_URL:-}" ]] && add_secret_version zkvote-staging-supabase-jwks-url "${SUPABASE_JWKS_URL}"
 [[ -n "${SEPOLIA_RPC_URL:-}" ]] && add_secret_version zkvote-staging-sepolia-rpc-url "${SEPOLIA_RPC_URL}"
 [[ -n "${RELAYER_PRIVATE_KEY:-}" ]] && add_secret_version zkvote-staging-relayer-private-key "${RELAYER_PRIVATE_KEY}"
+if [[ -n "${OWNER_PRIVATE_KEY:-}" ]]; then
+  add_secret_version zkvote-staging-owner-private-key "${OWNER_PRIVATE_KEY}"
+fi
 
 echo "GCP staging setup complete."
 echo "Project: ${PROJECT_ID}"
 echo "Region: ${REGION}"
 echo "Bucket: gs://${BUCKET}"
 echo "Cloud SQL instance: ${SQL_INSTANCE}"
+echo "Cloud SQL runtime user: ${SQL_APP_USER}"
+echo "Cloud SQL migrator user: ${SQL_MIGRATOR_USER}"
 echo "Redis instance: ${REDIS_INSTANCE}"
 echo "Service account: ${SERVICE_ACCOUNT_EMAIL}"

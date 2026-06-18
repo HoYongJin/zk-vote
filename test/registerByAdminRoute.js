@@ -55,7 +55,7 @@ function createSupabaseMock({
     };
 }
 
-function loadRegisterByAdminRoute(supabaseMock) {
+function loadRegisterByAdminRoute(supabaseMock, { superseded = false } = {}) {
     const restoreSupabase = withMockedModule("../server/supabaseClient", supabaseMock);
     const restoreAuthAdmin = withMockedModule("../server/middleware/authAdmin", (req, _res, next) => {
         req.admin = { id: "admin-1" };
@@ -67,6 +67,9 @@ function loadRegisterByAdminRoute(supabaseMock) {
     const restoreFinalization = withMockedModule("../server/utils/finalizationState", {
         isOnchainConfigured: async () => false,
     });
+    const restoreSupersede = withMockedModule("../server/utils/supersede", {
+        isElectionSuperseded: async () => superseded,
+    });
 
     const routePath = require.resolve("../server/routes/registerByAdmin");
     delete require.cache[routePath];
@@ -76,6 +79,7 @@ function loadRegisterByAdminRoute(supabaseMock) {
         router,
         cleanup: () => {
             delete require.cache[routePath];
+            restoreSupersede();
             restoreFinalization();
             restoreMerkle();
             restoreAuthAdmin();
@@ -138,6 +142,21 @@ describe("registerByAdmin route", function () {
 
         expect(response.status).to.equal(403);
         expect(response.body.error).to.equal("REGISTRATION_PERIOD_ENDED");
+        expect(supabaseMock.inserted).to.deep.equal([]);
+    });
+
+    it("rejects superseded elections before inserting allowlist rows", async function () {
+        const supabaseMock = createSupabaseMock();
+        const { router, cleanup } = loadRegisterByAdminRoute(supabaseMock, { superseded: true });
+        this.cleanupRoute = cleanup;
+
+        const response = await invokeJson(router, {
+            params: { election_id: "election-1" },
+            body: { emails: ["voter@example.com"] },
+        });
+
+        expect(response.status).to.equal(409);
+        expect(response.body.error).to.equal("ELECTION_SUPERSEDED");
         expect(supabaseMock.inserted).to.deep.equal([]);
     });
 });

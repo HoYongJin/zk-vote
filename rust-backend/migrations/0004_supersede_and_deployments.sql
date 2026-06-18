@@ -1,7 +1,7 @@
 -- Phase 11: supersede marker (architecture review AR-M7).
--- A superseded election must never accept app-relayed votes, and clearing
--- its deployment binding (docs/RUNBOOK_SUPERSEDE.md) is only legal while
--- superseded_at is set. Idempotent.
+-- A superseded election must never accept app-relayed votes. Replacements use
+-- a new election row; the abandoned deployment binding remains as audit
+-- history (docs/RUNBOOK_SUPERSEDE.md). Idempotent.
 
 ALTER TABLE elections ADD COLUMN IF NOT EXISTS superseded_at timestamptz;
 

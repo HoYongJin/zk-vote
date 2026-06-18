@@ -13,6 +13,8 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from '../../api/axios'; // Our configured axios instance (baseURL: /api)
 import { getVoterSecret } from '../../utils/voterSecret';
 import { fetchVerifiedArtifact } from '../../utils/artifactIntegrity';
+import { getApiBaseUrl, resolveArtifactApiPath } from '../../utils/apiBaseUrl';
+import { calculateSubmissionJitterMs, delay } from '../../utils/submissionJitter';
 
 // --- (Style definitions are omitted for brevity) ---
 const pageStyle = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '600px', margin: 'auto' };
@@ -54,6 +56,7 @@ function VotePage() {
             // --- 1. Fetch Proof Data & Submission Ticket (Authenticated) ---
             // This API call is authenticated (sends JWT) and proves eligibility.
             const serverResponse = await axios.post(`/elections/${electionId}/proof`);
+            const submissionTicketIssuedAtMs = Date.now();
             
             // Destructure all required data from the response
             const {
@@ -99,7 +102,7 @@ function VotePage() {
             // The wasm/zkey consume the plaintext voter secret, so the
             // browser must refuse to prove when the served bytes differ from
             // the deploy-time manifest hashes (audit M5).
-            const baseURL = process.env.REACT_APP_API_BASE_URL;
+            const baseURL = getApiBaseUrl();
             const { merkle_tree_depth, num_candidates } = election;
             const buildDir = `build_${merkle_tree_depth}_${num_candidates}`;
 
@@ -118,10 +121,9 @@ function VotePage() {
 
             if (artifactInfo) {
                 setLoadingMessage('증명 아티팩트 무결성을 검증하는 중...');
-                const origin = baseURL.replace(/\/api\/?$/, '');
                 const [wasmData, zkeyData] = await Promise.all([
-                    fetchVerifiedArtifact(`${origin}${artifactInfo.wasmPath}`, artifactInfo.wasmSha256, '증명 회로(wasm)'),
-                    fetchVerifiedArtifact(`${origin}${artifactInfo.zkeyPath}`, artifactInfo.zkeySha256, '증명 키(zkey)'),
+                    fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.wasmPath), artifactInfo.wasmSha256, '증명 회로(wasm)'),
+                    fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.zkeyPath), artifactInfo.zkeySha256, '증명 키(zkey)'),
                 ]);
                 workerPayload = { inputs, wasmData, zkeyData };
             } else {
@@ -169,14 +171,19 @@ function VotePage() {
                     };
 
                     try {
+                        const jitterMs = calculateSubmissionJitterMs({
+                            ticketIssuedAtMs: submissionTicketIssuedAtMs,
+                        });
+                        await delay(jitterMs);
+
                         // --- 6. [MODIFIED] Submit Proof (Anonymous) ---
                         // This call is anonymous (no JWT) but sends the single-use ticket
                         // to the gas relayer endpoint for authorization.
-                        await axios.post(`/elections/${electionId}/submit`, { 
-                            formattedProof, 
+                        await axios.post(`/elections/${electionId}/submit`, {
+                            formattedProof,
                             publicSignals,
                             submissionTicket: submissionTicket // Pass the ticket
-                        });
+                        }, { skipAuth: true });
                         
                         setLoadingMessage('');
                         alert('투표가 성공적으로 제출되었습니다!');

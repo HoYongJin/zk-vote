@@ -15,6 +15,12 @@
 -- (scripts/local/db-roles.sh wires this for the docker-compose instance.)
 
 \set ON_ERROR_STOP on
+\if :{?migrator_password}
+SELECT set_config('zkvote.migrator_password', :'migrator_password', false);
+\endif
+\if :{?app_password}
+SELECT set_config('zkvote.app_password', :'app_password', false);
+\endif
 
 DO $$
 BEGIN

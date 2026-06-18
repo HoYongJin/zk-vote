@@ -7,44 +7,97 @@
 # SQL / Memorystore / VPC connector / secrets (M9/M10-hardened) first.
 set -euo pipefail
 
-PROJECT_ID="${PROJECT_ID:-scopeball-registry-poc-g}"
-REGION="${REGION:-asia-northeast3}"
+PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-scopeball-registry-poc-g}}"
+REGION="${REGION:-${GCP_REGION:-asia-northeast3}}"
 SERVICE="${SERVICE:-zkvote-staging-api}"
 REPO="${REPO:-zkvote-staging}"
-SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_EMAIL:?set to the runtime service account}"
-VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-staging-connector}"
-CONNECTION_NAME="$(gcloud sql instances describe zkvote-staging-pg --project "${PROJECT_ID}" --format='value(connectionName)')"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/zkvote-api:$(git rev-parse --short HEAD)"
+SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-staging-api}"
+SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_EMAIL:-${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com}"
+VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-staging-vpc}"
+CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-}"
+RELAYER_PRIVATE_KEY_SECRET="${RELAYER_PRIVATE_KEY_SECRET:-zkvote-staging-relayer-private-key}"
+OWNER_PRIVATE_KEY_SECRET="${OWNER_PRIVATE_KEY_SECRET:-}"
 
 if [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
   echo "Refusing to run: set CONFIRM_COSTS=yes after explicit user approval (this creates billable resources)." >&2
   exit 1
 fi
+if [[ -z "${CORS_ALLOWED_ORIGINS}" ]]; then
+  echo "Refusing to deploy: set CORS_ALLOWED_ORIGINS to the staging frontend origin(s), comma-separated." >&2
+  exit 1
+fi
+if [[ -z "${OWNER_PRIVATE_KEY_SECRET}" ]]; then
+  echo "Refusing to deploy: set OWNER_PRIVATE_KEY_SECRET=zkvote-staging-owner-private-key so the hot relayer key does not own VotingTally." >&2
+  exit 1
+fi
+
+CONNECTION_NAME="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/zkvote-api:$(git rev-parse --short HEAD)"
+
+# AR-M4: owner key mounting is explicit and mandatory for staging deploys.
+# Check this before any Artifact Registry or Cloud Build side effect.
+gcloud secrets describe "${RELAYER_PRIVATE_KEY_SECRET}" --project "${PROJECT_ID}" >/dev/null
+gcloud secrets describe "${OWNER_PRIVATE_KEY_SECRET}" --project "${PROJECT_ID}" >/dev/null
+RELAYER_PRIVATE_KEY_VALUE="$(gcloud secrets versions access latest \
+  --secret "${RELAYER_PRIVATE_KEY_SECRET}" \
+  --project "${PROJECT_ID}")"
+OWNER_PRIVATE_KEY_VALUE="$(gcloud secrets versions access latest \
+  --secret "${OWNER_PRIVATE_KEY_SECRET}" \
+  --project "${PROJECT_ID}")"
+if [[ "${OWNER_PRIVATE_KEY_VALUE}" == "${RELAYER_PRIVATE_KEY_VALUE}" ]]; then
+  echo "Refusing to deploy: OWNER_PRIVATE_KEY_SECRET and RELAYER_PRIVATE_KEY_SECRET contain the same key." >&2
+  exit 1
+fi
+unset OWNER_PRIVATE_KEY_VALUE RELAYER_PRIVATE_KEY_VALUE
+gcloud secrets add-iam-policy-binding "${OWNER_PRIVATE_KEY_SECRET}" \
+  --project "${PROJECT_ID}" \
+  --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role roles/secretmanager.secretAccessor \
+  --quiet >/dev/null
+gcloud secrets add-iam-policy-binding "${RELAYER_PRIVATE_KEY_SECRET}" \
+  --project "${PROJECT_ID}" \
+  --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role roles/secretmanager.secretAccessor \
+  --quiet >/dev/null
 
 gcloud artifacts repositories describe "${REPO}" --location "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1 \
   || gcloud artifacts repositories create "${REPO}" --repository-format=docker --location "${REGION}" --project "${PROJECT_ID}"
 
-gcloud builds submit rust-backend --tag "${IMAGE}" --project "${PROJECT_ID}"
+gcloud builds submit . \
+  --config scripts/gcp/cloudbuild-staging-api.yaml \
+  --substitutions "_IMAGE=${IMAGE}" \
+  --project "${PROJECT_ID}"
 
-gcloud run deploy "${SERVICE}" \
-  --project "${PROJECT_ID}" \
-  --region "${REGION}" \
-  --image "${IMAGE}" \
-  --service-account "${SERVICE_ACCOUNT_EMAIL}" \
-  --vpc-connector "${VPC_CONNECTOR}" \
-  --add-cloudsql-instances "${CONNECTION_NAME}" \
-  --no-allow-unauthenticated \
-  --min-instances 0 --max-instances 2 \
-  --set-secrets "DATABASE_URL=zkvote-staging-database-url:latest" \
-  --set-secrets "REDIS_URL=zkvote-staging-redis-url:latest" \
-  --set-secrets "SUPABASE_URL=zkvote-staging-supabase-url:latest" \
-  --set-secrets "SUPABASE_JWKS_URL=zkvote-staging-supabase-jwks-url:latest" \
-  --set-secrets "SEPOLIA_RPC_URL=zkvote-staging-sepolia-rpc-url:latest" \
-  --set-secrets "RELAYER_PRIVATE_KEY=zkvote-staging-relayer-private-key:latest" \
-  --set-env-vars "APP_ENV=staging,ARTIFACT_STORE=gcs,REQUIRE_BEACON=true"
-# NOTE: OWNER_PRIVATE_KEY (AR-M4) is intentionally NOT mounted on the
-# internet-facing service by default; finalize runs against a dedicated
-# secret added only when an election is being finalized, or from an ops
-# workstation. zkvote-staging-owner-private-key must be created at that time.
+deploy_args=(
+  "${SERVICE}"
+  --project "${PROJECT_ID}"
+  --region "${REGION}"
+  --image "${IMAGE}"
+  --service-account "${SERVICE_ACCOUNT_EMAIL}"
+  --vpc-connector "${VPC_CONNECTOR}"
+  --add-cloudsql-instances "${CONNECTION_NAME}"
+  --allow-unauthenticated
+  --min-instances 0
+  --max-instances 2
+  --set-env-vars "^|^APP_ENV=staging|ARTIFACT_STORE=gcs|CHAIN_ID=11155111|REQUIRE_BEACON=true|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}"
+)
+
+secret_bindings=(
+  "DATABASE_URL=zkvote-staging-database-url:latest"
+  "REDIS_URL=zkvote-staging-redis-url:latest"
+  "SUPABASE_URL=zkvote-staging-supabase-url:latest"
+  "SUPABASE_JWKS_URL=zkvote-staging-supabase-jwks-url:latest"
+  "SEPOLIA_RPC_URL=zkvote-staging-sepolia-rpc-url:latest"
+  "RELAYER_PRIVATE_KEY=${RELAYER_PRIVATE_KEY_SECRET}:latest"
+  "ARTIFACT_BUCKET=zkvote-staging-artifact-bucket:latest"
+)
+
+secret_bindings+=("OWNER_PRIVATE_KEY=${OWNER_PRIVATE_KEY_SECRET}:latest")
+
+secret_bindings_arg="$(IFS='|'; echo "${secret_bindings[*]}")"
+deploy_args+=(--set-secrets "^|^${secret_bindings_arg}")
+
+gcloud run deploy "${deploy_args[@]}"
 
 echo "Deployed ${IMAGE} to ${SERVICE}. Verify: gcloud run services describe ${SERVICE} --region ${REGION}"

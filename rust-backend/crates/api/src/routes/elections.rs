@@ -36,8 +36,10 @@ pub struct FinalizedRow {
     pub contract_address: Option<String>,
     pub merkle_tree_depth: i32,
     pub num_candidates: i32,
-    pub total_voters: i64,
-    pub registered_voters: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_voters: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registered_voters: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -61,7 +63,12 @@ fn registerable_row(election: Election, is_registered: Option<bool>) -> Register
     }
 }
 
-fn finalized_row(row: ElectionWithCounts) -> FinalizedRow {
+fn finalized_row(row: ElectionWithCounts, include_counts: bool) -> FinalizedRow {
+    let (total_voters, registered_voters) = if include_counts {
+        (Some(row.total_voters), Some(row.registered_voters))
+    } else {
+        (None, None)
+    };
     FinalizedRow {
         id: row.election.id,
         name: row.election.name,
@@ -70,8 +77,8 @@ fn finalized_row(row: ElectionWithCounts) -> FinalizedRow {
         contract_address: row.election.contract_address,
         merkle_tree_depth: row.election.merkle_tree_depth,
         num_candidates: row.election.num_candidates,
-        total_voters: row.total_voters,
-        registered_voters: row.registered_voters,
+        total_voters,
+        registered_voters,
     }
 }
 
@@ -117,12 +124,17 @@ pub async fn finalized(
     user: CurrentUser,
 ) -> Result<Json<Vec<FinalizedRow>>, ApiError> {
     let now = OffsetDateTime::now_utc();
-    let rows = if is_admin_or_promote(&state.pg, &user).await? {
+    let is_admin = is_admin_or_promote(&state.pg, &user).await?;
+    let rows = if is_admin {
         ElectionRepo::list_voting_with_counts(&state.pg, now).await?
     } else {
         ElectionRepo::list_voting_for_user(&state.pg, now, user.id).await?
     };
-    Ok(Json(rows.into_iter().map(finalized_row).collect()))
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| finalized_row(row, is_admin))
+            .collect(),
+    ))
 }
 
 /// GET /api/elections/completed

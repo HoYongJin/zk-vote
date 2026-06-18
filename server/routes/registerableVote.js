@@ -9,6 +9,7 @@ const router = express.Router();
 const supabase = require("../supabaseClient");
 const auth = require("../middleware/auth");
 const { normalizeEmail } = require("../utils/email");
+const { filterSupersededElections } = require("../utils/supersede");
 
 /**
  * @route   GET /api/elections/registerable
@@ -58,7 +59,7 @@ router.get("/", auth, async (req, res) => {
             // Admins see all registerable elections. Execute the base query.
             const { data: elections, error } = await query;
             if (error) throw error;
-            return res.status(200).json(elections || []);
+            return res.status(200).json(await filterSupersededElections(supabase, elections));
         }else {
             if (!normalizedUserEmail) {
                 return res.status(200).json([]);
@@ -106,7 +107,8 @@ router.get("/", auth, async (req, res) => {
             if (finalQueryError) throw finalQueryError;
 
             // [D] Add the 'isRegistered' flag to the results.
-            const result = (userRegisterableElections || []).map(election => ({
+            const visibleElections = await filterSupersededElections(supabase, userRegisterableElections);
+            const result = visibleElections.map(election => ({
                 ...election,
                 isRegistered: completedVoteIds.has(election.id) // Check if election ID is in the completed set
             }));

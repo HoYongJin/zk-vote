@@ -9,7 +9,7 @@ const serverEthersPath = require.resolve("ethers", {
     paths: [path.join(__dirname, "..", "server", "routes")],
 });
 
-function createElectionSupabaseMock() {
+function createElectionSupabaseMock(electionOverrides = {}) {
     const chain = {
         select: () => chain,
         eq: () => chain,
@@ -20,6 +20,7 @@ function createElectionSupabaseMock() {
                 voting_end_time: new Date(Date.now() + 60_000).toISOString(),
                 merkle_root: "123",
                 num_candidates: 3,
+                ...electionOverrides,
             },
             error: null,
         }),
@@ -32,6 +33,7 @@ function loadSubmitRoute({
     ticketMock,
     redisLockMock,
     contractMock,
+    superseded = false,
 } = {}) {
     const restoreSupabase = withMockedModule("../server/supabaseClient", supabaseMock);
     const restoreTickets = ticketMock
@@ -49,6 +51,9 @@ function loadSubmitRoute({
             },
         })
         : () => {};
+    const restoreSupersede = withMockedModule("../server/utils/supersede", {
+        isElectionSuperseded: async () => superseded,
+    });
 
     const routePath = require.resolve("../server/routes/submitZk");
     delete require.cache[routePath];
@@ -58,6 +63,7 @@ function loadSubmitRoute({
         router,
         cleanup: () => {
             delete require.cache[routePath];
+            restoreSupersede();
             restoreEthers();
             restoreRedisLock();
             restoreTickets();
@@ -90,10 +96,31 @@ function validSubmitBody() {
 }
 
 describe("submitZk route", function () {
+    let RealDate;
+
+    function freezeDate(isoString) {
+        RealDate = global.Date;
+        function MockDate(value) {
+            if (!(this instanceof MockDate)) {
+                return new RealDate(isoString).toString();
+            }
+            return value === undefined ? new RealDate(isoString) : new RealDate(value);
+        }
+        MockDate.now = () => new RealDate(isoString).getTime();
+        MockDate.parse = RealDate.parse;
+        MockDate.UTC = RealDate.UTC;
+        MockDate.prototype = RealDate.prototype;
+        global.Date = MockDate;
+    }
+
     afterEach(function () {
         if (this.cleanupRoute) {
             this.cleanupRoute();
             this.cleanupRoute = null;
+        }
+        if (RealDate) {
+            global.Date = RealDate;
+            RealDate = null;
         }
     });
 
@@ -146,7 +173,6 @@ describe("submitZk route", function () {
                 readSubmissionTicket: async () => ({
                     electionId: "00000000-0000-0000-0000-00000000007b",
                     merkleRoot: "123",
-                    nullifierHash: "456",
                 }),
                 consumeSubmissionTicket: async () => {
                     calls.consumed += 1;
@@ -207,6 +233,104 @@ describe("submitZk route", function () {
         expect(response.body.error).to.equal("INVALID_OR_EXPIRED_TICKET");
     });
 
+    it("rejects malformed or legacy ticket payloads with 403", async function () {
+        const restoreEnv = withRelayerEnv();
+        const calls = { consumed: 0 };
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock(),
+            ticketMock: {
+                readSubmissionTicket: async () => {
+                    throw Object.assign(
+                        new Error("Submission ticket payload must not include nullifierHash."),
+                        { code: "INVALID_TICKET_PAYLOAD", status: 403 }
+                    );
+                },
+                consumeSubmissionTicket: async () => {
+                    calls.consumed += 1;
+                    return null;
+                },
+            },
+            redisLockMock: { withRedisLock: async (_key, fn) => fn() },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(403);
+        expect(response.body.error).to.equal("INVALID_OR_EXPIRED_TICKET");
+        expect(calls.consumed).to.equal(0);
+    });
+
+    it("treats voting_end_time as an exclusive submit boundary before ticket read", async function () {
+        const restoreEnv = withRelayerEnv();
+        const boundary = "2026-06-12T00:00:00.000Z";
+        freezeDate(boundary);
+        const calls = { read: 0 };
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock({
+                voting_start_time: "2026-06-11T00:00:00.000Z",
+                voting_end_time: boundary,
+            }),
+            ticketMock: {
+                readSubmissionTicket: async () => {
+                    calls.read += 1;
+                    return null;
+                },
+                consumeSubmissionTicket: async () => null,
+            },
+            redisLockMock: { withRedisLock: async (_key, fn) => fn() },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(403);
+        expect(response.body.error).to.equal("VOTING_PERIOD_INACTIVE");
+        expect(calls.read).to.equal(0);
+    });
+
+    it("rejects superseded elections before ticket read", async function () {
+        const restoreEnv = withRelayerEnv();
+        const calls = { read: 0 };
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock(),
+            superseded: true,
+            ticketMock: {
+                readSubmissionTicket: async () => {
+                    calls.read += 1;
+                    return null;
+                },
+                consumeSubmissionTicket: async () => null,
+            },
+            redisLockMock: { withRedisLock: async (_key, fn) => fn() },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(409);
+        expect(response.body.error).to.equal("ELECTION_SUPERSEDED");
+        expect(calls.read).to.equal(0);
+    });
+
     it("does not consume the ticket when the contract preflight rejects the proof (audit M1)", async function () {
         const restoreEnv = withRelayerEnv();
         const calls = { consumed: 0 };
@@ -216,7 +340,6 @@ describe("submitZk route", function () {
                 readSubmissionTicket: async () => ({
                     electionId: ELECTION_UUID,
                     merkleRoot: "123",
-                    nullifierHash: null,
                 }),
                 consumeSubmissionTicket: async () => {
                     calls.consumed += 1;
@@ -259,7 +382,6 @@ describe("submitZk route", function () {
                 readSubmissionTicket: async () => ({
                     electionId: ELECTION_UUID,
                     merkleRoot: "123",
-                    nullifierHash: null,
                 }),
                 consumeSubmissionTicket: async () => {
                     calls.consumed += 1;
@@ -285,5 +407,60 @@ describe("submitZk route", function () {
         expect(response.status).to.equal(409);
         expect(response.body.error).to.equal("VOTE_ALREADY_CAST");
         expect(calls.consumed).to.equal(0);
+    });
+
+    it("serializes successful sends behind the relayer wallet lock (AR-M5)", async function () {
+        const restoreEnv = withRelayerEnv();
+        const calls = { consumed: 0, submitted: 0 };
+        const lockKeys = [];
+        const { router, cleanup } = loadSubmitRoute({
+            supabaseMock: createElectionSupabaseMock(),
+            ticketMock: {
+                readSubmissionTicket: async () => ({
+                    electionId: ELECTION_UUID,
+                    merkleRoot: "123",
+                }),
+                consumeSubmissionTicket: async () => {
+                    calls.consumed += 1;
+                    return {
+                        electionId: ELECTION_UUID,
+                        merkleRoot: "123",
+                    };
+                },
+            },
+            redisLockMock: {
+                withRedisLock: async (key, fn) => {
+                    lockKeys.push(key);
+                    return fn();
+                },
+            },
+            contractMock: {
+                usedNullifiers: async () => false,
+                callStatic: { submitTally: async () => true },
+                submitTally: async () => {
+                    calls.submitted += 1;
+                    return { wait: async () => ({ transactionHash: "0xtx" }) };
+                },
+            },
+        });
+        this.cleanupRoute = () => {
+            cleanup();
+            restoreEnv();
+        };
+
+        const response = await invokeJson(router, {
+            params: { election_id: ELECTION_UUID },
+            body: validSubmitBody(),
+        });
+
+        expect(response.status).to.equal(200);
+        expect(response.body.transactionHash).to.equal("0xtx");
+        expect(calls.consumed).to.equal(1);
+        expect(calls.submitted).to.equal(1);
+        expect(lockKeys).to.deep.equal([
+            "submit:ticket:ticket",
+            `submit:nullifier:${ELECTION_UUID}:456`,
+            "submit:relayer-wallet",
+        ]);
     });
 });

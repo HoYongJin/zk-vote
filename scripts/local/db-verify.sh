@@ -53,6 +53,17 @@ BEGIN
         RAISE NOTICE 'gate ok: duplicate nullifier rejected';
     END;
 
+    -- Gate: submission tickets are election/root-bound only, never nullifier-bound.
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'submission_tickets' AND column_name = 'nullifier_hash'
+    ) THEN
+        RAISE EXCEPTION 'GATE FAILED: submission_tickets still persists nullifier_hash';
+    END IF;
+    INSERT INTO submission_tickets (election_id, merkle_root, expires_at)
+    VALUES ('00000000-0000-0000-0000-000000000001', '42', now() + interval '5 minutes');
+    RAISE NOTICE 'gate ok: submission tickets do not persist nullifier hashes';
+
     -- Gate: invalid election state rejected.
     BEGIN
         UPDATE elections SET state = 'definitely_not_a_state'
@@ -79,6 +90,15 @@ BEGIN
         RAISE EXCEPTION 'GATE FAILED: non-decimal field element accepted';
     EXCEPTION WHEN check_violation THEN
         RAISE NOTICE 'gate ok: non-decimal field element rejected';
+    END;
+
+    -- Gate: BN254 scalar-field upper bound is enforced, not just decimal shape.
+    BEGIN
+        UPDATE elections SET merkle_root = '21888242871839275222246405745257275088548364400416034343698204186575808495617'
+        WHERE id = '00000000-0000-0000-0000-000000000001';
+        RAISE EXCEPTION 'GATE FAILED: out-of-field field element accepted';
+    EXCEPTION WHEN check_violation THEN
+        RAISE NOTICE 'gate ok: out-of-field field element rejected';
     END;
 END
 $gates$;

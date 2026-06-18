@@ -23,6 +23,7 @@ use zkvote_chain::{configure_election, connect_election, ChainConfig, ChainError
 use zkvote_db::repos::{ElectionRepo, JobRepo};
 use zkvote_db::{with_transaction, DbError, Tx};
 use zkvote_domain::services::{check_finalization, FinalizationCheck, FinalizationRejection};
+use zkvote_domain::ElectionState;
 use zkvote_zkp::merkle::FixedMerkleTree;
 
 fn coded(status: u16, code: &'static str, details: impl Into<String>) -> ApiError {
@@ -56,6 +57,14 @@ struct Snapshot {
     registration_closed_at: OffsetDateTime,
 }
 
+#[derive(sqlx::FromRow)]
+struct FinalizationElectionRow {
+    contract_address: Option<String>,
+    merkle_root: Option<String>,
+    registration_end_time: OffsetDateTime,
+    superseded_at: Option<OffsetDateTime>,
+}
+
 async fn close_and_snapshot(
     tx: &mut Tx,
     election_id: Uuid,
@@ -67,20 +76,28 @@ async fn close_and_snapshot(
         .execute(&mut **tx)
         .await?;
 
-    let row: Option<(Option<String>, Option<String>, OffsetDateTime)> = sqlx::query_as(
-        "SELECT contract_address, merkle_root, registration_end_time \
-         FROM elections WHERE id = $1",
+    let row: Option<FinalizationElectionRow> = sqlx::query_as(
+        "SELECT contract_address, merkle_root, registration_end_time, superseded_at \
+         FROM elections WHERE id = $1 FOR UPDATE",
     )
     .bind(election_id)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((contract_address, merkle_root, registration_end)) = row else {
+    let Some(row) = row else {
         return Ok(Err(coded(
             404,
             "ELECTION_NOT_FOUND",
             format!("Election with ID {election_id} not found."),
         )));
     };
+
+    if row.superseded_at.is_some() {
+        return Ok(Err(coded(
+            409,
+            "ELECTION_SUPERSEDED",
+            "This election was superseded; finalization is no longer allowed.",
+        )));
+    }
 
     let registered: Vec<String> = sqlx::query_scalar(
         "SELECT user_secret_commitment FROM voters \
@@ -93,8 +110,8 @@ async fn close_and_snapshot(
 
     if let Err(rejection) = check_finalization(&FinalizationCheck {
         now,
-        contract_deployed: contract_address.is_some(),
-        already_finalized: merkle_root.is_some(),
+        contract_deployed: row.contract_address.is_some(),
+        already_finalized: row.merkle_root.is_some(),
         registered_voters: registered.len() as u64,
         vote_end,
     }) {
@@ -125,15 +142,23 @@ async fn close_and_snapshot(
 
     // Durable fail-closed close (audit H4/M3): even if the process crashes
     // after the on-chain transaction, registration stays closed in Postgres.
-    let registration_closed_at = now.min(registration_end);
-    sqlx::query(
-        "UPDATE elections SET registration_end_time = $2 \
+    let registration_closed_at = now.min(row.registration_end_time);
+    let closed = sqlx::query(
+        "UPDATE elections SET registration_end_time = $2, state = $3 \
          WHERE id = $1 AND merkle_root IS NULL",
     )
     .bind(election_id)
     .bind(registration_closed_at)
+    .bind(ElectionState::Finalizing.to_string())
     .execute(&mut **tx)
     .await?;
+    if closed.rows_affected() != 1 {
+        return Ok(Err(coded(
+            409,
+            "FINALIZATION_STATE_CONFLICT",
+            "Could not durably close registration before finalization.",
+        )));
+    }
 
     Ok(Ok(Snapshot {
         leaves: registered,
@@ -191,11 +216,13 @@ pub async fn finalize(
         state.config.relayer_private_key.clone().ok_or_else(|| {
             ApiError::Internal("RELAYER_PRIVATE_KEY is not configured".to_string())
         })?;
-    let owner_key = state
-        .config
-        .owner_private_key
-        .clone()
-        .unwrap_or_else(|| relayer_key.clone());
+    let owner_key = state.config.owner_private_key.clone().ok_or_else(|| {
+        coded(
+            503,
+            "CHAIN_CONFIG_MISSING",
+            "OWNER_PRIVATE_KEY must be configured so the hot relayer key cannot own or configure VotingTally.",
+        )
+    })?;
     let chain = ChainConfig {
         rpc_url,
         relayer_private_key: relayer_key,
@@ -350,5 +377,66 @@ async fn chain_api_error(state: &AppState, job_id: Uuid, err: ChainError) -> Api
             "ON_CHAIN_ERROR",
             format!("Smart contract execution failed: {err}"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{AdminUser, CurrentUser};
+    use crate::config::AppConfig;
+    use axum::extract::{Path, State};
+    use axum::Json;
+    use redis::Client as RedisClient;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn finalize_requires_explicit_owner_key_before_db_or_chain() {
+        let config = Arc::new(
+            AppConfig::from_lookup(|name| match name {
+                "DATABASE_URL" => Some("postgres://example".to_string()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "SEPOLIA_RPC_URL" => Some("http://127.0.0.1:8545".to_string()),
+                "RELAYER_PRIVATE_KEY" => Some("0x1234".to_string()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let state = AppState {
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+            auth: None,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+            config,
+        };
+        let vote_end = (OffsetDateTime::now_utc() + Duration::hours(1))
+            .format(&Rfc3339)
+            .unwrap();
+
+        let result = finalize(
+            State(state),
+            AdminUser(CurrentUser {
+                id: Uuid::new_v4(),
+                email: Some("admin@example.com".to_string()),
+            }),
+            Path(Uuid::new_v4()),
+            Json(FinalizeBody {
+                vote_end_time: Some(vote_end),
+                confirm_extended_duration: false,
+            }),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("missing OWNER_PRIVATE_KEY must fail closed");
+        };
+
+        assert!(matches!(
+            err,
+            ApiError::Coded {
+                status: 503,
+                code: "CHAIN_CONFIG_MISSING",
+                ..
+            }
+        ));
     }
 }

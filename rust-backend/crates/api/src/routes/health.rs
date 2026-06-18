@@ -18,16 +18,25 @@ pub struct ReadinessResponse {
     pub postgres: &'static str,
     pub redis: &'static str,
     pub artifact_store: String,
+    pub artifact_bucket_configured: bool,
 }
 
 pub async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
+fn artifact_store_ready(state: &AppState) -> bool {
+    match state.config.artifact_store.as_str() {
+        "gcs" => state.config.artifact_bucket.is_some(),
+        _ => true,
+    }
+}
+
 pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     let postgres_ok = zkvote_db::ping(&state.pg).await.is_ok();
     let redis_ok = ping_redis(&state.redis).await.is_ok();
-    let ready = postgres_ok && redis_ok;
+    let artifact_ok = artifact_store_ready(&state);
+    let ready = postgres_ok && redis_ok && artifact_ok;
 
     let http_status = if ready {
         StatusCode::OK
@@ -43,6 +52,7 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
             postgres: if postgres_ok { "ok" } else { "error" },
             redis: if redis_ok { "ok" } else { "error" },
             artifact_store: state.config.artifact_store.clone(),
+            artifact_bucket_configured: state.config.artifact_bucket.is_some(),
         }),
     )
 }

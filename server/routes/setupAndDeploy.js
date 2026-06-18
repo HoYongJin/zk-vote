@@ -13,6 +13,7 @@ const path = require("path");
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
 const { withRedisLock } = require("../utils/redisLock");
+const { isElectionSuperseded } = require("../utils/supersede");
 const execFilePromise = util.promisify(execFile);
 
 // Calculate project root directory relative to this file's location (__dirname)
@@ -83,6 +84,29 @@ function validateArtifactSchema(paths) {
     return problems;
 }
 
+function validateBeaconFinalization(paths) {
+    if (process.env.REQUIRE_BEACON !== "true") {
+        return null;
+    }
+
+    const ceremonyPath = path.join(path.dirname(paths.zkeyPath), "ceremony.json");
+    let ceremony = null;
+    try {
+        ceremony = JSON.parse(fs.readFileSync(ceremonyPath, "utf8"));
+    } catch (err) {
+        ceremony = null;
+    }
+
+    if (!ceremony || ceremony.finalizedWithBeacon !== true) {
+        return {
+            error: "ZKEY_NOT_BEACON_FINALIZED",
+            details: "The proving key was not finalized with a public random beacon. Regenerate with BEACON_HEX before deploying to staging/production (AR-H1)."
+        };
+    }
+
+    return null;
+}
+
 /**
  * @route   POST /api/elections/:election_id/setZkDeploy
  * @desc    Initiates the Zero-Knowledge Proof setup and deploys
@@ -137,6 +161,12 @@ router.post("/", authAdmin, async (req, res) => {
 
         const depth = election.merkle_tree_depth;
         const num_candidates = election.num_candidates;
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded and cannot be deployed."
+            });
+        }
         if (election.contract_address) {
             return res.status(409).json({
                 error: "ALREADY_DEPLOYED",
@@ -171,6 +201,12 @@ router.post("/", authAdmin, async (req, res) => {
             return res.status(409).json({
                 error: "ALREADY_DEPLOYED",
                 details: "The smart contract for this election has already been deployed."
+            });
+        }
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded and cannot be deployed."
             });
         }
 
@@ -245,25 +281,6 @@ router.post("/", authAdmin, async (req, res) => {
                 }
                 console.log(`[${election_id}] Verified that all required ZKP artifacts exist.`);
 
-                // AR-H1 gate: a zkey finalized without a public beacon is a
-                // dev-only artifact. With REQUIRE_BEACON=true (staging/
-                // production), refuse to deploy it.
-                if (process.env.REQUIRE_BEACON === "true") {
-                    const ceremonyPath = path.join(path.dirname(artifactPaths.zkeyPath), "ceremony.json");
-                    let ceremony = null;
-                    try {
-                        ceremony = JSON.parse(fs.readFileSync(ceremonyPath, "utf8"));
-                    } catch (err) {
-                        ceremony = null;
-                    }
-                    if (!ceremony || ceremony.finalizedWithBeacon !== true) {
-                        return res.status(409).json({
-                            error: "ZKEY_NOT_BEACON_FINALIZED",
-                            details: "The proving key was not finalized with a public random beacon. Regenerate with BEACON_HEX before deploying to staging/production (AR-H1)."
-                        });
-                    }
-                }
-
             } catch (scriptError) {
                 // execPromise rejects if the script exits with a non-zero code.
                 // The error object often contains stdout and stderr from the failed process.
@@ -275,6 +292,14 @@ router.post("/", authAdmin, async (req, res) => {
                     details: scriptError.stderr || "ZKP setup script failed. Check server logs for details."
                 });
             }
+        }
+
+        // AR-H1 gate: a zkey finalized without a public beacon is a dev-only
+        // artifact. Enforce this for both freshly generated artifacts and
+        // existing artifact directories that skipped setUpZk.sh.
+        const beaconProblem = validateBeaconFinalization(artifactPaths);
+        if (beaconProblem) {
+            return res.status(409).json(beaconProblem);
         }
 
         // --- 4. Always Run Contract Deployment Script ---

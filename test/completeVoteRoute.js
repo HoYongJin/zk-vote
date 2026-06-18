@@ -29,11 +29,14 @@ function createSupabaseMock({ fetchResult, updateResult }) {
     };
 }
 
-function loadCompleteRoute(supabaseMock) {
+function loadCompleteRoute(supabaseMock, { superseded = false } = {}) {
     const restoreSupabase = withMockedModule("../server/supabaseClient", supabaseMock);
     const restoreAuth = withMockedModule("../server/middleware/authAdmin", (req, _res, next) => {
         req.admin = { id: "admin-id" };
         next();
+    });
+    const restoreSupersede = withMockedModule("../server/utils/supersede", {
+        isElectionSuperseded: async () => superseded,
     });
 
     const routePath = require.resolve("../server/routes/completeVote");
@@ -44,6 +47,7 @@ function loadCompleteRoute(supabaseMock) {
         router,
         cleanup: () => {
             delete require.cache[routePath];
+            restoreSupersede();
             restoreAuth();
             restoreSupabase();
         },
@@ -79,6 +83,30 @@ describe("completeVote route", function () {
 
         expect(response.status).to.equal(403);
         expect(response.body.error).to.equal("VOTING_PERIOD_ACTIVE");
+        expect(supabaseMock.calls.updates).to.deep.equal([]);
+    });
+
+    it("rejects superseded elections before updating completion", async function () {
+        const supabaseMock = createSupabaseMock({
+            fetchResult: {
+                data: {
+                    id: "election-1",
+                    completed: false,
+                    voting_end_time: new Date(Date.now() - 60_000).toISOString(),
+                },
+                error: null,
+            },
+            updateResult: { data: null, error: null },
+        });
+        const { router, cleanup } = loadCompleteRoute(supabaseMock, { superseded: true });
+        this.cleanupRoute = cleanup;
+
+        const response = await invokeJson(router, {
+            params: { election_id: "election-1" },
+        });
+
+        expect(response.status).to.equal(409);
+        expect(response.body.error).to.equal("ELECTION_SUPERSEDED");
         expect(supabaseMock.calls.updates).to.deep.equal([]);
     });
 

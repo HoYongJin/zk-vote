@@ -12,13 +12,12 @@ APP_PASSWORD="${ZKVOTE_APP_PASSWORD:-zkvote_app_dev_password}"
 
 docker compose -f "${PROJECT_ROOT}/docker-compose.yml" up --wait -d zkvote-postgres
 
-# Session-level settings carry the passwords into roles.sql without putting
-# them in argv or the SQL file itself.
-{
-  echo "SET zkvote.migrator_password = '${MIGRATOR_PASSWORD}';"
-  echo "SET zkvote.app_password = '${APP_PASSWORD}';"
-  cat "${PROJECT_ROOT}/rust-backend/db/roles.sql"
-} | docker compose -f "${PROJECT_ROOT}/docker-compose.yml" exec -T zkvote-postgres \
-      psql -U zkvote -d zkvote -v ON_ERROR_STOP=1
+# roles.sql consumes psql variables and safely moves them into session-local
+# settings before the CREATE ROLE block.
+docker compose -f "${PROJECT_ROOT}/docker-compose.yml" exec -T zkvote-postgres \
+  psql -U zkvote -d zkvote -v ON_ERROR_STOP=1 \
+    -v "migrator_password=${MIGRATOR_PASSWORD}" \
+    -v "app_password=${APP_PASSWORD}" \
+    -f /dev/stdin < "${PROJECT_ROOT}/rust-backend/db/roles.sql"
 
 echo "Two-role privilege model applied (zkvote_migrator / zkvote_app)."

@@ -7,6 +7,7 @@ const express = require("express");
 const router = express.Router({ mergeParams: true });
 const supabase = require("../supabaseClient");
 const authAdmin = require("../middleware/authAdmin");
+const { isElectionSuperseded } = require("../utils/supersede");
 
 /**
  * @route   POST /api/elections/:election_id/complete
@@ -40,6 +41,13 @@ router.post("/", authAdmin, async (req, res) => {
 
         if (!election) { // Should be redundant due to .single() error handling
             return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
+        }
+
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded and cannot be completed."
+            });
         }
 
        // Check if the election is already marked as completed

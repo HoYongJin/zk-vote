@@ -4,23 +4,43 @@
 //! rejection carries the Node error code the route layer must emit.
 
 use num_bigint::BigUint;
-use num_bigint::ParseBigIntError;
 use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // Field elements (decimal or 0x-hex strings at every API boundary)
 // ---------------------------------------------------------------------------
 
-pub fn parse_field_element(value: &str) -> Result<BigUint, ParseBigIntError> {
-    if let Some(hex) = value
+pub const FIELD_ELEMENT_MODULUS_DEC: &str =
+    "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FieldElementError {
+    #[error("field element must be a non-negative decimal or 0x-hex integer")]
+    Parse,
+    #[error("field element is outside the BN254 scalar field")]
+    OutOfRange,
+}
+
+fn field_modulus() -> BigUint {
+    BigUint::parse_bytes(FIELD_ELEMENT_MODULUS_DEC.as_bytes(), 10)
+        .expect("valid BN254 scalar field modulus")
+}
+
+pub fn parse_field_element(value: &str) -> Result<BigUint, FieldElementError> {
+    let parsed = if let Some(hex) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        BigUint::parse_bytes(hex.as_bytes(), 16)
-            .ok_or_else(|| "deadbeef".parse::<BigUint>().unwrap_err())
+        BigUint::parse_bytes(hex.as_bytes(), 16).ok_or(FieldElementError::Parse)?
     } else {
-        value.parse::<BigUint>()
+        value
+            .parse::<BigUint>()
+            .map_err(|_| FieldElementError::Parse)?
+    };
+    if parsed >= field_modulus() {
+        return Err(FieldElementError::OutOfRange);
     }
+    Ok(parsed)
 }
 
 /// `BigInt("0x" + uuid-without-dashes)` — the election identity inside the
@@ -283,6 +303,8 @@ pub fn check_submission(check: &SubmitCheck<'_>) -> Result<ValidatedSubmission, 
 pub enum CompletionRejection {
     #[error("ALREADY_COMPLETED")]
     AlreadyCompleted,
+    #[error("ELECTION_SUPERSEDED")]
+    Superseded,
     #[error("VOTING_NOT_STARTED")]
     VotingNotStarted,
     #[error("VOTING_PERIOD_ACTIVE")]
@@ -293,9 +315,13 @@ pub fn check_completion(
     now: OffsetDateTime,
     voting_end: Option<OffsetDateTime>,
     completed: bool,
+    superseded: bool,
 ) -> Result<(), CompletionRejection> {
     if completed {
         return Err(CompletionRejection::AlreadyCompleted);
+    }
+    if superseded {
+        return Err(CompletionRejection::Superseded);
     }
     let Some(voting_end) = voting_end else {
         return Err(CompletionRejection::VotingNotStarted);
@@ -528,19 +554,23 @@ mod tests {
     #[test]
     fn completion_requires_an_ended_unfinished_vote() {
         assert_eq!(
-            check_completion(now(), Some(now() - Duration::hours(1)), false),
+            check_completion(now(), Some(now() - Duration::hours(1)), false, false),
             Ok(())
         );
         assert_eq!(
-            check_completion(now(), Some(now() - Duration::hours(1)), true),
+            check_completion(now(), Some(now() - Duration::hours(1)), true, false),
             Err(CompletionRejection::AlreadyCompleted)
         );
         assert_eq!(
-            check_completion(now(), None, false),
+            check_completion(now(), Some(now() - Duration::hours(1)), false, true),
+            Err(CompletionRejection::Superseded)
+        );
+        assert_eq!(
+            check_completion(now(), None, false, false),
             Err(CompletionRejection::VotingNotStarted)
         );
         assert_eq!(
-            check_completion(now(), Some(now() + Duration::hours(1)), false),
+            check_completion(now(), Some(now() + Duration::hours(1)), false, false),
             Err(CompletionRejection::VotingActive)
         );
     }
@@ -556,6 +586,10 @@ mod tests {
         assert_eq!(parse_field_element("123").unwrap().to_string(), "123");
         assert_eq!(parse_field_element("0x7b").unwrap().to_string(), "123");
         assert!(parse_field_element("not-a-number").is_err());
+        assert_eq!(
+            parse_field_element(FIELD_ELEMENT_MODULUS_DEC),
+            Err(FieldElementError::OutOfRange)
+        );
     }
 
     #[test]

@@ -11,6 +11,8 @@ const redis = require('../redisClient');
 const { isRedisLockHeld, withRedisLock } = require("./redisLock");
 const { isOnchainConfigured } = require("./finalizationState");
 const { electionIdToBigInt } = require("./electionId");
+const { parseFieldElement } = require("./fieldElement");
+const { isElectionSuperseded } = require("./supersede");
 require("dotenv").config();
 
 /**
@@ -78,18 +80,18 @@ async function loadLeafCommitmentsFromDB(election_id) {
  * @returns {string[]} An array of leaf values as strings.
  */
 function normalizeLeafCommitments(commitments) {
-    return commitments.map(commitment => BigInt(commitment).toString());
+    return commitments.map(commitment => parseFieldElement(commitment, "leaf commitment").toString());
 }
 
 async function calculateLeafCommitment(user_secret) {
     const poseidon = await getPoseidon();
-    return poseidon.F.toString(poseidon([BigInt(user_secret)]));
+    return poseidon.F.toString(poseidon([parseFieldElement(user_secret, "user_secret")]));
 }
 
 async function calculateNullifierHash(user_secret, election_id) {
     const poseidon = await getPoseidon();
     return poseidon.F.toString(poseidon([
-        BigInt(user_secret),
+        parseFieldElement(user_secret, "user_secret"),
         electionIdToBigInt(election_id)
     ]));
 }
@@ -215,6 +217,13 @@ async function addUserSecret(election_id, user_name, user_id, email, user_secret
             });
         }
 
+        if (await isElectionSuperseded(supabase, election_id)) {
+            throw Object.assign(new Error("This election was superseded and registration is closed."), {
+                status: 409,
+                code: "ELECTION_SUPERSEDED"
+            });
+        }
+
         if (await isOnchainConfigured(election_id)) {
             throw Object.assign(new Error("This election has already been finalized on-chain."), {
                 status: 409,
@@ -242,7 +251,7 @@ async function addUserSecret(election_id, user_name, user_id, email, user_secret
                 name: user_name,
                 user_id: user_id,
                 // Column kept for compatibility; value is H(secret), not the plaintext secret.
-                user_secret: BigInt(user_secret_commitment).toString()
+                user_secret: parseFieldElement(user_secret_commitment, "user_secret_commitment").toString()
             })
             .eq('email', email)
             .eq('election_id', election_id)
@@ -280,11 +289,42 @@ async function addUserSecret(election_id, user_name, user_id, email, user_secret
                 });
             }
 
-            if (currentVoter.user_id) {
+            if (currentVoter.user_id && currentVoter.user_id !== user_id) {
                 throw Object.assign(new Error("This voter has already completed registration."), {
                     status: 409,
                     code: "ALREADY_REGISTERED"
                 });
+            }
+
+            if (currentVoter.user_id === user_id) {
+                const { data: reboundVoter, error: reboundError } = await supabase
+                    .from("Voters")
+                    .update({
+                        name: user_name,
+                        // Same-user re-binding is allowed until registration closes (AR-H6).
+                        user_secret: parseFieldElement(user_secret_commitment, "user_secret_commitment").toString()
+                    })
+                    .eq("id", currentVoter.id)
+                    .eq("user_id", user_id)
+                    .select("id")
+                    .maybeSingle();
+
+                if (reboundError) {
+                    throw new Error(`[merkle.js] DB re-bind failed inside lock: ${reboundError.message}`);
+                }
+
+                if (!(await isRedisLockHeld(lock))) {
+                    throw Object.assign(new Error("Registration lock expired before the re-bind completed."), {
+                        status: 409,
+                        code: "REGISTRATION_LOCK_EXPIRED"
+                    });
+                }
+
+                if (reboundVoter) {
+                    await redis.del(merkleCacheKey(election_id));
+                    console.log(`[merkle.js] Voter commitment re-bound and cache invalidated for election ${election_id}.`);
+                    return reboundVoter;
+                }
             }
 
             throw new Error("[merkle.js] Voter update did not modify a row.");

@@ -9,6 +9,7 @@ const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
 const auth = require("../middleware/auth");
+const { filterSupersededElections } = require("../utils/supersede");
 
 /**
  * @route   GET /api/elections/completed
@@ -79,15 +80,16 @@ router.get("/", auth, async (req, res) => {
         }
 
         // --- 4. Execute the final query ---
-        const { data: completedElections, error: queryError } = await query;
+        const { data: completedElectionRows, error: queryError } = await query;
 
         if (queryError) {
             console.error(`[completedVote.js] Error executing final query for user ${user.id}:`, queryError.message);
             throw queryError; // Throw DB error
         }
+        const completedElections = await filterSupersededElections(supabase, completedElectionRows);
 
         // --- 5. Return the results ---
-        res.status(200).json(completedElections || []); // Return data or empty array if null
+        res.status(200).json(completedElections); // Return data or empty array if null
 
     } catch (err) {
         // --- 6. General Error Handling ---

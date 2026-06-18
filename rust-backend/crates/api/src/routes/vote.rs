@@ -17,7 +17,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
-use zkvote_chain::{connect_election, submit_tally, ChainConfig, ChainError};
+use zkvote_chain::{
+    connect_election, preflight_submit_tally, submit_tally, ChainConfig, ChainError,
+};
 use zkvote_domain::services::{
     check_submission, SubmitCheck, SubmitRejection, PUBLIC_SIGNAL_NULLIFIER_INDEX,
 };
@@ -28,6 +30,23 @@ fn coded(status: u16, code: &'static str, details: impl Into<String>) -> ApiErro
         status,
         code,
         details: details.into(),
+    }
+}
+
+fn invalid_ticket() -> ApiError {
+    coded(
+        403,
+        "INVALID_OR_EXPIRED_TICKET",
+        "The submission ticket is invalid, has expired, or has already been used.",
+    )
+}
+
+fn map_ticket_error(err: ApiError) -> ApiError {
+    match err {
+        ApiError::Internal(details) if details.starts_with("ticket payload malformed:") => {
+            invalid_ticket()
+        }
+        other => other,
     }
 }
 
@@ -81,12 +100,80 @@ fn guard_voting_window(election: &VotingElection, now: OffsetDateTime) -> Result
         ));
     }
     match (election.voting_start_time, election.voting_end_time) {
-        (Some(start), Some(end)) if now >= start && now <= end => Ok(()),
+        (Some(start), Some(end)) if now >= start && now < end => Ok(()),
         _ => Err(coded(
             403,
             "VOTING_PERIOD_INACTIVE",
             "The voting period is not active.",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use time::Duration;
+
+    fn voting_election(start: OffsetDateTime, end: OffsetDateTime) -> VotingElection {
+        VotingElection {
+            merkle_tree_depth: 4,
+            num_candidates: 2,
+            merkle_root: Some("42".to_string()),
+            contract_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            voting_start_time: Some(start),
+            voting_end_time: Some(end),
+            superseded_at: None,
+        }
+    }
+
+    #[test]
+    fn voting_window_is_start_inclusive_and_end_exclusive() {
+        let start = OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap();
+        let end = start + Duration::hours(1);
+        let election = voting_election(start, end);
+
+        assert!(guard_voting_window(&election, start).is_ok());
+        assert!(guard_voting_window(&election, end - Duration::seconds(1)).is_ok());
+        assert!(guard_voting_window(&election, end).is_err());
+    }
+
+    #[test]
+    fn malformed_ticket_payload_maps_to_node_compatible_403() {
+        let response = map_ticket_error(ApiError::Internal(
+            "ticket payload malformed: unknown field `nullifierHash`".to_string(),
+        ))
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn malformed_proof_values_map_to_node_compatible_invalid_payload() {
+        let proof = FormattedProof {
+            a: vec!["not-a-field".to_string(), "2".to_string()],
+            b: vec![
+                vec!["3".to_string(), "4".to_string()],
+                vec!["5".to_string(), "6".to_string()],
+            ],
+            c: vec!["7".to_string(), "8".to_string()],
+        };
+        let signals = vec![
+            "1".to_string(),
+            "1".to_string(),
+            "1".to_string(),
+            "1".to_string(),
+        ];
+        let err = parse_proof(&proof, &signals).expect_err("malformed values must fail");
+
+        match err {
+            ApiError::Coded { status, code, .. } => {
+                assert_eq!(status, 400);
+                assert_eq!(code, "INVALID_PAYLOAD");
+            }
+            other => panic!("expected INVALID_PAYLOAD coded error, got {other:?}"),
+        }
     }
 }
 
@@ -168,6 +255,7 @@ pub async fn proof(
         &TicketPayload {
             election_id,
             merkle_root: root.clone(),
+            issued_at: None,
         },
     )
     .await?;
@@ -212,12 +300,18 @@ pub struct SubmitResponse {
 }
 
 fn parse_u256(value: &str) -> Result<U256, ApiError> {
-    let parsed = zkvote_domain::services::parse_field_element(value)
-        .map_err(|_| ApiError::Validation("Proof or public signals are malformed.".to_string()))?;
-    U256::from_str_radix(&parsed.to_string(), 10)
-        .map_err(|_| ApiError::Validation("Proof value out of range.".to_string()))
+    let invalid = || {
+        coded(
+            400,
+            "INVALID_PAYLOAD",
+            "Proof or public signals are missing or malformed.",
+        )
+    };
+    let parsed = zkvote_domain::services::parse_field_element(value).map_err(|_| invalid())?;
+    U256::from_str_radix(&parsed.to_string(), 10).map_err(|_| invalid())
 }
 
+#[derive(Debug)]
 struct ProofArgs {
     a: [U256; 2],
     b: [[U256; 2]; 2],
@@ -298,14 +392,9 @@ pub async fn submit(
     // Peek (non-destructive): the ticket survives every later rejection
     // except a successful (or front-run-completed) relay (audit M1).
     let ticket = tickets::read(&state.redis, ticket_token)
-        .await?
-        .ok_or_else(|| {
-            coded(
-                403,
-                "INVALID_OR_EXPIRED_TICKET",
-                "The submission ticket is invalid, has expired, or has already been used.",
-            )
-        })?;
+        .await
+        .map_err(map_ticket_error)?
+        .ok_or_else(invalid_ticket)?;
 
     let merkle_root = election.merkle_root.as_deref().unwrap_or_default();
     check_submission(&SubmitCheck {
@@ -347,6 +436,20 @@ pub async fn submit(
         ));
     }
 
+    // Node parity: run the contract's view/static preflight before GETDEL.
+    // Permanent verifier/contract rejections must not burn the one-use ticket;
+    // the actual send path still rechecks after consumption to handle races.
+    preflight_submit_tally(
+        &chain,
+        contract_address,
+        args.a,
+        args.b,
+        args.c,
+        args.signals,
+    )
+    .await
+    .map_err(chain_unavailable)?;
+
     // Serialize the relay per wallet (AR-M5): concurrent sends from the one
     // relayer key race on nonces and burn tickets. (Holding the lock through
     // receipt-wait is acceptable locally; staging splits send/wait.)
@@ -355,14 +458,11 @@ pub async fn submit(
         // Consume the ticket only once everything else has passed; the relay
         // itself is the last fallible step.
         if tickets::consume(&state.redis, ticket_token)
-            .await?
+            .await
+            .map_err(map_ticket_error)?
             .is_none()
         {
-            return Err(coded(
-                403,
-                "INVALID_OR_EXPIRED_TICKET",
-                "The submission ticket was already used or expired.",
-            ));
+            return Err(invalid_ticket());
         }
         submit_tally(
             &chain,

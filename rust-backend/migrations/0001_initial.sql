@@ -72,7 +72,6 @@ CREATE TABLE IF NOT EXISTS submission_tickets (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     election_id uuid NOT NULL REFERENCES elections(id) ON DELETE CASCADE,
     merkle_root numeric(78, 0) NOT NULL,
-    nullifier_hash numeric(78, 0) NOT NULL,
     expires_at timestamptz NOT NULL,
     consumed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),

@@ -12,18 +12,31 @@ use ark_ff::{BigInteger, PrimeField};
 use light_poseidon::{Poseidon, PoseidonError, PoseidonHasher};
 use num_bigint::BigUint;
 
+const FIELD_ELEMENT_MODULUS_DEC: &str =
+    "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+
 #[derive(Debug, thiserror::Error)]
 pub enum HashError {
     #[error("value is not a valid decimal field element: {0}")]
     Parse(String),
+    #[error("value is outside the BN254 scalar field: {0}")]
+    OutOfRange(String),
     #[error("poseidon error: {0}")]
     Poseidon(#[from] PoseidonError),
+}
+
+fn field_modulus() -> BigUint {
+    BigUint::parse_bytes(FIELD_ELEMENT_MODULUS_DEC.as_bytes(), 10)
+        .expect("valid BN254 scalar field modulus")
 }
 
 fn field_from_dec(value: &str) -> Result<Fr, HashError> {
     let parsed = value
         .parse::<BigUint>()
         .map_err(|_| HashError::Parse(value.to_string()))?;
+    if parsed >= field_modulus() {
+        return Err(HashError::OutOfRange(value.to_string()));
+    }
     Ok(Fr::from(parsed))
 }
 
@@ -44,4 +57,17 @@ pub fn hash2(left: &str, right: &str) -> Result<String, HashError> {
     Ok(field_to_dec(
         hasher.hash(&[field_from_dec(left)?, field_from_dec(right)?])?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_out_of_field_poseidon_inputs() {
+        assert!(matches!(
+            hash1(FIELD_ELEMENT_MODULUS_DEC),
+            Err(HashError::OutOfRange(_))
+        ));
+    }
 }

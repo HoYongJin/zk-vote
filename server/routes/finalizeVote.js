@@ -14,6 +14,7 @@ const { isRedisLockHeld } = require("../utils/redisLock");
 const { markOnchainConfigured } = require("../utils/finalizationState");
 const { ethers } = require("ethers");
 const authAdmin = require("../middleware/authAdmin");
+const { isElectionSuperseded } = require("../utils/supersede");
 
 // Load contract ABI (ensure path is correct relative to this file)
 const votingTallyAbi = require("../../artifacts/contracts/VotingTally.sol/VotingTally.json").abi;
@@ -89,6 +90,15 @@ router.post("/", authAdmin, async (req, res) => {
         if (!election) {
             return { status: 404, body: { error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` } };
         }
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return {
+                status: 409,
+                body: {
+                    error: "ELECTION_SUPERSEDED",
+                    details: "This election was superseded and cannot be finalized."
+                }
+            };
+        }
 
         // Check 1: Ensure the smart contract address exists (meaning deployment was successful).
         if (!election.contract_address) {
@@ -108,6 +118,23 @@ router.post("/", authAdmin, async (req, res) => {
         const registrationClosedAt = new Date(
             Math.min(finalizationTime.getTime(), currentRegistrationEnd.getTime())
         ).toISOString();
+
+        // Build and validate the snapshot before mutating durable state. A
+        // zero-voter finalize is a validation failure, not a state transition:
+        // it must not close registration as a side effect.
+        const { tree, leaves } = await buildFinalMerkleSnapshot(
+            election_id,
+            registrationClosedAt
+        );
+
+        if (!leaves || leaves.length === 0) {
+            console.warn(`[${election_id}] Attempted to finalize election with zero registered voters.`);
+            return { status: 400, body: {
+                error: "NO_VOTERS_REGISTERED",
+                details: "Cannot finalize: No voters have completed their registration for this election."
+            } };
+        }
+        const finalMerkleRoot = tree.root.toString();
 
         // Durable fail-closed marker before any on-chain side effect. Even if the
         // process crashes after the transaction succeeds, registration remains
@@ -132,22 +159,6 @@ router.post("/", authAdmin, async (req, res) => {
                 }
             };
         }
-
-        // --- 3. Generate the final Merkle root off-chain under the same election lock. ---
-        const { tree, leaves } = await buildFinalMerkleSnapshot(
-            election_id,
-            registrationClosedAt
-        );
-
-        // Check if any voters actually registered. Cannot finalize with zero voters.
-        if (!leaves || leaves.length === 0) {
-            console.warn(`[${election_id}] Attempted to finalize election with zero registered voters.`);
-            return { status: 400, body: { 
-                error: "NO_VOTERS_REGISTERED", 
-                details: "Cannot finalize: No voters have completed their registration for this election." 
-            } };
-        }
-        const finalMerkleRoot = tree.root.toString();
 
                 
         // --- 4. Update the Smart Contract (On-Chain) ---

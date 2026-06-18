@@ -62,6 +62,10 @@ ALTER TABLE elections ALTER COLUMN circuit_id DROP NOT NULL;
 -- the H2 fix; the Phase 19 ETL maps it into voters.user_secret_commitment.
 ALTER TABLE voters DROP COLUMN IF EXISTS user_secret;
 
+-- AR-H5 privacy invariant: durable ticket storage, if used by the Rust port,
+-- follows the Redis ticket payload and never persists the submit nullifier.
+ALTER TABLE submission_tickets DROP COLUMN IF EXISTS nullifier_hash;
+
 -- --- M8: field elements as decimal-string text ------------------------------
 -- Every API boundary (Node today, Rust after parity) treats Merkle roots,
 -- commitments, and nullifiers as decimal strings fed to BigInt; numeric(78,0)
@@ -69,7 +73,6 @@ ALTER TABLE voters DROP COLUMN IF EXISTS user_secret;
 ALTER TABLE elections          ALTER COLUMN merkle_root            TYPE text USING merkle_root::text;
 ALTER TABLE voters             ALTER COLUMN user_secret_commitment TYPE text USING user_secret_commitment::text;
 ALTER TABLE submission_tickets ALTER COLUMN merkle_root            TYPE text USING merkle_root::text;
-ALTER TABLE submission_tickets ALTER COLUMN nullifier_hash         TYPE text USING nullifier_hash::text;
 ALTER TABLE vote_submissions   ALTER COLUMN nullifier_hash         TYPE text USING nullifier_hash::text;
 ALTER TABLE finalization_jobs  ALTER COLUMN desired_merkle_root    TYPE text USING desired_merkle_root::text;
 
@@ -82,20 +85,19 @@ BEGIN
             ('elections',          'merkle_root',            'chk_elections_merkle_root_field_element'),
             ('voters',             'user_secret_commitment', 'chk_voters_commitment_field_element'),
             ('submission_tickets', 'merkle_root',            'chk_tickets_merkle_root_field_element'),
-            ('submission_tickets', 'nullifier_hash',         'chk_tickets_nullifier_field_element'),
             ('vote_submissions',   'nullifier_hash',         'chk_submissions_nullifier_field_element'),
             ('finalization_jobs',  'desired_merkle_root',    'chk_jobs_merkle_root_field_element')
         ) AS t(table_name, column_name, constraint_name)
     LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint
-            WHERE conname = spec.constraint_name
-        ) THEN
-            EXECUTE format(
-                'ALTER TABLE %I ADD CONSTRAINT %I CHECK (%I ~ ''^[0-9]+$'')',
-                spec.table_name, spec.constraint_name, spec.column_name
-            );
-        END IF;
+        EXECUTE format(
+            'ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I',
+            spec.table_name, spec.constraint_name
+        );
+        EXECUTE format(
+            'ALTER TABLE %I ADD CONSTRAINT %I CHECK (%I IS NULL OR CASE WHEN %I ~ ''^[0-9]+$'' THEN (%I)::numeric < 21888242871839275222246405745257275088548364400416034343698204186575808495617 ELSE false END)',
+            spec.table_name, spec.constraint_name, spec.column_name,
+            spec.column_name, spec.column_name
+        );
     END LOOP;
 END $$;
 

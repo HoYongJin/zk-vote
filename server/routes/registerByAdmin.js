@@ -11,6 +11,7 @@ const authAdmin = require("../middleware/authAdmin");
 const { normalizeEmail } = require("../utils/email");
 const { isOnchainConfigured } = require("../utils/finalizationState");
 const { withElectionMerkleLock } = require("../utils/merkle");
+const { isElectionSuperseded } = require("../utils/supersede");
 
 /**
  * @route   POST /api/elections/:election_id/voters
@@ -93,6 +94,12 @@ router.post("/", authAdmin, async (req, res) => {
         }
         if (!election) {
             return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
+        }
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded and voter allowlist changes are closed."
+            });
         }
         if (election.merkle_root) {
             return res.status(409).json({

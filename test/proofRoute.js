@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { invokeJson, withMockedModule } = require("./routeTestUtils");
 
-function createSupabaseMock() {
+function createSupabaseMock(electionOverrides = {}) {
     let fromCalls = 0;
 
     function electionBuilder() {
@@ -14,6 +14,7 @@ function createSupabaseMock() {
                     voting_start_time: new Date(Date.now() - 60_000).toISOString(),
                     voting_end_time: new Date(Date.now() + 60_000).toISOString(),
                     merkle_root: "123",
+                    ...electionOverrides,
                 },
                 error: null,
             }),
@@ -43,6 +44,8 @@ function createSupabaseMock() {
 
 function loadProofRoute({
     artifactCheck = { ok: true, checked: true },
+    electionOverrides = {},
+    superseded = false,
 } = {}) {
     const calls = {
         proofCommitments: [],
@@ -50,7 +53,7 @@ function loadProofRoute({
         artifactChecks: [],
     };
 
-    const restoreSupabase = withMockedModule("../server/supabaseClient", createSupabaseMock());
+    const restoreSupabase = withMockedModule("../server/supabaseClient", createSupabaseMock(electionOverrides));
     const restoreAuth = withMockedModule("../server/middleware/auth", (req, _res, next) => {
         req.user = { id: "user-1", email: "user@example.com" };
         next();
@@ -77,6 +80,9 @@ function loadProofRoute({
             return artifactCheck;
         },
     });
+    const restoreSupersede = withMockedModule("../server/utils/supersede", {
+        isElectionSuperseded: async () => superseded,
+    });
 
     const routePath = require.resolve("../server/routes/proof");
     delete require.cache[routePath];
@@ -87,6 +93,7 @@ function loadProofRoute({
         router,
         cleanup: () => {
             delete require.cache[routePath];
+            restoreSupersede();
             restoreArtifacts();
             restoreTickets();
             restoreMerkle();
@@ -97,10 +104,31 @@ function loadProofRoute({
 }
 
 describe("proof route", function () {
+    let RealDate;
+
+    function freezeDate(isoString) {
+        RealDate = global.Date;
+        function MockDate(value) {
+            if (!(this instanceof MockDate)) {
+                return new RealDate(isoString).toString();
+            }
+            return value === undefined ? new RealDate(isoString) : new RealDate(value);
+        }
+        MockDate.now = () => new RealDate(isoString).getTime();
+        MockDate.parse = RealDate.parse;
+        MockDate.UTC = RealDate.UTC;
+        MockDate.prototype = RealDate.prototype;
+        global.Date = MockDate;
+    }
+
     afterEach(function () {
         if (this.cleanupRoute) {
             this.cleanupRoute();
             this.cleanupRoute = null;
+        }
+        if (RealDate) {
+            global.Date = RealDate;
+            RealDate = null;
         }
     });
 
@@ -141,6 +169,43 @@ describe("proof route", function () {
         expect(response.status).to.equal(409);
         expect(response.body.error).to.equal("ARTIFACT_MISMATCH");
         // No proof or ticket may be produced against drifted artifacts.
+        expect(calls.proofCommitments).to.deep.equal([]);
+        expect(calls.ticketPayloads).to.deep.equal([]);
+    });
+
+    it("treats voting_end_time as an exclusive proof boundary", async function () {
+        const boundary = "2026-06-12T00:00:00.000Z";
+        freezeDate(boundary);
+        const { router, cleanup, calls } = loadProofRoute({
+            electionOverrides: {
+                voting_start_time: "2026-06-11T00:00:00.000Z",
+                voting_end_time: boundary,
+            },
+        });
+        this.cleanupRoute = cleanup;
+
+        const response = await invokeJson(router, {
+            params: { election_id: "election-1" },
+        });
+
+        expect(response.status).to.equal(403);
+        expect(response.body.error).to.equal("VOTING_ENDED");
+        expect(calls.proofCommitments).to.deep.equal([]);
+        expect(calls.ticketPayloads).to.deep.equal([]);
+    });
+
+    it("rejects superseded elections before artifact check or ticket issue", async function () {
+        const { router, cleanup, calls } = loadProofRoute({ superseded: true });
+        this.cleanupRoute = cleanup;
+
+        const response = await invokeJson(router, {
+            method: "POST",
+            params: { election_id: "election-1" },
+        });
+
+        expect(response.status).to.equal(409);
+        expect(response.body.error).to.equal("ELECTION_SUPERSEDED");
+        expect(calls.artifactChecks).to.deep.equal([]);
         expect(calls.proofCommitments).to.deep.equal([]);
         expect(calls.ticketPayloads).to.deep.equal([]);
     });

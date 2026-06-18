@@ -5,6 +5,7 @@ use crate::DbError;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
+use zkvote_domain::ElectionState;
 
 // ---------------------------------------------------------------------------
 // Elections
@@ -27,6 +28,7 @@ pub struct Election {
     pub verifier_address: Option<String>,
     pub completed: bool,
     pub circuit_id: Option<String>,
+    pub superseded_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug)]
@@ -39,7 +41,7 @@ pub struct NewElection {
 
 const ELECTION_COLUMNS: &str = "id, name, state, merkle_tree_depth, num_candidates, candidates, \
      registration_start_time, registration_end_time, voting_start_time, voting_end_time, \
-     merkle_root, contract_address, verifier_address, completed, circuit_id";
+     merkle_root, contract_address, verifier_address, completed, circuit_id, superseded_at";
 
 pub struct ElectionRepo;
 
@@ -77,7 +79,9 @@ impl ElectionRepo {
     ) -> Result<Vec<Election>, DbError> {
         let query = format!(
             "SELECT {ELECTION_COLUMNS} FROM elections \
-             WHERE registration_end_time > $1 AND merkle_root IS NULL \
+             WHERE registration_start_time < $1 AND registration_end_time > $1 \
+               AND merkle_root IS NULL \
+               AND superseded_at IS NULL \
              ORDER BY registration_end_time"
         );
         Ok(sqlx::query_as::<_, Election>(&query)
@@ -91,6 +95,8 @@ impl ElectionRepo {
         let query = format!(
             "SELECT {ELECTION_COLUMNS} FROM elections \
              WHERE merkle_root IS NOT NULL AND completed = false \
+               AND superseded_at IS NULL \
+               AND voting_start_time IS NOT NULL AND voting_start_time < $1 \
                AND voting_end_time IS NOT NULL AND voting_end_time > $1 \
              ORDER BY voting_end_time"
         );
@@ -103,6 +109,7 @@ impl ElectionRepo {
     pub async fn list_completed(pool: &PgPool) -> Result<Vec<Election>, DbError> {
         let query = format!(
             "SELECT {ELECTION_COLUMNS} FROM elections WHERE completed = true \
+               AND superseded_at IS NULL \
              ORDER BY voting_end_time DESC NULLS LAST"
         );
         Ok(sqlx::query_as::<_, Election>(&query)
@@ -111,6 +118,7 @@ impl ElectionRepo {
     }
 
     /// Guarded: only one deployment may ever win (audit H3 DB side).
+    /// Superseded rows are abandoned in place and must not be reactivated.
     pub async fn set_contract_address(
         pool: &PgPool,
         id: Uuid,
@@ -118,18 +126,21 @@ impl ElectionRepo {
         verifier_address: &str,
     ) -> Result<bool, DbError> {
         let updated = sqlx::query(
-            "UPDATE elections SET contract_address = $2, verifier_address = $3 \
-             WHERE id = $1 AND contract_address IS NULL",
+            "UPDATE elections SET contract_address = $2, verifier_address = $3, state = $4 \
+             WHERE id = $1 AND contract_address IS NULL AND superseded_at IS NULL",
         )
         .bind(id)
         .bind(contract_address)
         .bind(verifier_address)
+        .bind(ElectionState::ContractDeployed.to_string())
         .execute(pool)
         .await?;
         Ok(updated.rows_affected() == 1)
     }
 
     /// Guarded: the finalize DB sync may only run once (audit H4 DB side).
+    /// Superseded rows fail closed after on-chain side effects and require
+    /// manual reconciliation instead of silently becoming active again.
     pub async fn finalize_sync(
         pool: &PgPool,
         id: Uuid,
@@ -138,27 +149,36 @@ impl ElectionRepo {
         voting_start: OffsetDateTime,
         voting_end: OffsetDateTime,
     ) -> Result<bool, DbError> {
+        let next_state = if voting_end <= OffsetDateTime::now_utc() {
+            ElectionState::VotingEnded
+        } else {
+            ElectionState::VotingActive
+        };
         let updated = sqlx::query(
             "UPDATE elections SET merkle_root = $2, registration_end_time = $3, \
-                 voting_start_time = $4, voting_end_time = $5 \
-             WHERE id = $1 AND merkle_root IS NULL",
+                 voting_start_time = $4, voting_end_time = $5, state = $6 \
+             WHERE id = $1 AND merkle_root IS NULL AND superseded_at IS NULL",
         )
         .bind(id)
         .bind(merkle_root)
         .bind(registration_closed_at)
         .bind(voting_start)
         .bind(voting_end)
+        .bind(next_state.to_string())
         .execute(pool)
         .await?;
         Ok(updated.rows_affected() == 1)
     }
 
-    /// Guarded: idempotent completion (Node parity: `.eq("completed", false)`).
+    /// Guarded: idempotent completion (Node parity: `.eq("completed", false)`)
+    /// and fail-closed if the election was superseded between read and write.
     pub async fn mark_completed(pool: &PgPool, id: Uuid) -> Result<bool, DbError> {
         let updated = sqlx::query(
-            "UPDATE elections SET completed = true WHERE id = $1 AND completed = false",
+            "UPDATE elections SET completed = true, state = $2 \
+             WHERE id = $1 AND completed = false AND superseded_at IS NULL",
         )
         .bind(id)
+        .bind(ElectionState::Completed.to_string())
         .execute(pool)
         .await?;
         Ok(updated.rows_affected() == 1)
@@ -328,7 +348,9 @@ impl ElectionRepo {
             "SELECT e.*, (v.user_id IS NOT NULL) AS is_registered \
              FROM elections e \
              JOIN voters v ON v.election_id = e.id AND v.email = $2 \
-             WHERE e.registration_end_time > $1 AND e.merkle_root IS NULL \
+             WHERE e.registration_start_time < $1 AND e.registration_end_time > $1 \
+               AND e.merkle_root IS NULL \
+               AND e.superseded_at IS NULL \
              ORDER BY e.registration_end_time",
         )
         .bind(now)
@@ -345,6 +367,8 @@ impl ElectionRepo {
         let query = format!(
             "SELECT e.*, {COUNT_SUBSELECTS} FROM elections e \
              WHERE e.merkle_root IS NOT NULL AND e.completed = false \
+               AND e.superseded_at IS NULL \
+               AND e.voting_start_time IS NOT NULL AND e.voting_start_time < $1 \
                AND e.voting_end_time IS NOT NULL AND e.voting_end_time > $1 \
              ORDER BY e.voting_end_time"
         );
@@ -365,6 +389,8 @@ impl ElectionRepo {
             "SELECT e.*, {COUNT_SUBSELECTS} FROM elections e \
              JOIN voters v ON v.election_id = e.id AND v.user_id = $2 \
              WHERE e.merkle_root IS NOT NULL AND e.completed = false \
+               AND e.superseded_at IS NULL \
+               AND e.voting_start_time IS NOT NULL AND e.voting_start_time < $1 \
                AND e.voting_end_time IS NOT NULL AND e.voting_end_time > $1 \
              ORDER BY e.voting_end_time"
         );
@@ -384,6 +410,7 @@ impl ElectionRepo {
             "SELECT e.* FROM elections e \
              JOIN voters v ON v.election_id = e.id AND v.user_id = $1 \
              WHERE e.completed = true \
+               AND e.superseded_at IS NULL \
              ORDER BY e.voting_end_time DESC NULLS LAST",
         )
         .bind(user_id)
@@ -424,23 +451,39 @@ impl AdminRepo {
 }
 
 // ---------------------------------------------------------------------------
-// ZK artifacts (placeholder lookups until the Phase 10 pipeline lands)
+// ZK artifacts
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct ZkArtifact {
+    pub id: Uuid,
+    pub circuit_id: String,
+    pub version: String,
+    pub backend: String,
+    pub merkle_tree_depth: i32,
+    pub num_candidates: i32,
+    pub wasm_uri: Option<String>,
+    pub zkey_uri: Option<String>,
+    pub verification_key_uri: Option<String>,
+    pub solidity_verifier_uri: Option<String>,
+    pub sha256: String,
+    pub manifest: serde_json::Value,
+}
 
 pub struct ZkArtifactRepo;
 
 impl ZkArtifactRepo {
-    /// Finds a usable circom artifact set for a circuit shape. Until the
-    /// Phase 10 artifact pipeline populates this table, deployments through
-    /// the Rust API are blocked with a typed error (Phase 8 gate: missing
-    /// artifacts block deployment setup).
+    /// Finds the newest usable circom artifact set for a circuit shape.
     pub async fn find_by_shape(
         pool: &PgPool,
         merkle_tree_depth: i32,
         num_candidates: i32,
-    ) -> Result<Option<Uuid>, DbError> {
-        Ok(sqlx::query_scalar(
-            "SELECT id FROM zk_artifacts \
+    ) -> Result<Option<ZkArtifact>, DbError> {
+        Ok(sqlx::query_as::<_, ZkArtifact>(
+            "SELECT id, circuit_id, version, backend, merkle_tree_depth, num_candidates, \
+                    wasm_uri, zkey_uri, verification_key_uri, solidity_verifier_uri, \
+                    sha256, manifest \
+             FROM zk_artifacts \
              WHERE backend = 'circom' AND merkle_tree_depth = $1 AND num_candidates = $2 \
              ORDER BY created_at DESC LIMIT 1",
         )
@@ -483,6 +526,55 @@ impl DeploymentRepo {
         .bind(deploy_tx_hash)
         .fetch_one(pool)
         .await?)
+    }
+
+    /// Atomically binds the deployed contract addresses to the election and
+    /// stores the deployment record. If another writer already bound the
+    /// election, or the election was superseded, returns Ok(false) without
+    /// inserting metadata.
+    pub async fn record_and_bind(
+        pool: &PgPool,
+        election_id: Uuid,
+        zk_artifact_id: Option<Uuid>,
+        verifier_address: &str,
+        voting_tally_address: &str,
+        chain_id: i64,
+        deploy_tx_hash: &str,
+    ) -> Result<bool, DbError> {
+        let mut tx = pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE elections SET contract_address = $2, verifier_address = $3, state = $4 \
+             WHERE id = $1 AND contract_address IS NULL AND superseded_at IS NULL",
+        )
+        .bind(election_id)
+        .bind(voting_tally_address)
+        .bind(verifier_address)
+        .bind(ElectionState::ContractDeployed.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+
+        sqlx::query(
+            "INSERT INTO contract_deployments \
+                 (election_id, zk_artifact_id, verifier_address, voting_tally_address, \
+                  chain_id, deploy_tx_hash) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(election_id)
+        .bind(zk_artifact_id)
+        .bind(verifier_address)
+        .bind(voting_tally_address)
+        .bind(chain_id)
+        .bind(deploy_tx_hash)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(true)
     }
 }
 

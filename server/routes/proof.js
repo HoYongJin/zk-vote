@@ -14,6 +14,8 @@ const auth = require("../middleware/auth");
 const { generateMerkleProof } = require("../utils/merkle");
 const { issueSubmissionTicket } = require("../utils/submissionTickets");
 const { verifyElectionArtifacts } = require("../utils/zkArtifacts");
+const { parseFieldElement } = require("../utils/fieldElement");
+const { isElectionSuperseded } = require("../utils/supersede");
 
 /**
  * @route   POST /api/elections/:election_id/proof
@@ -57,6 +59,13 @@ router.post("/", auth, async (req, res) => {
             }
             throw electionError;
         }
+
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded; votes are no longer accepted."
+            });
+        }
         
         // Validate if the current time is within the voting window.
         const now = new Date();
@@ -78,7 +87,7 @@ router.post("/", auth, async (req, res) => {
                 details: "The election Merkle root has not been finalized yet."
             });
         }
-        if (!election.voting_end_time || now > new Date(election.voting_end_time)) {
+        if (!election.voting_end_time || now >= new Date(election.voting_end_time)) {
             return res.status(403).json({
                 error: "VOTING_ENDED",
                 details: "The voting period for this election has already ended."
@@ -132,7 +141,7 @@ router.post("/", auth, async (req, res) => {
         // 4. Generate the Merkle proof using the stored H(secret) commitment.
         //    The `generateMerkleProof` function handles tree generation/caching internally.
         const proofData = await generateMerkleProof(election_id, voterRecord.user_secret);
-        if (BigInt(proofData.root) !== BigInt(election.merkle_root)) {
+        if (parseFieldElement(proofData.root, "proof root") !== parseFieldElement(election.merkle_root, "election.merkle_root")) {
             console.error(`[proof.js] Merkle root mismatch for election ${election_id}: proof=${proofData.root}, db=${election.merkle_root}`);
             return res.status(409).json({
                 error: "MERKLE_ROOT_OUT_OF_SYNC",

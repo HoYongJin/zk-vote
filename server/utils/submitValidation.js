@@ -1,4 +1,5 @@
 const { electionIdToBigInt } = require("./electionId");
+const { isIntegerLike, parseFieldElement } = require("./fieldElement");
 
 // Public signal layout, in snarkjs order (outputs then public inputs):
 // [root_out, vote_index, nullifier_hash, election_id]. Verified empirically
@@ -9,30 +10,23 @@ const PUBLIC_SIGNAL_NULLIFIER_INDEX = 2;
 const PUBLIC_SIGNAL_ELECTION_ID_INDEX = 3;
 const PUBLIC_SIGNAL_COUNT = 4;
 
-function isIntegerLike(value) {
-    if (typeof value === "number") {
-        return Number.isSafeInteger(value) && value >= 0;
-    }
-    if (typeof value !== "string") {
-        return false;
-    }
-    return /^(0x[0-9a-fA-F]+|[0-9]+)$/.test(value);
+function toBigInt(value, fieldName) {
+    return parseFieldElement(value, fieldName);
 }
 
-function toBigInt(value, fieldName) {
-    if (!isIntegerLike(value)) {
-        throw Object.assign(new Error(`${fieldName} must be a non-negative integer string.`), {
-            code: "INVALID_PAYLOAD",
-            status: 400,
-        });
+function isFieldElementLike(value) {
+    try {
+        parseFieldElement(value);
+        return true;
+    } catch (_) {
+        return false;
     }
-    return BigInt(value);
 }
 
 function isFieldArray(value, expectedLength) {
     return Array.isArray(value) &&
         value.length === expectedLength &&
-        value.every((item) => isIntegerLike(item));
+        value.every((item) => isFieldElementLike(item));
 }
 
 function validateFormattedProof(formattedProof) {
@@ -69,10 +63,16 @@ function validateSubmitPayload({
         const nullifierHash = toBigInt(publicSignals[PUBLIC_SIGNAL_NULLIFIER_INDEX], "publicSignals[nullifier]");
         const proofElectionId = toBigInt(publicSignals[PUBLIC_SIGNAL_ELECTION_ID_INDEX], "publicSignals[electionId]");
         const dbMerkleRoot = toBigInt(election.merkle_root, "election.merkle_root");
+        if (ticketPayload.nullifierHash !== undefined && ticketPayload.nullifierHash !== null) {
+            return {
+                ok: false,
+                status: 403,
+                error: "INVALID_TICKET_PAYLOAD",
+                details: "The submission ticket must not carry a nullifier.",
+            };
+        }
+
         const ticketMerkleRoot = toBigInt(ticketPayload.merkleRoot, "ticket.merkleRoot");
-        const ticketNullifier = ticketPayload.nullifierHash === undefined || ticketPayload.nullifierHash === null
-            ? null
-            : toBigInt(ticketPayload.nullifierHash, "ticket.nullifierHash");
         const numCandidates = toBigInt(election.num_candidates, "election.num_candidates");
 
         if (ticketPayload.electionId !== electionId) {
@@ -103,15 +103,6 @@ function validateSubmitPayload({
                 status: 400,
                 error: "MERKLE_ROOT_MISMATCH",
                 details: "The proof root does not match the finalized election root.",
-            };
-        }
-
-        if (ticketNullifier !== null && nullifierHash !== ticketNullifier) {
-            return {
-                ok: false,
-                status: 400,
-                error: "NULLIFIER_MISMATCH",
-                details: "The proof nullifier does not match the submission ticket.",
             };
         }
 

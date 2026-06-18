@@ -1,5 +1,8 @@
+const { loadDeployEnv } = require("./deployEnv");
+
+loadDeployEnv();
+
 const hre = require("hardhat");
-require("dotenv").config();
 const supabase = require("../server/supabaseClient"); // Import Supabase client from the server directory.
 const { recordElectionArtifacts } = require("../server/utils/zkArtifacts");
 

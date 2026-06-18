@@ -11,11 +11,9 @@ const supabase = require("../supabaseClient");
 const { addUserSecret } = require("../utils/merkle");
 const auth = require("../middleware/auth");
 const { normalizeEmail } = require("../utils/email");
+const { parseFieldElement } = require("../utils/fieldElement");
+const { isElectionSuperseded } = require("../utils/supersede");
 require("dotenv").config();
-
-function isFieldElementString(value) {
-    return typeof value === "string" && /^(0x[0-9a-fA-F]+|[0-9]+)$/.test(value);
-}
 
 /**
  * @route   POST /api/elections/:election_id/register
@@ -48,14 +46,16 @@ router.post("/", auth, async (req, res) => {
             details: "The authenticated user email is invalid."
         });
     }
-    if (!isFieldElementString(secretCommitment)) {
+    let normalizedCommitment;
+    try {
+        normalizedCommitment = parseFieldElement(secretCommitment, "secretCommitment").toString();
+    } catch (_) {
         return res.status(400).json({
             error: "VALIDATION_ERROR",
             details: "A valid client-generated secretCommitment is required."
         });
     }
     const trimmedName = name.trim();
-    const normalizedCommitment = BigInt(secretCommitment).toString();
 
     try {
         // --- Pre-checks before attempting the critical section ---
@@ -74,6 +74,13 @@ router.post("/", auth, async (req, res) => {
                 return res.status(404).json({ error: "ELECTION_NOT_FOUND", details: `Election with ID ${election_id} not found.` });
             }
             throw electionError;
+        }
+
+        if (await isElectionSuperseded(supabase, election_id)) {
+            return res.status(409).json({
+                error: "ELECTION_SUPERSEDED",
+                details: "This election was superseded and registration is closed."
+            });
         }
 
         // Check if registration period has ended.
@@ -103,8 +110,10 @@ router.post("/", auth, async (req, res) => {
             throw voterSelectError;
         }
 
-        // 3. Check if this voter has already completed registration (user_id is not null).
-        if (voterRecord.user_id) {
+        // 3. A different authenticated user cannot take over an already-bound
+        // allowlist row. The same user may re-bind a fresh commitment before
+        // finalization so secret-loss recovery works until registration closes.
+        if (voterRecord.user_id && voterRecord.user_id !== user.id) {
             return res.status(409).json({ // 409 Conflict is suitable for duplicate actions
                 error: "ALREADY_REGISTERED", 
                 details: "This voter has already completed the registration process for this election." 

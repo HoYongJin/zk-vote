@@ -55,7 +55,9 @@ function loadFinalizeRoute({
     events,
     configured = false,
     snapshotRoots = ["42", "42"],
+    snapshotLeaves = ["11", "22"],
     onchainRoot = "42",
+    superseded = false,
 } = {}) {
     const previousRpc = process.env.SEPOLIA_RPC_URL;
     const previousKey = process.env.PRIVATE_KEY;
@@ -79,7 +81,7 @@ function loadFinalizeRoute({
             snapshotCall += 1;
             return {
                 tree: { root: { toString: () => root } },
-                leaves: ["11", "22"],
+                leaves: snapshotLeaves,
                 registrationClosedAt: new Date().toISOString(),
             };
         },
@@ -91,6 +93,9 @@ function loadFinalizeRoute({
         markOnchainConfigured: async (electionId, payload) => {
             markedConfigured.push({ electionId, payload });
         },
+    });
+    const restoreSupersede = withMockedModule("../server/utils/supersede", {
+        isElectionSuperseded: async () => superseded,
     });
 
     const contractMock = {
@@ -127,6 +132,7 @@ function loadFinalizeRoute({
         cleanup: () => {
             delete require.cache[routePath];
             restoreEthers();
+            restoreSupersede();
             restoreFinalization();
             restoreRedisLock();
             restoreMerkle();
@@ -158,6 +164,42 @@ describe("finalizeVote route", function () {
 
         expect(response.status).to.equal(200);
         expect(events).to.deep.equal(["close-registration", "configureElection", "db-sync"]);
+    });
+
+    it("does not close registration when zero-voter finalization is rejected", async function () {
+        const events = [];
+        const { router, cleanup } = loadFinalizeRoute({
+            events,
+            snapshotLeaves: [],
+        });
+        this.cleanupRoute = cleanup;
+
+        const response = await invokeJson(router, {
+            params: { election_id: "election-1" },
+            body: { voteEndTime: new Date(Date.now() + 3_600_000).toISOString() },
+        });
+
+        expect(response.status).to.equal(400);
+        expect(response.body.error).to.equal("NO_VOTERS_REGISTERED");
+        expect(events).to.deep.equal([]);
+    });
+
+    it("rejects superseded elections before closing registration or configuring on-chain state", async function () {
+        const events = [];
+        const { router, cleanup } = loadFinalizeRoute({
+            events,
+            superseded: true,
+        });
+        this.cleanupRoute = cleanup;
+
+        const response = await invokeJson(router, {
+            params: { election_id: "election-1" },
+            body: { voteEndTime: new Date(Date.now() + 3_600_000).toISOString() },
+        });
+
+        expect(response.status).to.equal(409);
+        expect(response.body.error).to.equal("ELECTION_SUPERSEDED");
+        expect(events).to.deep.equal([]);
     });
 
     it("recovers idempotently when the contract is already configured with the same root (audit H4)", async function () {

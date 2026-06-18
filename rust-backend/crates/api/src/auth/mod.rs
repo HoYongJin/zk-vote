@@ -142,32 +142,43 @@ pub async fn is_admin_or_promote(pool: &PgPool, user: &CurrentUser) -> Result<bo
         return Ok(false);
     };
 
-    let pending: Option<String> = sqlx::query_scalar(
-        "SELECT email::text FROM admin_invitations WHERE email = $1 AND accepted_at IS NULL",
-    )
-    .bind(email)
-    .fetch_optional(pool)
-    .await
-    .map_err(zkvote_db::DbError::from)?;
-    if pending.is_none() {
-        return Ok(false);
-    }
-
     let mut tx = pool.begin().await.map_err(zkvote_db::DbError::from)?;
-    sqlx::query("INSERT INTO admins (id, email) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
-        .bind(user.id)
-        .bind(email)
-        .execute(&mut *tx)
-        .await
-        .map_err(zkvote_db::DbError::from)?;
-    sqlx::query(
-        "UPDATE admin_invitations SET accepted_by = $1, accepted_at = now() WHERE email = $2",
+    let inserted_admin: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO admins (id, email) VALUES ($1, $2) \
+         ON CONFLICT (id) DO NOTHING RETURNING id",
     )
     .bind(user.id)
     .bind(email)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(zkvote_db::DbError::from)?;
+
+    let claimed: Option<String> = sqlx::query_scalar(
+        "UPDATE admin_invitations SET accepted_by = $1, accepted_at = now() \
+         WHERE email = $2 AND accepted_at IS NULL RETURNING email::text",
+    )
+    .bind(user.id)
+    .bind(email)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(zkvote_db::DbError::from)?;
+
+    if claimed.is_none() {
+        if inserted_admin.is_some() {
+            sqlx::query("DELETE FROM admins WHERE id = $1")
+                .bind(user.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(zkvote_db::DbError::from)?;
+        }
+        tx.commit().await.map_err(zkvote_db::DbError::from)?;
+        let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM admins WHERE id = $1")
+            .bind(user.id)
+            .fetch_optional(pool)
+            .await
+            .map_err(zkvote_db::DbError::from)?;
+        return Ok(existing.is_some());
+    }
     tx.commit().await.map_err(zkvote_db::DbError::from)?;
 
     tracing::info!(user_id = %user.id, email, "applied pending admin invitation (H5)");

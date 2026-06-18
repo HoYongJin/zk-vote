@@ -12,11 +12,14 @@ use uuid::Uuid;
 pub const TICKET_EXPIRY_SECONDS: u64 = 300;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TicketPayload {
     #[serde(rename = "electionId")]
     pub election_id: Uuid,
     #[serde(rename = "merkleRoot")]
     pub merkle_root: String,
+    #[serde(rename = "issuedAt", skip_serializing_if = "Option::is_none")]
+    pub issued_at: Option<String>,
 }
 
 fn key(token: &str) -> String {
@@ -74,5 +77,48 @@ fn parse(raw: Option<String>) -> Result<Option<TicketPayload>, ApiError> {
         Some(raw) => serde_json::from_str(&raw)
             .map(Some)
             .map_err(|err| ApiError::Internal(format!("ticket payload malformed: {err}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ticket_payload_rejects_legacy_nullifier_binding() {
+        let err = serde_json::from_str::<TicketPayload>(
+            r#"{
+                "electionId": "00000000-0000-0000-0000-00000000007b",
+                "merkleRoot": "123",
+                "nullifierHash": "456"
+            }"#,
+        )
+        .expect_err("legacy nullifier-bound tickets must fail closed");
+
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn ticket_payload_accepts_election_and_root_only() {
+        let payload = serde_json::from_str::<TicketPayload>(
+            r#"{
+                "electionId": "00000000-0000-0000-0000-00000000007b",
+                "merkleRoot": "123",
+                "issuedAt": "2026-06-12T00:00:00.000Z"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload.election_id,
+            "00000000-0000-0000-0000-00000000007b"
+                .parse::<Uuid>()
+                .unwrap()
+        );
+        assert_eq!(payload.merkle_root, "123");
+        assert_eq!(
+            payload.issued_at.as_deref(),
+            Some("2026-06-12T00:00:00.000Z")
+        );
     }
 }

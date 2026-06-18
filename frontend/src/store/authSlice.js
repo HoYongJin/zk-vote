@@ -14,7 +14,7 @@ const initialState = {
   user: null,         // Supabase user object
   session: null,      // Supabase session object (contains JWT)
   isLoggedIn: false,  // True if user session is active
-  isAdmin: false,     // True if the logged-in user is also in the 'Admins' table
+  isAdmin: false,     // True when the active backend's /api/me reports admin role
   
   /**
    * [UX] Global loading state for authentication.
@@ -53,7 +53,7 @@ const authSlice = createSlice({
 
     /**
      * Sets the user's admin status.
-     * Called by AuthHandler *after* setUser and after checking the 'Admins' table.
+     * Called by AuthHandler *after* setUser and after resolving /api/me.
      * This action is the one that sets `loading: false`, unblocking the UI.
      */
     setAdmin: (state, action) => {

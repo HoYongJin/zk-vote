@@ -136,6 +136,50 @@ mod tests {
         }
     }
 
+    fn test_state_with_artifact_dir(artifact_dir: &std::path::Path) -> AppState {
+        let artifact_dir = artifact_dir.display().to_string();
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some("postgres://localhost:1/unreachable".to_string()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "ARTIFACT_LOCAL_DIR" => Some(artifact_dir.clone()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+            auth: None,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    fn test_state_with_gcs(gcs_base_url: &str) -> AppState {
+        let gcs_base_url = gcs_base_url.to_string();
+        let token_url = format!("{gcs_base_url}/token");
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some("postgres://localhost:1/unreachable".to_string()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "ARTIFACT_STORE" => Some("gcs".to_string()),
+                "ARTIFACT_BUCKET" => Some("zkvote-staging-artifacts".to_string()),
+                "GCS_STORAGE_BASE_URL" => Some(gcs_base_url.clone()),
+                "GCS_METADATA_TOKEN_URL" => Some(token_url.clone()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+            auth: None,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
     /// Serves the test JWKS document on an ephemeral local port.
     async fn spawn_jwks_server() -> String {
         let app = axum::Router::new().route(
@@ -153,6 +197,44 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         format!("http://{addr}/jwks")
+    }
+
+    async fn spawn_fake_gcs_server() -> String {
+        async fn token() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({
+                "access_token": "test-access-token",
+                "expires_in": 3600,
+                "token_type": "Bearer"
+            }))
+        }
+
+        async fn artifact(
+            axum::extract::Path((bucket, object)): axum::extract::Path<(String, String)>,
+            headers: axum::http::HeaderMap,
+        ) -> impl axum::response::IntoResponse {
+            assert_eq!(bucket, "zkvote-staging-artifacts");
+            assert_eq!(
+                headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer test-access-token")
+            );
+            assert_eq!(object, "circuits/votecheck/v1/circuit_final.zkey");
+            (StatusCode::OK, "test-gcs-zkey")
+        }
+
+        let app = axum::Router::new()
+            .route("/token", axum::routing::get(token))
+            .route(
+                "/storage/v1/b/:bucket/o/*object",
+                axum::routing::get(artifact),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
     }
 
     async fn get_me(app: axum::Router, bearer: Option<&str>) -> (StatusCode, serde_json::Value) {
@@ -205,6 +287,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn zkp_files_route_serves_only_allowed_artifacts() {
+        let root = std::env::temp_dir().join(format!("zkvote-artifacts-{}", uuid::Uuid::new_v4()));
+        let build = root.join("build_4_5");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("circuit_final.zkey"), b"test-zkey").unwrap();
+        std::fs::write(build.join("VoteCheck.circom"), b"secret source").unwrap();
+
+        let app = routes::router(test_state_with_artifact_dir(&root));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/zkp-files/build_4_5/circuit_final.zkey")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"test-zkey");
+
+        let response = app
+            .oneshot(
+                Request::get("/api/zkp-files/build_4_5/VoteCheck.circom")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn zkp_files_route_streams_gcs_artifacts() {
+        let gcs_base_url = spawn_fake_gcs_server().await;
+        let app = routes::router(test_state_with_gcs(&gcs_base_url));
+        let response = app
+            .oneshot(
+                Request::get("/api/zkp-files/circuits/votecheck/v1/circuit_final.zkey")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"test-gcs-zkey");
     }
 
     #[tokio::test]
@@ -339,6 +474,73 @@ mod tests {
             .unwrap();
     }
 
+    /// H5 race gate: invitation promotion must be claim-first. A request that
+    /// loses the accepted_at race must not insert a different admin row for
+    /// the same invited e-mail.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn concurrent_admin_invitation_claim_promotes_only_the_winner() {
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let state = test_state_with("http://127.0.0.1:1/jwks", database_url);
+        let pool = state.pg.clone();
+
+        let email = format!("race-{}@example.com", uuid::Uuid::new_v4());
+        let user_a = auth::CurrentUser {
+            id: uuid::Uuid::new_v4(),
+            email: Some(email.clone()),
+        };
+        let user_b = auth::CurrentUser {
+            id: uuid::Uuid::new_v4(),
+            email: Some(email.clone()),
+        };
+
+        sqlx::query("INSERT INTO admin_invitations (email) VALUES ($1)")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (result_a, result_b) = tokio::join!(
+            auth::is_admin_or_promote(&pool, &user_a),
+            auth::is_admin_or_promote(&pool, &user_b),
+        );
+        let result_a = result_a.unwrap();
+        let result_b = result_b.unwrap();
+        assert_eq!(usize::from(result_a) + usize::from(result_b), 1);
+
+        let admin_ids: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM admins WHERE email = $1 ORDER BY id")
+                .bind(&email)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(admin_ids.len(), 1);
+        if result_a {
+            assert_eq!(admin_ids[0], user_a.id);
+        } else {
+            assert_eq!(admin_ids[0], user_b.id);
+        }
+
+        let accepted_by: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT accepted_by FROM admin_invitations WHERE email = $1")
+                .bind(&email)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(accepted_by, Some(admin_ids[0]));
+
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE email = $1")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     async fn get_json(
         app: axum::Router,
         path: &str,
@@ -446,6 +648,107 @@ mod tests {
         let d = ElectionRepo::create(&pool, &new("p7 hidden"))
             .await
             .unwrap();
+        // E: registration starts in the future; it must not leak into either
+        // registerable list even though its end time is still open.
+        let e = ElectionRepo::create(&pool, &new("p7 future-registration"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, e.id, &voter_email)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE elections SET registration_start_time = $2 WHERE id = $1")
+            .bind(e.id)
+            .bind(now + Duration::minutes(30))
+            .execute(&pool)
+            .await
+            .unwrap();
+        // F: finalized but voting starts in the future; it is not yet votable.
+        let f = ElectionRepo::create(&pool, &new("p7 future-voting"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, f.id, &voter_email)
+            .await
+            .unwrap();
+        VoterRepo::bind_registration(&pool, f.id, &voter_email, voter_id, "Voter", "789")
+            .await
+            .unwrap();
+        ElectionRepo::finalize_sync(
+            &pool,
+            f.id,
+            "44",
+            now + Duration::minutes(1),
+            now + Duration::hours(1),
+            now + Duration::hours(2),
+        )
+        .await
+        .unwrap();
+        // G: superseded registration-stage election; hidden from every
+        // registerable list.
+        let g = ElectionRepo::create(&pool, &new("p7 superseded-registration"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, g.id, &voter_email)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE elections SET superseded_at = $2 WHERE id = $1")
+            .bind(g.id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // H: superseded active voting election; hidden from finalized lists.
+        let h = ElectionRepo::create(&pool, &new("p7 superseded-voting"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, h.id, &voter_email)
+            .await
+            .unwrap();
+        VoterRepo::bind_registration(&pool, h.id, &voter_email, voter_id, "Voter", "999")
+            .await
+            .unwrap();
+        ElectionRepo::finalize_sync(
+            &pool,
+            h.id,
+            "45",
+            now + Duration::minutes(1),
+            now - Duration::minutes(10),
+            now + Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE elections SET superseded_at = $2 WHERE id = $1")
+            .bind(h.id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // I: superseded completed election; hidden from completed lists.
+        let i = ElectionRepo::create(&pool, &new("p7 superseded-completed"))
+            .await
+            .unwrap();
+        VoterRepo::insert_allowlisted(&pool, i.id, &voter_email)
+            .await
+            .unwrap();
+        VoterRepo::bind_registration(&pool, i.id, &voter_email, voter_id, "Voter", "1001")
+            .await
+            .unwrap();
+        ElectionRepo::finalize_sync(
+            &pool,
+            i.id,
+            "46",
+            now + Duration::minutes(1),
+            now - Duration::hours(2),
+            now - Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        ElectionRepo::mark_completed(&pool, i.id).await.unwrap();
+        sqlx::query("UPDATE elections SET superseded_at = $2 WHERE id = $1")
+            .bind(i.id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let admin_token = mint_token(
             &admin_id.to_string(),
@@ -465,6 +768,11 @@ mod tests {
         let b_id = b.id.to_string();
         let c_id = c.id.to_string();
         let d_id = d.id.to_string();
+        let e_id = e.id.to_string();
+        let f_id = f.id.to_string();
+        let g_id = g.id.to_string();
+        let h_id = h.id.to_string();
+        let i_id = i.id.to_string();
 
         // /registerable — admin sees A and D without isRegistered.
         let (status, rows) = get_json(
@@ -476,6 +784,14 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let row_a = row_by_id(&rows, &a_id).expect("admin must see A");
         assert!(row_by_id(&rows, &d_id).is_some(), "admin must see D");
+        assert!(
+            row_by_id(&rows, &e_id).is_none(),
+            "admin must NOT see future registration E"
+        );
+        assert!(
+            row_by_id(&rows, &g_id).is_none(),
+            "admin must NOT see superseded registration G"
+        );
         assert!(row_a.get("isRegistered").is_none());
         assert!(row_a["registration_end_time"].as_str().is_some());
 
@@ -490,6 +806,14 @@ mod tests {
         let row_a = row_by_id(&rows, &a_id).expect("voter must see allowlisted A");
         assert_eq!(row_a["isRegistered"], false);
         assert!(row_by_id(&rows, &d_id).is_none(), "voter must NOT see D");
+        assert!(
+            row_by_id(&rows, &e_id).is_none(),
+            "voter must NOT see future registration E"
+        );
+        assert!(
+            row_by_id(&rows, &g_id).is_none(),
+            "voter must NOT see superseded registration G"
+        );
 
         // /finalized — admin sees B with voter counts.
         let (status, rows) = get_json(
@@ -503,6 +827,14 @@ mod tests {
         assert_eq!(row_b["total_voters"], 1);
         assert_eq!(row_b["registered_voters"], 1);
         assert_eq!(row_b["num_candidates"], 2);
+        assert!(
+            row_by_id(&rows, &f_id).is_none(),
+            "admin must NOT see future voting F"
+        );
+        assert!(
+            row_by_id(&rows, &h_id).is_none(),
+            "admin must NOT see superseded voting H"
+        );
 
         // /finalized — voter sees B (registered) but the completed C is gone.
         let (status, rows) = get_json(
@@ -512,8 +844,24 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert!(row_by_id(&rows, &b_id).is_some());
+        let row_b = row_by_id(&rows, &b_id).expect("voter must see voting B");
+        assert!(
+            row_b.get("total_voters").is_none(),
+            "voter finalized rows must not include admin-only total_voters"
+        );
+        assert!(
+            row_b.get("registered_voters").is_none(),
+            "voter finalized rows must not include admin-only registered_voters"
+        );
         assert!(row_by_id(&rows, &c_id).is_none());
+        assert!(
+            row_by_id(&rows, &f_id).is_none(),
+            "voter must NOT see future voting F"
+        );
+        assert!(
+            row_by_id(&rows, &h_id).is_none(),
+            "voter must NOT see superseded voting H"
+        );
 
         // /completed — both see C.
         for token in [&admin_token, &voter_token] {
@@ -525,9 +873,13 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             assert!(row_by_id(&rows, &c_id).is_some());
+            assert!(
+                row_by_id(&rows, &i_id).is_none(),
+                "completed list must NOT show superseded completed I"
+            );
         }
 
-        for id in [a.id, b.id, c.id, d.id] {
+        for id in [a.id, b.id, c.id, d.id, e.id, f.id, g.id, h.id, i.id] {
             sqlx::query("DELETE FROM elections WHERE id = $1")
                 .bind(id)
                 .execute(&pool)
@@ -698,6 +1050,193 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM admin_invitations WHERE email = $1")
             .bind(&invite_email)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// Phase 8/11 route gate: /setZkDeploy itself must deploy through the
+    /// typed chain layer, bind the selected artifact, and persist metadata.
+    /// Requires docker PG+Redis and a local hardhat node:
+    ///   bash scripts/local/smoke.sh && npx hardhat node
+    /// Run: `cargo test -p zkvote-api -- --ignored set_zk_deploy_route --test-threads=1`
+    #[tokio::test]
+    #[ignore = "requires docker PG+Redis and a local hardhat node"]
+    async fn set_zk_deploy_route_deploys_and_records_metadata() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+        use zkvote_db::repos::{ElectionRepo, NewElection};
+
+        const RPC: &str = "http://127.0.0.1:8545";
+        const RELAYER_KEY: &str =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        const OWNER_KEY: &str =
+            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+        const OWNER_ADDR: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let contract_artifacts_dir = format!(
+            "{}/../../../artifacts/contracts",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let jwks_url = spawn_jwks_server().await;
+        let jwks = jwks_url.clone();
+        let db = database_url.to_string();
+        let artifacts_dir = contract_artifacts_dir.clone();
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some(db.clone()),
+                "REDIS_URL" => Some("redis://localhost:6379".to_string()),
+                "SUPABASE_JWKS_URL" => Some(jwks.clone()),
+                "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
+                "SEPOLIA_RPC_URL" => Some(RPC.to_string()),
+                "RELAYER_PRIVATE_KEY" => Some(RELAYER_KEY.to_string()),
+                "OWNER_PRIVATE_KEY" => Some(OWNER_KEY.to_string()),
+                "CHAIN_ID" => Some("31337".to_string()),
+                "CONTRACT_ARTIFACTS_DIR" => Some(artifacts_dir.clone()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let auth_ctx = Some(Arc::new(AuthContext::new(
+            jwks_url,
+            config.supabase_issuer.clone(),
+            config.supabase_audience.clone(),
+        )));
+        let state = AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+            auth: auth_ctx,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let election = ElectionRepo::create(
+            &pool,
+            &NewElection {
+                name: format!("p11 route deploy {admin_id}"),
+                merkle_tree_depth: 4,
+                candidates: vec![
+                    "A".to_string(),
+                    "B".to_string(),
+                    "C".to_string(),
+                    "D".to_string(),
+                    "E".to_string(),
+                ],
+                registration_end_time: now + Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+
+        let artifact_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO zk_artifacts \
+                 (circuit_id, version, backend, merkle_tree_depth, num_candidates, \
+                  wasm_uri, zkey_uri, verification_key_uri, solidity_verifier_uri, sha256, manifest) \
+             VALUES ($1, $2, 'circom', 4, 5, $3, $4, $5, $6, $7, $8) RETURNING id",
+        )
+        .bind("votecheck")
+        .bind(format!("route-deploy-{admin_id}"))
+        .bind("gs://bucket/circuits/votecheck/v1/VoteCheck.wasm")
+        .bind("gs://bucket/circuits/votecheck/v1/circuit_final.zkey")
+        .bind("gs://bucket/circuits/votecheck/v1/verification_key.json")
+        .bind("gs://bucket/circuits/votecheck/v1/Groth16Verifier_4_5.sol")
+        .bind("0".repeat(64))
+        .bind(serde_json::json!({
+            "publicSignalCount": 4,
+            "publicSignals": ["root", "candidateIndex", "nullifierHash", "election_id"]
+        }))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{}/setZkDeploy", election.id),
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "setZkDeploy failed: {json}");
+        assert_eq!(json["success"], true);
+        let contract_address = json["contractAddress"].as_str().unwrap();
+        let verifier_address = json["verifierAddress"].as_str().unwrap();
+        assert!(contract_address.starts_with("0x"));
+        assert!(verifier_address.starts_with("0x"));
+
+        let row: (Option<String>, Option<String>, String) = sqlx::query_as(
+            "SELECT contract_address, verifier_address, state FROM elections WHERE id = $1",
+        )
+        .bind(election.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0.as_deref(), Some(contract_address));
+        assert_eq!(row.1.as_deref(), Some(verifier_address));
+        assert_eq!(row.2, "contract_deployed");
+
+        let deployment: (uuid::Uuid, i64, String) = sqlx::query_as(
+            "SELECT zk_artifact_id, chain_id, deploy_tx_hash \
+             FROM contract_deployments WHERE election_id = $1",
+        )
+        .bind(election.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(deployment.0, artifact_id);
+        assert_eq!(deployment.1, 31337);
+        assert!(deployment.2.starts_with("0x"));
+
+        let chain_config = zkvote_chain::ChainConfig {
+            rpc_url: RPC.to_string(),
+            relayer_private_key: RELAYER_KEY.to_string(),
+        };
+        let onchain =
+            zkvote_chain::connect_election(&chain_config, contract_address.parse().unwrap())
+                .unwrap();
+        assert_eq!(
+            onchain.owner().await.unwrap(),
+            OWNER_ADDR.parse::<alloy::primitives::Address>().unwrap()
+        );
+
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{}/setZkDeploy", election.id),
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "CONFLICT");
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM zk_artifacts WHERE id = $1")
+            .bind(artifact_id)
             .execute(&pool)
             .await
             .unwrap();
@@ -900,6 +1439,120 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(json["error"], "ALREADY_FINALIZED");
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn finalize_rejects_superseded_elections_before_chain_side_effects() {
+        use auth::token::test_support::*;
+        use time::{Duration, OffsetDateTime};
+        use zkvote_db::repos::{ElectionRepo, NewElection};
+
+        const RELAYER_KEY: &str =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        const OWNER_KEY: &str =
+            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let jwks = jwks_url.clone();
+        let db = database_url.to_string();
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some(db.clone()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "SUPABASE_JWKS_URL" => Some(jwks.clone()),
+                "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
+                "SEPOLIA_RPC_URL" => Some("http://127.0.0.1:1".to_string()),
+                "RELAYER_PRIVATE_KEY" => Some(RELAYER_KEY.to_string()),
+                "OWNER_PRIVATE_KEY" => Some(OWNER_KEY.to_string()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let state = AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+            auth: Some(Arc::new(AuthContext::new(
+                jwks_url,
+                config.supabase_issuer.clone(),
+                config.supabase_audience.clone(),
+            ))),
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let pool = state.pg.clone();
+        let now = OffsetDateTime::now_utc();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let election = ElectionRepo::create(
+            &pool,
+            &NewElection {
+                name: format!("p12 superseded {admin_id}"),
+                merkle_tree_depth: 4,
+                candidates: vec!["A".to_string(), "B".to_string()],
+                registration_end_time: now + Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE elections SET contract_address = $2, superseded_at = $3 WHERE id = $1")
+            .bind(election.id)
+            .bind("0x0000000000000000000000000000000000000001")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let vote_end = (now + Duration::hours(2)).format(&Rfc3339Fmt).unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{}/finalize", election.id),
+            &admin_token,
+            serde_json::json!({ "voteEndTime": vote_end }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ELECTION_SUPERSEDED");
+
+        let job_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM finalization_jobs WHERE election_id = $1")
+                .bind(election.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(job_count, 0, "must reject before creating finalization job");
+
+        let state_after: String = sqlx::query_scalar("SELECT state FROM elections WHERE id = $1")
+            .bind(election.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state_after, "draft");
 
         sqlx::query("DELETE FROM elections WHERE id = $1")
             .bind(election.id)
@@ -1488,6 +2141,13 @@ mod tests {
         )
         .await
         .unwrap();
+        let state_after_finalize: String =
+            sqlx::query_scalar("SELECT state FROM elections WHERE id = $1")
+                .bind(election.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state_after_finalize, "voting_active");
         let (status, json) = post_json(
             routes::router(state.clone()),
             &path,
@@ -1513,6 +2173,14 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "complete failed: {json}");
+        let (completed, state_after_complete): (bool, String) =
+            sqlx::query_as("SELECT completed, state FROM elections WHERE id = $1")
+                .bind(election.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(completed);
+        assert_eq!(state_after_complete, "completed");
         let (status, json) = post_json(
             routes::router(state.clone()),
             &path,
