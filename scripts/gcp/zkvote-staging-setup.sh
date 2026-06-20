@@ -186,6 +186,22 @@ gcloud storage buckets update "gs://${BUCKET}" \
 PROJECT_ID="${PROJECT_ID}" BUCKET="${BUCKET}" CONFIRM_COSTS="${CONFIRM_COSTS}" \
   bash "${SCRIPT_DIR}/seed-artifacts.sh"
 
+# A newly-created service account propagates across GCP IAM asynchronously, so an
+# immediate add-iam-policy-binding can fail with "does not exist". retry() wraps
+# the eventually-consistent IAM calls with bounded backoff.
+retry() {
+  local n=0 max=10 delay=6
+  until "$@"; do
+    n=$((n + 1))
+    if [[ "${n}" -ge "${max}" ]]; then
+      echo "retry: still failing after ${max} attempts: $*" >&2
+      return 1
+    fi
+    echo "retry ${n}/${max} (waiting ${delay}s): $*" >&2
+    sleep "${delay}"
+  done
+}
+
 if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud iam service-accounts create "${SERVICE_ACCOUNT}" \
     --project "${PROJECT_ID}" \
@@ -193,8 +209,14 @@ if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" --project "
     --quiet
 fi
 
+# Wait for the SA to be resolvable before binding roles to it (create->bind race).
+for _ in $(seq 1 15); do
+  gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" --project "${PROJECT_ID}" >/dev/null 2>&1 && break
+  sleep 4
+done
+
 for role in roles/cloudsql.client roles/logging.logWriter roles/monitoring.metricWriter; do
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
     --role "${role}" \
     --quiet >/dev/null
@@ -206,7 +228,7 @@ done
 # would let a compromised --allow-unauthenticated instance overwrite/delete
 # proving artifacts (invariant #7 risk). Artifact SEEDING runs under the
 # operator's own credentials (seed-artifacts.sh below), not this runtime SA.
-gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+retry gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
   --role roles/storage.objectViewer \
   --quiet >/dev/null
@@ -350,7 +372,7 @@ secrets=(
 # secrets (audit H2 / architecture review AR-L5).
 for secret_name in "${secrets[@]}"; do
   ensure_secret "${secret_name}"
-  gcloud secrets add-iam-policy-binding "${secret_name}" \
+  retry gcloud secrets add-iam-policy-binding "${secret_name}" \
     --project "${PROJECT_ID}" \
     --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
     --role roles/secretmanager.secretAccessor \
