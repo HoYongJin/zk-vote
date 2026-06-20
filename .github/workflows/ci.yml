@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  contracts-and-node:
-    name: Hardhat + Node route tests
+  contracts-and-zk:
+    name: Hardhat + ZK/helper tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +23,9 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            server/package-lock.json
       - run: npm ci
-      - run: npm ci --prefix server
       - name: JavaScript syntax gate
-        run: find server scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 node --check
+        run: find scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 node --check
       - name: Shell syntax gate
         run: find scripts zk -name '*.sh' -print0 | xargs -0 bash -n
       - name: Deploy install policy gate (AR-H8)
@@ -44,7 +42,7 @@ jobs:
           fi
       - name: Circuit/contract schema gate (audit C1)
         run: bash scripts/ci/check-artifact-schema.sh
-      - name: Hardhat + helper/route tests
+      - name: Hardhat + helper tests
         run: npx hardhat test
 
   frontend:
@@ -147,12 +145,10 @@ jobs:
       # Blocking at critical severity for runtime dependencies; the full
       # report (all severities, dev deps) is informational below.
       - run: npm audit --omit=dev --audit-level=critical
-      - run: npm audit --omit=dev --audit-level=critical --prefix server
       - run: npm audit --omit=dev --audit-level=critical --prefix frontend
       - name: Full audit report (informational)
         run: |
           npm audit || true
-          npm audit --prefix server || true
           npm audit --prefix frontend || true
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo audit
