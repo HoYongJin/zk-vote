@@ -20,14 +20,14 @@ describe('apiBaseUrl utilities', () => {
   });
 
   test('normalizes configured API base URL trailing slashes', () => {
-    process.env.REACT_APP_API_BASE_URL = ' http://localhost:3001/api/ ';
-    expect(getApiBaseUrl()).toBe('http://localhost:3001/api');
+    process.env.REACT_APP_API_BASE_URL = ' http://localhost:8080/api/ ';
+    expect(getApiBaseUrl()).toBe('http://localhost:8080/api');
   });
 
   test('resolves server-provided API paths against a separate API origin', () => {
-    process.env.REACT_APP_API_BASE_URL = 'http://localhost:3001/api';
+    process.env.REACT_APP_API_BASE_URL = 'http://localhost:8080/api';
     expect(resolveApiPath('/api/zkp-files/build_4_5/circuit_final.zkey')).toBe(
-      'http://localhost:3001/api/zkp-files/build_4_5/circuit_final.zkey'
+      'http://localhost:8080/api/zkp-files/build_4_5/circuit_final.zkey'
     );
   });
 
@@ -39,9 +39,9 @@ describe('apiBaseUrl utilities', () => {
   });
 
   test('resolves artifact paths only through /api/zkp-files', () => {
-    process.env.REACT_APP_API_BASE_URL = 'http://localhost:3001/api';
+    process.env.REACT_APP_API_BASE_URL = 'http://localhost:8080/api';
     expect(resolveArtifactApiPath('api/zkp-files/build_4_5/circuit_final.zkey')).toBe(
-      'http://localhost:3001/api/zkp-files/build_4_5/circuit_final.zkey'
+      'http://localhost:8080/api/zkp-files/build_4_5/circuit_final.zkey'
     );
   });
 
