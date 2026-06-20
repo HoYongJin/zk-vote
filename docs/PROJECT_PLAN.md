@@ -1,1315 +1,784 @@
 # zk-vote End-to-End Project Plan
 
+> **Revision 2026-06-20.** This revision integrates three migration workstreams into one
+> phased plan: **(A)** complete Node→Rust backend cutover (the legacy `server/` is deleted,
+> Rust is the sole API), **(B)** Supabase Postgres → Cloud SQL Postgres data ETL, and
+> **(C)** Supabase Auth (GoTrue) → **GCP Identity Platform (GCIP)** identity migration.
+> It **supersedes** the prior "keep Supabase Auth" direction (old `PROJECT_PLAN.md` §2 /
+> `docs/TECH_STACK.md` §auth). See §0 Decision Record. The complete-Node-deletion code steps
+> are specified separately in `docs/superpowers/specs/2026-06-19-node-to-rust-migration-design.md`
+> and referenced here as the codebase precondition for the cutover.
+
+## 0. Auth & Cloud Migration Decision Record (2026-06-20)
+
+### 0.1 Decision
+
+Migrate the identity provider from **Supabase Auth → GCP Identity Platform (GCIP)** — the
+email/password provider, with **email verification enforced**. The Rust JWKS verifier is
+**reused unchanged** and repointed by environment to Google's `securetoken` JWKS. Admin and
+voter authority stay **DB-derived from the verified `email` claim** (no GCIP custom-claim
+authorization in v1).
+
+| Setting | Supabase (old) | GCIP (new) |
+|---|---|---|
+| Issuer (`iss`) | `{SUPABASE_URL}/auth/v1` | `https://securetoken.google.com/<PROJECT_ID>` |
+| Audience (`aud`) | `authenticated` | `<PROJECT_ID>` (bare project id) |
+| JWKS URL | `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` | `https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com` |
+| `email_verified` | `user_metadata.email_verified` (fallback) | **top-level** boolean (already read by `token.rs`) |
+| Password hash | bcrypt `$2a/$2b` | imported verbatim via `importUsers algorithm:'BCRYPT'` |
+| Signing alg | RS256 | RS256 (verifier already supports it) |
+
+> ⚠️ **Do NOT** point the JWKS URL at the `/robot/v1/metadata/x509/` endpoint — it returns PEM
+> certs the `KeySet` parser rejects. Use the `/service_accounts/v1/jwk/` (JWK `n`/`e`) URL only.
+
+### 0.2 Rationale (why GCIP over the alternatives)
+
+GCIP is the lowest-risk swap that keeps the entire existing trust model intact: the Rust
+verifier already does RS256 via `DecodingKey::from_rsa_components`; invariant #8 is preserved
+natively because GCIP surfaces a **top-level `email_verified`** and does **not** autoconfirm
+password sign-ups; bcrypt hashes migrate verbatim (no voter reset); pricing is effectively
+zero (**50,000 MAU free** for email/password — re-verify on the official pricing page before any
+budget statement); and it stays inside the already-scripted GCP project and Secret Manager
+cost-gate. The only unavoidable new surface is the frontend SDK rewrite (Supabase JS → Firebase
+Auth Web SDK).
+
+| Alternative | Pro | Con (why not v1) |
+|---|---|---|
+| **Keep Supabase Auth**, move only data to Cloud SQL | Zero auth/frontend change; `sub` UUIDs unchanged | Leaves a Supabase vendor + billing surface in the critical path; contradicts the full-GCP goal |
+| **Keycloak on Cloud Run** | No per-MAU cost, full claim control, OIDC JWKS drop-in | You operate a stateful IdP (own Postgres, poor scale-to-zero fit, patching); manual password import |
+| **Ory Kratos/Hydra** or **backend-as-IdP** | Cloud-native OSS / zero external dep | Kratos is headless (build all login/verify/reset UI); backend-as-IdP re-introduces password/verify/reset/key-rotation security surface + a fresh audit |
+
+### 0.3 Identity-keying resolution (the load-bearing fact)
+
+Identity is **MIXED, email-dominant**. The `email` claim is the primary authorization join key
+(admin promotion via `admin_invitations.email`; voter eligibility via the `voters.email`
+allowlist — invariant #8). **But** the Supabase user UUID (`sub`) is *also* persisted and
+load-bearing: it is `admins.id` (PK) and `voters.user_id`, the join key for post-registration
+voter views (`list_voting_for_user` / `list_completed_for_user`) and the AR-H6 re-bind
+ownership check. The Rust extractor parses `sub` via `Uuid::parse_str`
+(`crates/api/src/auth/mod.rs:90-92`).
+
+GCIP's native uid is a 28-char string, **not** a UUID — an unmodified GCIP token would `401`
+on every request *and* match no DB row. **Resolution adopted:** at `importUsers` time set each
+migrated user's **GCIP uid = their existing Supabase UUID string**. This keeps `sub` a UUID,
+leaves `CurrentUser.id: Uuid`, `admins.id`, `voters.user_id`, the `(election_id, user_id)`
+UNIQUE constraint, and the `user_secret_commitment` binding **all unchanged** — no schema
+change, no DB remap, no voter re-registration. Any user created post-import via normal GCIP
+sign-up gets a non-UUID uid and would `401`; therefore **all identities must be provisioned
+with UUID uids** (import or scripted), or the invasive fallback (change `CurrentUser.id` to
+`String` + migrate `admins.id`/`voters.user_id` column types + a remap table) is required.
+
+### 0.4 Scope sign-off & invariants
+
+- The IdP swap **overrides** the documented "keep Supabase Auth" decision; `docs/TECH_STACK.md`
+  and `CLAUDE.md` invariant #8 wording (`Supabase email-confirmation` → `IdP email-verification`)
+  are a documentation follow-up tracked in Phase 0/19.
+- **Process invariants (unchanged):** `main` stays frozen (no live-deploy push); enabling GCIP,
+  the user import, the GCP infra standup, and the Cloud SQL ETL are all **cost-gated**
+  (`CONFIRM_COSTS=yes`) and require **explicit user approval**; legacy AWS workflows stay
+  `workflow_dispatch`-gated; never commit real secrets (Firebase Admin SA JSON + Supabase creds
+  are gitignored).
+
+---
+
 ## 1. Goal
 
-Build zk-vote as a production-oriented zero-knowledge voting system with this
+Build zk-vote as a production-oriented zero-knowledge voting system with this **GCP-native**
 target architecture:
 
 ```text
-React frontend
-  -> Rust API backend
-    -> PostgreSQL
-    -> Redis
-    -> ZK artifact storage
-    -> Ethereum relayer
+React frontend (Firebase Auth Web SDK / GCIP login)
+  -> Rust API backend (axum, sole backend; legacy Node deleted)
+    -> Cloud SQL PostgreSQL (zkvote_app DML role; zkvote_migrator DDL role)
+    -> Memorystore Redis (locks, short-lived proof tickets)
+    -> GCS ZK artifact storage
+    -> Ethereum relayer (hot key) / owner key (cold)
       -> VotingTally + Groth16 verifier contracts
+  Identity: GCP Identity Platform (email/password, email-verification enforced)
+            JWT validated in Rust by JWKS/issuer/audience (config-swap from Supabase)
 ```
 
-The current Node/Express backend remains the reference implementation until the
-Rust backend reaches verified route parity. The migration must preserve the
-existing public API behavior where possible, while tightening lifecycle state,
-input validation, race handling, artifact integrity, and deployment operations.
+The migration must preserve the existing public API behavior and the privacy/integrity model
+while retiring every Supabase and Node dependency from the runtime path.
 
-## 2. Current Baseline
+## 2. Current Baseline (as of 2026-06-20)
 
-Already present in the repository:
+**Implementation + hardening are done; the remaining work is the cloud rollout + the auth/IdP
+migration.** On branch `codex/phase1-c1-h1-circuit-contract-v2`:
 
-- Node/Express backend with election creation, voter allowlisting,
-  registration, finalization, proof ticket issue, vote submission, and
-  completion routes.
-- React frontend using Supabase Auth and browser-side proof generation.
-- Solidity `VotingTally` and generated Groth16 verifier contracts.
-- Circom/snarkjs circuit setup scripts and generated artifacts.
-- Local Postgres and Redis via Docker Compose.
-- GCP staging bootstrap script for Cloud SQL, Memorystore Redis, GCS artifact
-  bucket, Secret Manager, VPC connector, and service account.
-- Rust workspace scaffold with `/healthz`, `/readyz`, DB migration, and base
-  crates.
+- **Rust backend has full 16-route parity** with Node (anonymous `submit`, `proof`, `finalize`,
+  `setZkDeploy`, artifacts, admin/voter lists) + a Phase 5–13 integration-test suite.
+- **A full adversarial security audit ran (2026-06-19) and 14 fixes landed**, all gates green
+  (`docs/SECURITY_AUDIT_2026-06.md`). The Rust `FixedMerkleTree` is verified **bit-exact** with
+  the circuit/JS root.
+- Local Postgres + Redis via Docker Compose; GCP staging bootstrap script
+  (`scripts/gcp/zkvote-staging-setup.sh`) for Cloud SQL, Memorystore, GCS, Secret Manager, VPC
+  connector, service account.
+- ZK toolchain (Circom/snarkjs), `VotingTally` + Groth16 verifier (`uint256[4]`,
+  `nPublic = 4`), beacon-finalization design.
 
-Security audit baseline:
+**Not yet executed (the forward work this plan covers):**
 
-- `audit.md` is the current security review source until it is promoted to
-  `docs/SECURITY_REVIEW.md`.
-- Current code is suitable for local development/demo only, not staging or
-  production election use.
-- Audit blockers C1/H1/H2 must be closed before any staging E2E claim:
-  - C1: `election_id` is private in the circuit and is not checked on-chain.
-  - H1: `pathIndices` lacks boolean constraints in the Merkle proof circuit.
-  - H2: backend generates, stores, and returns plaintext voter secrets.
-- Audit blockers H3/H4 must be closed before deployment/finalization can be
-  treated as operationally safe.
-- Audit blocker H5 (admin invitations are never consumed) must be closed before
-  invitation-based admin provisioning is relied upon.
-- Medium audit items M1-M13 form the staging-readiness backlog; the subset that
-  blocks staging safety is pulled into the Phase 1 rebaseline (see Phase 1), and
-  the remainder follows the critical/high blockers.
+1. **Node→Rust code deletion** — relocate `server/zkp` → `zk/`, vendor ETL deps, delete `server/`
+   (spec: `docs/superpowers/specs/2026-06-19-node-to-rust-migration-design.md`).
+2. **GCP Identity Platform standup + Supabase→GCIP user migration** (NEW — this revision).
+3. **Frontend auth SDK swap** (Supabase JS → Firebase Auth Web SDK) (NEW).
+4. **GCP staging infra standup + Secret Manager repoint to GCIP** (Phase 16-original, never run).
+5. **Cloud SQL ETL** (`scripts/migration/etl-supabase-to-postgres.js`, never run).
+6. **Cutover + production**.
 
-Known direction:
+Nothing runs on real GCP/AWS infra yet — the system is local-demo/dev-only.
 
-- Production ZK path: Circom/Groth16.
-- Noir: separate POC only.
-- Auth: keep Supabase Auth, validate JWT/JWKS in Rust.
-- Database: PostgreSQL.
-- Cache/lock/tickets: Redis.
-- Chain: Solidity + Ethereum-compatible relayer.
-- Plan ordering is security-first: ZK soundness and privacy repairs precede
-  Rust route parity, GCP staging, and cutover work.
+### Known direction (revised)
+
+- Production ZK path: Circom/Groth16. Noir: separate POC only.
+- **Auth: migrate Supabase Auth → GCP Identity Platform; validate JWT/JWKS in Rust** (§0).
+- **Database: Cloud SQL PostgreSQL** (data moved from Supabase via Phase-20 ETL).
+- Cache/lock/tickets: Memorystore Redis.
+- Chain: Solidity + Ethereum-compatible relayer (owner key ≠ relayer key).
+- **Backend: Rust only** — the legacy Node `server/` is deleted, not kept as a reference copy.
+- Plan ordering is security-first and dependency-ordered; each phase has a verification gate.
 
 ## 3. Project Principles
 
-- Preserve Node route behavior until Rust parity is proven.
-- Treat the current Node backend as a behavioral reference, not as code to copy
-  directly.
-- Keep submit anonymous. Do not require JWT on final vote submission unless the
-  privacy model is redesigned.
-- Make election lifecycle explicit with a state machine instead of inferred
-  boolean and timestamp combinations.
-- Store all durable state in Postgres; use Redis for locks, short-lived proof
-  tickets, and runtime coordination only.
-- Every phase must have a concrete verification gate before the next phase can
-  depend on it.
-- No Cloud Run staging E2E, live AWS deployment, or production-candidate claim
-  may proceed while any Critical or High item in `audit.md` remains open.
-- Treat audit findings as planning inputs, not as optional post-production
-  hardening.
+- Preserve the public API contract and the privacy/integrity invariants across all three
+  workstreams; the frontend UX must not change for voters/admins.
+- **The IdP is a configuration swap, not an authorization rewrite:** authority stays DB-derived
+  from the verified `email` claim, never from a token role/custom claim.
+- Keep submit anonymous. Do not require JWT on final vote submission (invariant #1).
+- Make election lifecycle explicit via the state machine; store durable state in Postgres; use
+  Redis only for locks, short-lived proof tickets, and runtime coordination.
+- Every phase has a concrete verification gate before the next phase depends on it.
+- No GCP/AWS cost-incurring action (GCIP enable, user import, infra standup, ETL, deploy) runs
+  without `CONFIRM_COSTS=yes` + explicit user approval; `main` stays frozen.
+- Treat audit findings as planning inputs; no staging/production claim while any Critical/High
+  in `audit.md` / `docs/SECURITY_AUDIT_2026-06.md` is open.
 
 ## 4. Target E2E Product Flow
 
-This flow describes the post-audit target. The current implementation does not
-yet satisfy the ZK soundness and privacy requirements in this section.
+This flow is the post-migration target (GCIP auth, Rust backend, Cloud SQL).
 
 ### Admin Flow
 
-1. Admin signs in through Supabase.
+1. Admin signs in through **GCP Identity Platform** (email/password; email must be verified).
 2. Admin creates an election draft.
 3. Backend validates dates, candidates, Merkle depth, and initial state.
-4. ZK artifacts are selected or generated for `(depth, candidate_count)`.
-5. Verifier and `VotingTally` contracts are deployed or linked from an artifact
-   manifest whose hashes match the stored election artifact version.
-6. Admin opens registration.
-7. Admin allowlists voters by email.
-8. Eligible voters complete registration using a client-held secret and bind
-   only a secret commitment/leaf to durable backend state.
-9. Admin finalizes registration after the deadline or after an explicit
-   fail-closed state transition that prevents further registration.
-10. Backend snapshots voters, computes Merkle root, configures contract, and
-    marks voting active.
-11. After voting ends, admin completes the election.
-12. Backend reads or aggregates final tally and marks the election completed.
+4. ZK artifacts are selected/generated for `(depth, candidate_count)`.
+5. Verifier and `VotingTally` are deployed/linked from an artifact manifest whose hashes match
+   the stored election artifact version.
+6. Admin opens registration and allowlists voters **by email**.
+7. Eligible voters register with a client-held secret, binding only a secret commitment/leaf.
+8. Admin finalizes after the deadline / explicit fail-closed transition.
+9. Backend snapshots voters, computes the Merkle root, configures the contract, marks voting active.
+10. After voting ends, admin completes the election; backend reads/aggregates the final tally.
 
 ### Voter Flow
 
-1. Voter signs in through Supabase.
-2. Frontend lists elections where the voter can register.
-3. Voter registers for an allowlisted election.
+1. Voter signs in through **GCP Identity Platform**.
+2. Frontend lists registerable elections (keyed on the verified email).
+3. Voter registers (binds `voters.user_id = token sub`, a UUID).
 4. Frontend lists active finalized elections.
-5. Voter requests Merkle proof and one-time submit ticket.
-6. Frontend generates the ZK proof locally using the client-held secret.
-7. Voter submits proof, public signals, candidate index, and ticket.
-8. Backend validates ticket binding, proof shape, public signals, candidate
-   range, nullifier uniqueness, and contract preflight.
-9. Backend relays the vote transaction.
-10. The application surfaces results only through the completed election
-    surface. Note (accepted v1 property, AR-L3): on-chain data is public —
-    running tallies (`voteCounts`) and per-vote candidate choices (calldata,
-    `VoteCast`) are readable during voting by anyone with chain access, and a
-    voter holding their secret can prove how they voted. Hiding these would
-    require a commit-reveal or aggregated-tally protocol redesign, which is
-    out of scope for v1 and recorded in the Phase 18 threat model.
+5. Voter requests a Merkle proof + one-time submit ticket (ticket binds `(election_id, root)`
+   ONLY — never the nullifier, AR-H5).
+6. Frontend generates the ZK proof locally from the client-held secret.
+7. Voter submits proof, public signals, candidate index, and ticket — **no Authorization header**.
+8. Backend validates ticket binding, proof/signal shapes, candidate range, root, nullifier
+   uniqueness, and contract preflight, then relays the vote.
+9. Results surface only through the completed-election view.
+
+> Accepted v1 property (AR-L3): on-chain data is public — running tallies and per-vote choices
+> are readable during voting, and a secret-holder can prove how they voted. Hiding these needs a
+> commit-reveal / aggregated-tally redesign, out of scope for v1.
 
 ## 5. Phase Plan
 
-### Phase 0. Project Governance and Scope Lock
-
-Objective:
-
-Define what is in scope for the first production-shaped version and prevent
-architecture drift while migration work is underway.
-
-Tasks:
-
-- Keep `AGENT.md` as the agent-facing repository map.
-- Keep this file as the execution plan.
-- Create a short API compatibility matrix for every current Node route.
-- Identify which Node routes are admin-only, voter-authenticated, anonymous, or
-  public.
-- Define environments: local, staging, future production.
-
-Deliverables:
-
-- `docs/PROJECT_PLAN.md`.
-- `docs/API_COMPATIBILITY.md`.
-- Environment naming convention documented for local and staging.
-
-Verification gate:
-
-- Every existing route in `server/index.js` appears in the compatibility matrix.
-- Each route has owner, auth mode, request body, response shape, and error
-  behavior notes.
-
-Definition of done:
-
-- The team can answer whether a Rust route is compatible with Node without
-  reading the Node implementation from scratch.
-
-### Phase 1. Audit Blocker Rebaseline
-
-Objective:
-
-Close the security and privacy blockers identified in `audit.md` before
-staging, Rust route parity, or production-shaped deployment work depends on the
-current ZK and lifecycle design.
-
-This phase is a hard gate. It is intentionally placed before local/Rust
-expansion because C1/H1/H2 invalidate the current voting security model, while
-H3/H4 make setup/finalization unsafe under realistic retry and failure modes.
-
-Tasks:
-
-- Promote or copy `audit.md` to `docs/SECURITY_REVIEW.md` when the report is
-  ready to become the canonical security-review artifact.
-- Fix C1/H1 with a circuit/contract v2:
-  - expose `election_id` as a public signal or public output;
-  - add boolean constraints for every `pathIndices[i]`;
-  - regenerate wasm, zkey, verification key, and Solidity verifier artifacts;
-  - update `VotingTally`/`IVerifier` to the new public input length/order;
-  - update Node submit validation, frontend submit payload handling, and tests
-    to the new public signal shape.
-- Fix H2 by redesigning the voter secret model:
-  - client generates and stores the high-entropy voter secret;
-  - backend stores only a leaf/commitment needed for Merkle membership;
-  - `/proof` never returns plaintext `user_secret`;
-  - backend no longer derives nullifiers from server-held secrets.
-- Fix H3/H4 with durable lifecycle safety:
-  - add `/setZkDeploy` lock or durable deployment marker;
-  - bind elections to artifact manifests and hashes;
-  - record `finalizing` or equivalent fail-closed state in Postgres before
-    on-chain configuration;
-  - add finalize lock fencing or lock renewal;
-  - revalidate the voter snapshot before DB sync after on-chain success.
-- Fix M13 registration-lock robustness (AR-L10): raise the `addUserSecret`
-  registration lock timeout above worst-case tree work, and recheck lock
-  ownership (fencing token) immediately before the `Voters` update commits.
-- Fix H5 admin provisioning before relying on invitations:
-  - implement invitation acceptance or auth-time promotion from
-    `AdminInvitations`;
-  - fail visibly if existing-user promotion fails.
-- Fix M1/M12 vote-submit UX and replay behavior:
-  - consume tickets only after validation through a ticket-scoped Redis lock or
-    Lua read-validate-consume script;
-  - handle frontend submit failures and clear loading state.
-- Fix M2/M4/M5 artifact and setup readiness:
-  - provision `.ptau` files with checksum verification;
-  - install or document `circom`;
-  - enforce candidate-count limits and duplicate-candidate rejection;
-  - bind generated artifacts to circuit version/hash, not only
-    `(depth, candidates)`.
-- Fix M9/M10/M11 deployment safety before staging:
-  - scope Secret Manager access per `zkvote-staging-*` secret;
-  - write Cloud SQL database URL secret immediately after SQL user creation;
-  - gate or disable live AWS EC2/S3/CloudFront auto-deploy workflows from main.
-
-Deliverables:
-
-- `docs/SECURITY_REVIEW.md` or an explicit statement that `audit.md` remains
-  the temporary canonical review.
-- Circuit/contract v2 artifacts and contracts.
-- Updated Node/frontend proof-submit boundary.
-- Client-held-secret registration/proof design.
-- Durable deployment/finalization state design and implementation.
-- Ticket consume atomicity implementation.
-- CI tests covering the fixed failure modes.
-
-Verification gate:
-
-- A registered voter cannot produce two accepted votes by varying
-  `election_id`.
-- A proof with non-boolean Merkle path indices is rejected by the verifier.
-- `/proof` responses do not include plaintext voter secrets.
-- Successful proof/submit path works with the new public signal shape.
-- MockVerifier or equivalent tests cover success, duplicate nullifier,
-  wrong-election public signal, wrong root, and invalid candidate cases.
-- Concurrent `/setZkDeploy` requests cannot generate mismatched artifacts or
-  double-advance election deployment state.
-- Registration fails while finalization is durably in progress.
-- Finalization can recover from on-chain-success/DB-failure scenarios.
-- Ticket replay, ticket mismatch, relayer preflight failure, and frontend
-  submit failure are tested.
-- GCP IAM and AWS CD gates reflect the audit mitigations.
-
-Definition of done:
-
-- All Critical and High findings in `audit.md` are closed or explicitly
-  reclassified with code-backed evidence.
-- Medium findings that block staging safety (M1, M2, M3, M4, M5, M9, M10, M11,
-  M12, M13) have concrete fixes or are intentionally tracked as staging
-  blockers.
-- Only after this phase can later Rust, staging, and cutover milestones make
-  security or readiness claims.
-
-### Phase 2. Local Development Foundation
-
-Objective:
-
-Make local development reproducible for backend, DB, Redis, contracts, and ZK
-tooling.
-
-Tasks:
-
-- Keep Docker Compose for Postgres 16 and Redis 7.
-- Keep `.env.example` aligned with Rust and Node local requirements.
-- Add a local setup command or script that runs infra smoke checks and DB
-  migrations.
-- Add Circom installation checks and `.ptau` provisioning instructions.
-- Keep `snarkjs` invocation aligned with local `node_modules/.bin/snarkjs` or
-  `npx`; do not require a global `snarkjs`.
-- Add Noir setup instructions without making Noir part of production v1.
-
-Deliverables:
-
-- Working `docker-compose.yml`.
-- Local smoke script.
-- Toolchain check script.
-- Local migration workflow.
-- `.ptau` acquisition/checksum instructions or script.
-
-Verification gate:
-
-```bash
-bash scripts/local/smoke.sh
-cd rust-backend && cargo fmt --check
-cd rust-backend && cargo test --workspace
-cd rust-backend && cargo clippy --workspace -- -D warnings
-```
-
-Definition of done:
-
-- A new developer can bring up Postgres, Redis, and the Rust API locally without
-  touching GCP, and can see exactly which ZK toolchain pieces are missing.
-
-### Phase 3. Data Model and Migration Hardening
-
-Objective:
-
-Make Postgres the durable source of truth for the future Rust backend.
-
-Tasks:
-
-- Review `rust-backend/migrations/0001_initial.sql` and
-  `0002_node_api_compatibility.sql` against actual Node data usage (audit M6:
-  the compatibility migration uses lowercase snake_case tables while Node uses
-  PascalCase PostgREST tables).
-- Add missing columns only if they are needed for route parity.
-- Add `updated_at` triggers or explicit repository-level update handling.
-- Add indexes for list pages and status transitions.
-- Define the canonical election state transitions.
-- Decide how existing Supabase table data maps into the new Postgres schema.
-- Decide whether Rust uses lowercase tables only, PascalCase compatibility
-  views, or quoted PascalCase tables for Node/PostgREST parity.
-- Resolve `elections.circuit_id` default/nullability before claiming Node route
-  compatibility (audit M7).
-- Decide whether field elements are stored as `text` with numeric checks or as
-  `numeric(78,0)` with explicit serialization rules (audit M8).
-- Define the Cloud SQL privilege model (AR-M3). Decision: no RLS in Cloud SQL
-  — PostgREST goes away and all access flows through the backend (the
-  frontend's remaining direct table reads are removed by AR-H4's `/api/me`).
-  Instead: separate a migration-owner role (DDL) from the runtime application
-  role, grant the runtime role only the DML it needs per table, and inventory
-  the current hosted-Supabase RLS posture being replaced so no anon-readable
-  surface is silently lost.
-
-Deliverables:
-
-- Finalized initial migration.
-- State transition documentation.
-- Migration notes for existing data, if any.
-- Node-to-Rust schema mapping decision for `Elections`/`Voters`/`Admins` and
-  submission tables.
-
-Verification gate:
+> **Status legend:** ✅ Done · 🟡 Partial (done for the old stack; has a delta for this revision) ·
+> 🆕 New / not started. Phases are dependency-ordered; numbers in **dependsOn** reference phases here.
+
+### Phase 0. Project Governance and Scope Lock — ✅ (record updated this revision)
 
-- Duplicate voter email per election is rejected.
-- Duplicate voter `user_id` per election is rejected.
-- Duplicate nullifier per election is rejected.
-- Invalid election state is rejected.
-- Invalid election date ordering is rejected.
-- Node-style election creation data can be represented without a
-  `circuit_id` not-null failure.
-- BigInt field elements round-trip byte-identically at the storage layer
-  (text + format CHECK; measured by `scripts/local/db-verify.sh`). The
-  API-level round-trip is re-verified when the Phase 13 routes exist
-  (AR-L11: the original wording was untestable at Phase 3).
-- The runtime database role cannot execute DDL; migrations run only under the
-  owner role.
-
-Definition of done:
-
-- The database enforces the core invariants even if an API bug is introduced.
-
-### Phase 4. Rust Backend Core
-
-Objective:
-
-Build the common Rust API foundation before porting business routes.
-
-Tasks:
-
-- Split `crates/api/src/main.rs` into modules:
-  - config
-  - error
-  - state
-  - routes
-  - middleware
-- Add typed application errors and JSON error responses.
-- Add request ID and structured tracing.
-- Add CORS configuration for local and staging origins.
-- Add graceful shutdown.
-- Add OpenAPI generation after route shapes stabilize.
+**Objective:** Lock v1 scope to the three integrated workstreams and record the IdP decision.
+
+**Tasks:**
+- Keep `AGENT.md` as the repo map and this file as the execution plan; record that it supersedes
+  the prior "keep Supabase Auth" direction (§0).
+- Refresh `docs/API_COMPATIBILITY.md` (every legacy Node route → Rust handler, auth mode, body,
+  response, error notes); annotate the Node column as legacy/superseded once `server/` is deleted.
+- Record the GCIP decision, rationale, alternatives, and identity-keying resolution (§0).
+- Name environments (local / staging / production); confirm cost-gates and `main`-freeze.
 
-Deliverables:
+**Verification gate:** every legacy route appears in the compatibility matrix; the IdP-swap
+decision and its override of the old plan / `TECH_STACK.md` are written down with sign-off.
+
+**Deltas for this revision:** update `docs/TECH_STACK.md` §auth and `CLAUDE.md` invariant #8
+wording (`Supabase email-confirmation` → `GCIP email-verification`) — tracked, applied in Phase 19.
 
-- Rust API module structure.
-- Shared error response format.
-- Tracing and request logging.
-- Health and readiness endpoints.
+### Phase 1. Audit Blocker Rebaseline — ✅
 
-Verification gate:
-
-```bash
-cd rust-backend && cargo fmt --check
-cd rust-backend && cargo test --workspace
-cd rust-backend && cargo clippy --workspace -- -D warnings
-curl http://127.0.0.1:18080/healthz
-curl -i http://127.0.0.1:18080/readyz
-```
-
-Definition of done:
-
-- New Rust routes can be added without each route re-solving config, error, DB,
-  Redis, and response conventions.
-
-### Phase 5. Auth and Authorization
-
-Objective:
-
-Keep Supabase Auth while moving authorization checks into Rust.
-
-Tasks:
-
-- Implement JWKS fetch and cache.
-- Verify JWT signature, issuer, audience, expiry, and subject.
-- Define `CurrentUser` extractor.
-- Implement admin authorization using the current admin source of truth.
-- Normalize email consistently at API boundaries.
-- Define which endpoints are anonymous by design.
-
-Deliverables:
-
-- Supabase JWT middleware.
-- Admin middleware.
-- Auth tests with valid, expired, malformed, and wrong-audience tokens.
-
-Verification gate:
-
-- Admin-only routes reject non-admin users.
-- Voter-authenticated routes reject missing or invalid JWTs.
-- Anonymous submit remains anonymous but still validates ticket and proof.
-
-Definition of done:
-
-- Rust can enforce the same or stricter auth behavior as Node without changing
-  the privacy model.
-
-### Phase 6. Repository and Domain Service Layer
-
-Objective:
-
-Separate storage, domain rules, and HTTP handlers before porting the lifecycle.
-
-Tasks:
-
-- Add repositories for:
-  - elections
-  - admins
-  - admin invitations
-  - voters
-  - submission tickets
-  - vote submissions
-  - artifacts
-  - contract deployments
-  - finalization jobs
-- Add domain services for:
-  - election state transition
-  - registration eligibility
-  - finalization eligibility
-  - vote submission validation
-  - completion eligibility
-- Add transaction helpers for multi-row state changes.
-
-Deliverables:
-
-- `zkvote-db` repository modules.
-- `zkvote-domain` service modules.
-- Unit tests for transition and validation rules.
-
-Verification gate:
-
-- Domain tests cover valid and invalid state transitions.
-- Repository tests cover unique constraints and transaction rollback.
-
-Definition of done:
-
-- HTTP route handlers become thin adapters over tested services.
-
-### Phase 7. Read-Only Rust API Parity
-
-Objective:
-
-Port low-risk list and detail surfaces first.
-
-Routes:
-
-- `GET /api/elections/registerable`
-- `GET /api/elections/finalized`
-- `GET /api/elections/completed`
-
-Tasks:
-
-- Match current frontend response shapes.
-- Add pagination or explicit no-pagination decision.
-- Preserve frontend-compatible field names during migration.
-- Add route-level tests with seeded DB state.
-
-Deliverables:
-
-- Read-only Rust route implementations.
-- Compatibility tests against documented Node response shapes.
-
-Verification gate:
-
-- Frontend can read from Rust for these routes behind the existing
-  `REACT_APP_API_BASE_URL` flag (AR-L9: the flag predates Phase 15; no
-  forward dependency remains).
-- Existing Node route behavior remains unchanged.
-
-Definition of done:
-
-- The first API surface can be switched without affecting election writes.
-
-### Phase 8. Election Creation and Admin Setup
-
-Objective:
-
-Port admin election setup while making date, candidate, and artifact validation
-strict.
-
-Routes:
-
-- `POST /api/elections/set`
-- `POST /api/elections/:election_id/setZkDeploy`
-- `POST /api/management/addAdmins`
-
-Tasks:
-
-- Validate ISO UTC date inputs.
-- Validate candidate list length and non-empty labels.
-- Enforce a product-supported maximum candidate count before any circuit setup.
-- Reject duplicate candidate labels after trimming.
-- Enforce Merkle depth limits.
-- Check artifact manifest and artifact hash availability before allowing
-  deploy/setup state.
-- Normalize admin emails.
-- Implement idempotent admin upsert.
-- Implement admin invitation acceptance or auth-time promotion before treating
-  invitations as a full admin provisioning flow.
-- Do not expose `/setZkDeploy` as a long-running, race-prone request without a
-  lock, durable deployment marker, or background job.
-
-Deliverables:
-
-- Rust create-election route.
-- Artifact selection/linking route.
-- Admin management route.
-- Tests for date normalization, invalid candidate lists, and duplicate admin
-  upsert.
-- Tests for candidate overflow, duplicate candidates, and invitation
-  acceptance/promotion failure.
-
-Verification gate:
-
-- Malformed dates are rejected.
-- Local `datetime-local` frontend values are converted to ISO strings before
-  reaching the backend.
-- Missing ZK artifacts block deployment setup.
-- Concurrent setup/deploy attempts are rejected, queued, or idempotently
-  returned without generating mismatched artifacts.
-
-Definition of done:
-
-- Admin can create a valid draft election in Rust and the resulting DB row can
-  drive the later lifecycle phases.
-
-### Phase 9. Voter Allowlist and Registration
-
-Objective:
-
-Port voter management and registration with race-safe locking.
-
-Routes:
-
-- `POST /api/elections/:election_id/voters`
-- `POST /api/elections/:election_id/register`
-
-Tasks:
-
-- Normalize allowlisted emails.
-- Recheck election state and registration window inside the DB transaction.
-- Recheck Redis/on-chain finalization markers before accepting registration.
-- Ensure one voter row can bind to only one `user_id`.
-- Preserve the post-audit privacy model:
-  - client generates and keeps the voter secret;
-  - backend stores only commitment/leaf material;
-  - backend never stores or returns plaintext `user_secret`.
-- Enforce Merkle capacity: reject allowlist additions and registrations once
-  the voter count would exceed `2 ** merkle_tree_depth`, with a typed
-  `OVER_CAPACITY` error, before tree construction can throw `Tree is full`
-  (architecture review AR-H2). Backport the same guard to the Node reference.
-- Design the voter secret lifecycle (AR-H6):
-  - authenticated commitment re-binding ("reset my registration") until
-    `registration_end_time`;
-  - secret export/import or passphrase-derived secret UX for device moves;
-  - explicit messaging that post-finalization secret loss is unrecoverable.
-- Add lock timeout behavior and tests.
-
-Deliverables:
-
-- Rust voter allowlist route.
-- Rust registration route.
-- Registration service tests.
-
-Verification gate:
-
-- Registration after finalization is rejected.
-- Registration after deadline is rejected.
-- Duplicate email allowlist is idempotent or returns a defined conflict.
-- Concurrent registration attempts cannot bind multiple users to one voter row.
-- Registration beyond `2 ** merkle_tree_depth` capacity is rejected with
-  `OVER_CAPACITY` before any tree build can throw.
-- A voter who lost their secret can re-bind a new commitment before
-  finalization and subsequently vote with it.
-- `/proof` can later be generated without the backend knowing the voter's
-  plaintext secret.
-
-Definition of done:
-
-- Voter registration is correct under deadline, finalization, and concurrency
-  pressure.
-
-### Phase 10. ZK Artifact Pipeline
-
-Objective:
-
-Make ZK artifact generation, storage, manifesting, and retrieval reliable.
-
-Tasks:
-
-- Define canonical artifact manifest JSON.
-- Store manifest in Postgres and artifact files in local/GCS storage.
-- Validate `.wasm`, `.zkey`, verification key, and Solidity verifier presence.
-- Add sha256 checks for every artifact.
-- Finalize every per-election zkey with a public random beacon
-  (`snarkjs zkey beacon`) and/or at least one independent phase-2 contributor;
-  publish the contribution transcript and gate on `snarkjs zkey verify`.
-  A single operator-run contribution with operator-known entropy is not
-  acceptable for staging or production elections (AR-H1).
-- Define the browser-facing proving-artifact retrieval surface that replaces
-  Node's `/api/zkp-files` static mount after cutover: a Rust route streaming
-  wasm/zkey from manifest/GCS storage, or signed URLs returned by `/proof`
-  (AR-M6).
-- Expose per-artifact sha256 from the manifest to clients, and have the
-  frontend verify fetched wasm/zkey hashes before proving — refuse to generate
-  a proof on mismatch (AR-M6; client-side trust ceiling for the H2 model).
-- Track circuit public signal schema, including election identity position and
-  expected public input length.
-- Treat the C1/H1-fixed circuit as production v1 for any new staging election.
-- Keep Circom as production v1.
-- Scaffold Noir POC separately so it cannot affect production artifact
-  selection.
-
-Deliverables:
-
-- Artifact manifest schema.
-- Artifact storage abstraction.
-- Local artifact import command.
-- GCS artifact upload/download command.
-- Artifact integrity tests.
-
-Verification gate:
-
-- Missing artifact file blocks election setup.
-- Hash mismatch blocks artifact use.
-- A zkey finalized without a beacon or independent contribution is rejected
-  for staging elections.
-- The frontend refuses to prove when the served wasm/zkey hash does not match
-  the manifest.
-- Public signal schema mismatch blocks artifact use.
-- Local and GCS artifact URI layouts match documented conventions.
-
-Definition of done:
-
-- A circuit version can be promoted from local generation to staging storage
-  without manual path edits.
-
-### Phase 11. Contract Deployment and Chain Integration
-
-Objective:
-
-Move contract deployment and relayer calls behind a typed Rust chain layer.
-
-Tasks:
-
-- Define chain configuration by environment.
-- Implement verifier deployment or lookup.
-- Implement `VotingTally` deployment.
-- Store deployment metadata in Postgres.
-- Add `configureElection` preflight and transaction submission.
-- Add transaction receipt polling and failure classification.
-- Enforce verifier/public-input compatibility with the circuit artifact
-  manifest.
-- Ensure `VotingTally` checks the public election identity before accepting a
-  proof.
-- Keep relayer private key only in Secret Manager or local `.env`.
-- Separate the contract owner key from the hot relayer key: pass an explicit
-  owner to the `VotingTally` constructor (or add two-step `transferOwnership`)
-  so the internet-exposed relayer key holds no `onlyOwner` privileges; define
-  rotation and relayer gas-balance monitoring (AR-M4).
-- Lifecycle policy decision (AR-M7): on-chain election parameters stay
-  immutable after `configureElection` — no extend/cancel/pause functions,
-  because a mid-election mutable owner is a larger governance risk than
-  immutability. Compensating controls: finalize-time duration bounds
-  (Phase 12) and a documented "supersede election" runbook — mark the
-  election superseded in the DB and create a replacement election row for the
-  new contract. The superseded row remains immutable and hidden from vote
-  flows.
-
-Deliverables:
-
-- `zkvote-chain` deployment and contract clients.
-- Deployment job or command.
-- Contract deployment repository integration.
-
-Verification gate:
-
-- Deployment cannot run without artifact manifest.
-- Duplicate deployment for the same election is rejected or idempotently
-  returned.
-- Failed transaction does not advance DB state.
-- A proof generated for another election cannot pass `submitTally`.
-- The hot relayer key cannot call `configureElection` on a freshly deployed
-  `VotingTally`.
-- A superseded election cannot accept app-relayed votes, and a replacement
-  election can be deployed without mutating the abandoned row.
-
-Definition of done:
-
-- Rust can deploy/link contracts and persist chain metadata without Node
-  scripts.
-
-### Phase 12. Finalization Worker
-
-Objective:
-
-Port finalization to a recoverable job flow instead of a single fragile request.
-
-Routes/jobs:
-
-- `POST /api/elections/:election_id/finalize`
-- `finalization_jobs` worker
-
-Tasks:
-
-- Acquire election lock.
-- Record durable `finalizing` state before accepting any on-chain side effect.
-- Recheck registration deadline and state.
-- Validate the requested voting end time at finalize: enforce a configurable
-  maximum voting duration (default 30 days) and require an explicit
-  confirmation field to exceed it, since the configured period is immutable
-  on-chain (AR-M7).
-- Snapshot registered voters.
-- Reject zero-voter finalization.
-- Select a circom-compatible Poseidon implementation (e.g. `light-poseidon` or
-  an iden3-parameterization crate) as an explicit decision record: the Rust
-  Merkle leaf/node/root computation must be bit-identical to the
-  circomlibjs/circom output or every proof becomes invalid (AR-H7).
-- Compute Merkle root from the snapshot.
-- Create a finalization job.
-- Submit on-chain `configureElection`.
-- Poll receipt.
-- Sync DB state only after on-chain success.
-- Record partial failures for retry.
-- Renew/fence locks or verify lock ownership before state-changing writes.
-- Revalidate the voter snapshot before syncing DB state after on-chain success.
-
-Deliverables:
-
-- Finalize route.
-- Finalization worker.
-- Retry-safe job model.
-- Tests for DB/on-chain partial failure.
-
-Verification gate:
-
-- Registration fails while finalization is in progress.
-- Finalize with a voting end time beyond the configured maximum duration is
-  rejected unless explicitly confirmed.
-- On-chain success with DB sync failure is recoverable.
-- DB state does not advance when on-chain configuration fails.
-- Late registrations cannot create a DB Merkle root that diverges from the
-  configured on-chain root.
-- Committed cross-language test vectors (fixed secrets -> leaf, root, path)
-  produce identical values in circomlibjs and the Rust Poseidon/Merkle
-  implementation.
-
-Definition of done:
-
-- Finalization is safe under retry, timeout, and concurrent registration
-  attempts.
-
-### Phase 13. Proof Ticket and Vote Submission
-
-Objective:
-
-Port the privacy-critical voting path with strict validation and replay
-protection.
-
-Routes:
-
-- `POST /api/elections/:election_id/proof`
-- `POST /api/elections/:election_id/submit`
-
-Tasks:
-
-- Issue single-use ticket bound to election and Merkle root. The ticket MUST
-  NOT bind or learn the nullifier: under the post-audit privacy model the
-  server must not learn a voter's nullifier at authenticated `/proof` time
-  (AR-H5).
-- Do not log or persist identity-to-ticket associations; treat the ticket as
-  the operator-side linkability ceiling pending the Phase 18 unlinkable
-  authorization decision (AR-M1).
-- Mitigate timing linkage (AR-M2): add client-side random submission jitter
-  within the ticket TTL, let the relayer queue (AR-M5) process submissions
-  without preserving issuance order, and do not retain `/proof` issuance
-  timestamps in logs beyond operational necessity. Residual correlation by a
-  global passive observer is accepted for v1 and measured in Phase 18.
-- Keep ticket expiry short.
-- Use a ticket-scoped Redis lock or Lua script for read-validate-consume
-  atomicity.
-- Validate proof and public signal shapes.
-- Validate public `election_id` against route, ticket, DB, and contract
-  election identity.
-- Validate candidate index range.
-- Validate public root against finalized election root.
-- Validate nullifier uniqueness against contract state (and durable submission
-  records); the ticket no longer carries a nullifier to compare against.
-- Use contract preflight before relaying.
-- Serialize relayer transaction sends behind a per-wallet queue or lock
-  (`tx.wait()` outside the serialized window) so concurrent submissions from
-  distinct voters cannot collide on nonces (AR-M5).
-- Reconcile front-run submissions: when the relayed transaction reverts with a
-  duplicate-nullifier error, re-check `usedNullifiers` on-chain and report
-  success-by-other-transaction instead of a failure (AR-L8).
-- Persist vote submission status and transaction hash.
-- Ensure failed relayer submission does not consume durable vote state
-  incorrectly.
-- Ensure frontend submit failures clear loading state and surface actionable
-  error details.
-
-Deliverables:
-
-- Proof route.
-- Submit route.
-- Submission ticket repository/service.
-- Vote submission service.
-- Route-level tests for malformed proof, malformed public signals, mismatch,
-  duplicate nullifier, expired ticket, and candidate overflow.
-
-Verification gate:
-
-- Ticket reuse is rejected.
-- Election mismatch is rejected.
-- Root mismatch is rejected.
-- A nullifier already used on-chain is rejected (no ticket-nullifier binding
-  exists to mismatch).
-- Duplicate nullifier is rejected before relayer transaction.
-- Concurrent submissions from distinct voters do not produce relayer nonce
-  collisions.
-- A vote landed by a third party copying the relayer's mempool transaction is
-  reconciled as success, not reported as failure.
-- Ticket is not lost on preflight failures that should be user-retryable.
-- Backend never requires JWT on anonymous submit.
-
-Definition of done:
-
-- The Rust voting path is at least as safe as the hardened Node path and keeps
-  anonymous submit semantics under the post-audit privacy model.
-
-### Phase 14. Completion and Results
-
-Objective:
-
-Port election completion and final result exposure.
-
-Routes:
-
-- `POST /api/elections/:election_id/complete`
-- `GET /api/elections/completed` (already ported read-only in Phase 7; here only
-  re-verify its result shape after completion writes — do not re-port)
-
-Tasks:
-
-- Reject completion before `voting_end_time`.
-- Read on-chain tally or trusted submission-derived tally according to the
-  finalized product decision.
-- Persist completed state once.
-- Make completed results frontend-compatible.
-- Define what happens if chain reads fail after voting end.
-
-Deliverables:
-
-- Completion route.
-- Results read model.
-- Tests for before-end rejection and idempotent completion.
-
-Verification gate:
-
-- Completion before voting end returns 4xx.
-- Completion after voting end succeeds only from valid active/ended states.
-- Completed election appears in completed list with expected result shape.
-
-Definition of done:
-
-- The full admin and voter lifecycle can reach completed state in Rust.
-
-### Phase 15. Frontend Integration
-
-Objective:
-
-Switch frontend API calls gradually without changing the user-facing flow.
-
-Tasks:
-
-- Add API base URL environment flag.
-- Keep Supabase login unchanged.
-- Replace the frontend's direct Supabase `Admins` table reads
-  (`frontend/src/App.js`) with a backend role endpoint (e.g. `GET /api/me`
-  returning `is_admin`) served by the active backend, so admin gating survives
-  the Cloud SQL migration (AR-H4).
-- Convert all `datetime-local` values to ISO strings before submit.
-- Switch read-only routes first.
-- Switch write routes by lifecycle stage.
-- Keep Node fallback available until Rust E2E staging passes.
-- Add browser smoke tests for admin and voter flows.
-
-Deliverables:
-
-- Frontend API client configuration.
-- Route-by-route switch plan.
-- Browser smoke test checklist.
-
-Verification gate:
-
-- Admin can create and finalize election through Rust-backed routes.
-- Voter can register, generate proof, and submit vote through Rust-backed
-  routes.
-- Frontend role routing matches active-backend authorization for the same
-  user without any direct Supabase table read.
-- Frontend still works when pointed to Node during rollback.
-
-Definition of done:
-
-- Frontend can target Rust in staging without route shape breakage.
-
-### Phase 16. Staging Deployment
-
-Objective:
-
-Deploy the Rust backend and connect it to the prepared GCP staging resources.
-This phase cannot begin until Phase 1 has no open Critical or High audit item.
-
-Tasks:
-
-- Build container image for Rust API.
-- Push image to Artifact Registry.
-- Deploy Cloud Run service.
-- Attach Cloud SQL connection.
-- Attach VPC connector for Redis private IP access.
-- Mount Secret Manager values as environment variables.
-- Grant only required IAM roles to the runtime service account.
-- Grant Secret Manager access only on required `zkvote-staging-*` secrets.
-- Configure CORS for staging frontend.
-- Ensure legacy AWS EC2/S3/CloudFront auto-deploy is gated or disabled before
-  merging staging-bound changes.
-
-Deliverables:
-
-- Cloud Run service.
-- Deployment script or CI workflow.
-- Staging runtime configuration.
-
-Verification gate:
-
-- `/healthz` returns 200 from Cloud Run.
-- `/readyz` returns 200 from Cloud Run.
-- Cloud Run can connect to Cloud SQL.
-- Cloud Run can connect to Memorystore Redis through VPC connector.
-- Cloud Run can read required secrets.
-- Runtime service account can read/write only the zk-vote artifact bucket.
-- Runtime service account cannot read unrelated project secrets.
-- No main-push workflow can deploy unfinished migration work to live AWS
-  infrastructure without approval.
-
-Definition of done:
-
-- Staging backend is reachable and connected to all required managed services.
-
-### Phase 17. CI/CD and Quality Gates
-
-Objective:
-
-Make regressions visible before deployment.
-
-Tasks:
-
-- Add Rust format, clippy, and test jobs.
-- Add Node helper and route tests while Node remains active.
-- Add Hardhat contract tests.
-- Add MockVerifier tests for successful submit, duplicate nullifier,
-  wrong-election public signal, wrong root, and candidate overflow.
-- Add circuit artifact/schema checks for public signal length and ordering.
-- Add migration verification job.
-- Add frontend build job.
-- Add optional staging deploy job gated by environment approval.
-- Gate or disable legacy AWS deploy workflows during migration.
-- Switch all CI and deploy installs to `npm ci` against committed lockfiles;
-  remove bare `npm install` from deploy workflows, including the on-host EC2
-  step (AR-H8).
-- Add dependency-audit jobs (`npm audit` or osv-scanner; `cargo audit` or
-  `cargo deny`) as required checks; pin exact versions for proving-critical
-  packages (`snarkjs`, `circomlibjs`, `circomlib`) and treat their upgrades as
-  reviewed changes that re-run the circuit regression suite (AR-H8).
-- Decide which generated artifacts should be committed.
-
-Deliverables:
-
-- GitHub Actions workflows or equivalent CI config.
-- Required check list.
-- Artifact commit policy.
-
-Verification gate:
-
-```bash
-node --check server/index.js
-npx hardhat test --no-compile
-cd rust-backend && cargo fmt --check
-cd rust-backend && cargo test --workspace
-cd rust-backend && cargo clippy --workspace -- -D warnings
-cd frontend && npm run build
-```
-
-Additional audit regression checks:
-
-- C1/H1 tests fail against the old circuit/contract boundary and pass against
-  the fixed one.
-- `/proof` response tests assert that plaintext `user_secret` is absent.
-- Submit route tests cover ticket replay, mismatch, and preflight failure
-  without accidental durable state corruption.
-- CI refuses ungated live AWS deployment from main during the migration window.
-- CI fails when a deploy path bypasses the committed lockfile or an unpinned
-  proving-critical dependency version is introduced.
-
-Definition of done:
-
-- A pull request cannot silently break backend syntax, Rust checks, contract
-  tests, or frontend build.
-
-### Phase 18. Security Re-audit and Privacy Review
-
-Objective:
-
-Re-run the security review after Phase 1 and the Rust route migrations are
-implemented, and confirm that no audit blocker was reintroduced.
-
-Tasks:
-
-- Reconcile every item in `audit.md`:
-  - closed with code/test evidence;
-  - intentionally accepted with documented rationale; or
-  - still open and blocking production.
-- Document trust boundaries:
-  - frontend proof generation
-  - backend ticket issuance
-  - Redis ticket storage
-  - relayer transaction submission
-  - chain verification
-  - artifact generation and storage
-- Review whether nullifier, root, and candidate public signals leak acceptable
-  information.
-- Measure ticket-issuance-to-on-chain timing correlation in staging, decide
-  whether unlinkable authorization (blind-signed tokens / anonymous
-  credentials) replaces the bearer ticket, and define the minimum anonymity
-  set / turnout threshold below which results must not be presented as
-  privacy-preserving (AR-M1/AR-M2).
-- Record the accepted v1 on-chain visibility properties in the threat model:
-  running tallies and per-vote candidate choices are publicly readable during
-  voting, and a voter holding their secret can prove how they voted
-  (receipt-ability / vote-buying exposure) (AR-L3).
-- Review admin privilege scope.
-- Review Secret Manager access.
-- Review bucket IAM.
-- Review replay and double-vote protections.
-- Review finalization race and partial failure behavior.
-- Review whether the final client-held-secret design preserves privacy against
-  backend operators.
-- Review whether deployed artifacts match stored manifest hashes.
-
-Deliverables:
-
-- `docs/SECURITY_REVIEW.md`.
-- Threat model.
-- Pre-production risk register.
-- Audit closure matrix for C1-H5 and M1-M13.
-
-Verification gate:
-
-- No relayer private key appears in committed files.
-- No DB password appears in committed files.
-- Artifact bucket IAM is bucket-scoped.
-- Submit path has tests for replay and mismatch cases.
-- C1/H1/H2 regression tests are present and failing versions are understood.
-- Finalization partial-failure tests are present.
-
-Definition of done:
-
-- The team has a written, route-level security position and audit-closure proof
-  for the first production candidate.
-
-### Phase 19. Migration Cutover
-
-Objective:
-
-Move from Node active backend to Rust active backend with rollback.
-
-Tasks:
-
-- Freeze Node API changes except critical fixes.
-- Execute the live-data migration: a one-time ETL exporting hosted-Supabase
-  rows (`Elections`/`Voters`/`Admins`/`AdminInvitations`) into the Cloud SQL
-  schema, with row-count and checksum verification (AR-H3).
-- Define the cutover data strategy: a write-freeze window or dual-write
-  period, and an explicit data-rollback path covering rows written by Rust if
-  operation rolls back to Node (AR-H3).
-- Run Node and Rust side by side in staging.
-- Compare responses for compatibility routes.
-- Switch frontend read routes to Rust.
-- Switch admin write routes to Rust.
-- Switch registration/finalization to Rust.
-- Switch proof/submit to Rust last.
-- Keep Node deployable until Rust has completed at least one full staging
-  election lifecycle.
-
-Deliverables:
-
-- Cutover checklist.
-- Rollback checklist.
-- Data migration script and verification report.
-- Side-by-side route comparison results.
-
-Verification gate:
-
-- One full staging election completes on Rust:
-  - create
-  - artifact setup
-  - allowlist
-  - voter registration
-  - finalization
-  - proof generation
-  - vote submission
-  - completion
-  - result display
-- Migrated row counts and checksums match between the source Supabase tables
-  and the Cloud SQL tables at cutover.
-- A rollback rehearsal restores Node operation without data loss.
-
-Definition of done:
-
-- Rust becomes the active backend only after a full staging E2E proof, and Node
-  remains available for rollback until production confidence is established.
-
-### Phase 20. Production Readiness
-
-Objective:
-
-Prepare production separately from staging instead of upgrading staging in
-place.
-
-Tasks:
-
-- Create production GCP resources with separate names and secrets.
-- Upgrade Cloud SQL tier and consider HA.
-- Define backup and restore policy.
-- Define Redis persistence and failure behavior.
-- Configure domain, TLS, CORS, and monitoring.
-- Add alerting for DB, Redis, Cloud Run, relayer failures, and job backlog.
-- Run load and concurrency tests for registration/finalization/submit.
-
-Deliverables:
-
-- Production infrastructure plan.
-- Backup/restore runbook.
-- Incident runbook.
-- Monitoring dashboard.
-
-Verification gate:
-
-- Restore test succeeds.
-- Staging load test meets expected capacity.
-- Production secrets are separate from staging.
-
-Definition of done:
-
-- The system can be operated and recovered, not merely deployed.
+**Objective:** Close all Critical/High audit blockers before any staging/cutover work. **Hard
+gate:** no staging deploy (Phase 18) or cutover (Phase 21) proceeds with an open Critical/High.
+
+**Tasks (done):** circuit/contract v2 (C1 public `election_id`; H1 boolean `pathIndices`;
+regenerated wasm/zkey/vkey/Solidity verifier; `VotingTally`/`IVerifier` at `nPublic=4`); H2
+client-held secret (backend stores only the Poseidon commitment; `/proof` never returns
+plaintext); H3/H4 durable deployment/finalizing state + lock fencing + artifact-hash binding +
+snapshot revalidation; H5 invitation acceptance / auth-time promotion (keyed on verified email);
+M1/M12 atomic ticket consume; M2/M4/M5 ptau checksums, circom, candidate limits/dedup,
+artifact-version binding; M9/M10/M11 secret-scoped IAM, DB-URL secret ordering, AWS CD gating;
+M13/AR-L10 registration-lock timeout + fencing.
+
+**Verification gate:** no open Critical/High in `audit.md` / `docs/SECURITY_AUDIT_2026-06.md`;
+`cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test
+--workspace` green; `npx hardhat test --no-compile` green incl. dup-nullifier / wrong-election /
+wrong-root / candidate-overflow cases. **dependsOn:** [0].
+
+### Phase 2. Local Development Foundation — ✅
+
+**Objective:** Reproducible local dev for Rust + contracts + ZK toolchain.
+
+**Tasks:** Docker Compose Postgres 16 + Redis 7; `.env.example` aligned; `scripts/local/{smoke,
+migrate}.sh`; circom checks + `.ptau` provisioning; `snarkjs` via `node_modules/.bin`/`npx`
+(no global); Noir POC isolated from production v1.
+
+**Verification gate:** `bash scripts/local/smoke.sh && bash scripts/local/migrate.sh` succeed;
+Rust fmt/test/clippy pass; `CIRCOM_BIN=$HOME/.local/circom/bin/circom bash
+scripts/local/check-toolchain.sh` passes. **dependsOn:** [1].
+
+> **Delta (Node-deletion):** after the `server/zkp` → `zk/` relocation (migration spec Commit 1),
+> repoint `scripts/local/fetch-ptau.sh` and `check-toolchain.sh` at `zk/`, and add `circomlib`
+> to the **root** `package.json` so `setUpZk.sh` resolves it from root `node_modules` (the
+> script's `${SCRIPT_DIR}/../node_modules` path resolves to repo root once it lives at `zk/`).
+
+### Phase 3. Data Model and Migration Hardening — ✅
+
+**Objective:** Make Cloud SQL Postgres the durable source of truth with the two-role privilege
+model; settle the schema decisions the ETL depends on.
+
+**Tasks:** review `0001_initial.sql` + `0002_node_api_compatibility.sql` vs Node usage (M6
+PascalCase vs snake_case), `updated_at` handling, indexes, canonical state transitions; decide
+table-case mapping, `elections.circuit_id` default/nullability (M7), field-element storage
+`text` + CHECK vs `numeric(78,0)` (M8); implement the two-role model (AR-M3, no RLS):
+`zkvote_migrator` (DDL) vs `zkvote_app` (DML-only).
+
+**Migration inventory (all four apply to Cloud SQL via the migrator role):** `0001_initial.sql`,
+`0002_node_api_compatibility.sql`, `0003_phase3_hardening.sql`, `0004_supersede_and_deployments.sql`
+— append-only; the Phase-20 ETL targets the schema they produce. ⚠️ `0002_node_api_compatibility.sql`
+is **misnamed**: it carries **core DDL** the Rust backend depends on (`admins`, `admin_invitations`,
+the `citext` extension, election-window indexes), **not** disposable Node shims — it **must survive
+the Node deletion (Phase 6.5)** and must never be dropped.
+
+**Verification gate:** `bash scripts/local/db-verify.sh` passes; `zkvote_app` cannot run DDL;
+duplicate voter email / `user_id` / nullifier per election rejected; BigInt field elements
+round-trip byte-identically. **dependsOn:** [2].
+
+> **Auth-migration constraint:** `admins.id` and `voters.user_id` **must stay UUID-typed** — the
+> GCIP `uid = Supabase-UUID` import (Phase 7) depends on this. No column-type change in v1.
+
+### Phase 4. Rust Backend Core — ✅
+
+**Objective:** Common Rust API foundation. **Tasks:** modularize `main.rs` (config/error/state/
+routes/middleware); typed errors + JSON responses; request-id + tracing; CORS for local/staging;
+graceful shutdown; OpenAPI. **Verification gate:** Rust fmt/test/clippy pass; `/healthz` +
+`/readyz` return 200. **dependsOn:** [3].
+
+### Phase 5. Auth and Authorization (provider-agnostic JWKS) — ✅
+
+**Objective:** Verify access-token JWTs against a **configurable** JWKS/issuer/audience and
+derive admin/voter authority from the DB keyed on the verified `email` — designed so the IdP is a
+config swap, not a code rewrite.
+
+**Tasks (done, and confirmed IdP-portable):**
+- `JwksCache` fetch+cache (RS256/384/512, ES256); `validate_token` checks signature/issuer/
+  audience/exp/sub (`crates/api/src/auth/token.rs`).
+- `CurrentUser` (`sub`→`Uuid`, normalized `email`), `AdminUser`, `is_admin_or_promote` (H5)
+  keyed on `sub` + verified `email` — **not** on any token role claim, so it survives the swap.
+- RUST-AUTH-2: drop an explicitly-unverified email so it cannot consume an admin invitation or
+  voter slot — reads the **top-level `email_verified`** GCIP emits.
+
+**Verification gate:** auth tests pass for valid / expired / malformed / **wrong-audience** /
+**wrong-issuer** (the last two guard the GCIP repoint); `is_admin_or_promote` promotes only on a
+matching pending invitation for a verified email. **dependsOn:** [4].
+
+> **Auth-migration delta (Phase 18 wires this):** the only behavior that changes is configuration
+> — `SUPABASE_JWT_ISSUER`, `SUPABASE_JWT_AUDIENCE`, `SUPABASE_JWKS_URL` get GCIP values. The
+> `user_metadata.email_verified` fallback becomes dead-but-harmless after the swap.
+
+### Phase 6. Repository and Domain Service Layer — ✅
+
+**Objective:** Separate storage/domain/HTTP. **Tasks:** sqlx repos (elections, admins,
+admin_invitations, voters, submission_tickets, vote_submissions, artifacts, contract_deployments,
+finalization_jobs); domain services (state transition, registration/finalization/completion
+eligibility, vote-submit validation); transaction helpers. **Verification gate:** unit tests for
+transitions/validation; `cargo test --workspace` green. **dependsOn:** [5].
+
+### Phase 6.5. Node→Rust Code Deletion (cross-cutting) — 🆕
+
+**Objective:** Retire the legacy Node `server/` from the codebase so Rust is the sole backend.
+This is the code-level half of workstream (A) and a **hard precondition for Phases 16, 17, 20,
+21**. Specified in full in `docs/superpowers/specs/2026-06-19-node-to-rust-migration-design.md`
+(6 gated commits); summarized here so it occupies a slot in the dependency graph and the
+cross-cutting "Delta" notes in Phases 2/17 have a phase to anchor to.
+
+**Tasks (the spec's 6 commits, in order, each behind its CI-mirror gate):**
+- **C1 Relocate the ZK toolchain:** `git mv server/zkp zk`; repoint `scripts/ci/check-artifact-schema.sh`,
+  `scripts/local/fetch-ptau.sh`, `scripts/local/check-toolchain.sh`, the `scripts/deployAll.js`
+  hint, the `ci.yml` shell-gate glob, **and `.gcloudignore`** (`server/zkp/{tmp,input,circomlib}/`
+  → `zk/...`; drop `server/node_modules/`); add `circomlib` to the **root** `package.json`; copy
+  the exact `build_4_5`/`build_5_4` bytes into `.data/zk-artifacts/` (invariant #7 — never regenerate).
+- **C2 Vendor helpers:** copy `supabaseClient.js` / `fieldElement.js` / `zkArtifacts.js` into
+  `scripts/`; repoint `etl-supabase-to-postgres.js`, `deployAll.js`, and the affected tests
+  (this realizes the **Phase-20 ETL precondition** — no `require('../server/...')` may remain).
+- **C3 Delete the Node app + ~21 tests + `ci.yml` lockstep** (realizes the **Phase-17 CI delta**:
+  drop `npm ci --prefix server`, the server cache path, both `npm audit --prefix server`, narrow
+  the JS gate `find server scripts test` → `find scripts test`, rename the `contracts-and-node` job).
+- **C4 Frontend dev pointer + root-dep prune; C5 docs; C6 delete `deploy-backend.yml`** (last).
+
+**Verification gate:** the full CI mirror passes after each commit — `npx hardhat test --no-compile`;
+JS+shell syntax gates; Rust fmt/clippy/test; `npm test --prefix frontend -- --watchAll=false &&
+npm run build --prefix frontend`. No `require('../server/...')` remains under `scripts/`;
+`bash scripts/ci/check-artifact-schema.sh` passes against the relocated `zk/` glob.
+
+**dependsOn:** [6] (Rust parity proven). **Blocks:** [16, 17, 20, 21].
+
+### Phase 7. GCP Identity Platform Standup and User Migration — 🆕
+
+**Objective:** Provision GCIP in the staging project (email/password + **email-verification
+enforced**) and migrate Supabase users **preserving UUIDs and bcrypt passwords**, so no voter
+re-registers and DB FKs stay intact. **Cost-gated + user-approved.**
+
+**Tasks:**
+- Enable `identitytoolkit.googleapis.com`: add it to `required_apis` in
+  `scripts/gcp/zkvote-staging-setup.sh` (alongside the existing 9 APIs).
+- Provision the GCIP/Firebase Auth tenant + the email/password provider; enable email
+  verification (send verification links; GCIP does not autoconfirm password sign-ups).
+  **Enforcement is at the app layer, not the provider:** GCIP has **no** "require verified email
+  before sign-in" toggle for basic email/password — invariant #8 is carried by the backend
+  reading the **top-level `email_verified`** claim (RUST-AUTH-2 drops an explicitly-unverified
+  email). Configure verification + (optional) password-reset email templates + authorized
+  domains/redirect URIs.
+- **Partition the Supabase user population first** (a `SELECT` over `auth.users` / `identities`):
+  **password users** (have a bcrypt hash) vs **OAuth-only users** (e.g. Kakao — **no** password
+  hash). The two are migrated differently and the split is load-bearing for Phase 16 (Kakao
+  decision) and Phase 20 (identity cross-check).
+- **Password users — bulk import:** one-time, **idempotent** `scripts/migration/import-users-to-gcip.js`
+  using the Firebase Admin SDK `getAuth().importUsers([...], { hash: { algorithm: 'BCRYPT' } })`,
+  batched ≤1000/call. Per user set **`uid` = the existing Supabase UUID string**, `email`,
+  `passwordHash` = the raw `$2a/$2b` bcrypt bytes, and **`emailVerified` = the user's actual
+  Supabase verified status (NEVER unconditionally `true`)**.
+- **OAuth-only users — explicit decision (tie to Phase 16 Kakao keep/drop):** either (a) configure
+  the matching GCIP OIDC/OAuth provider and import them as federated identities **keeping
+  `uid` = the Supabase UUID**, or (b) enroll them into email/password via a forced password-reset,
+  or (c) **explicitly exclude** them with a documented lockout + user-comms plan. Whichever is
+  chosen, record which `voters.user_id`/`admins.id` rows it covers so the Phase-20 cross-check is
+  a partition match, not a false 1:1.
+- **Close the non-UUID signup window:** until cutover (Phase 21), either **disable open GCIP
+  self-registration** or route all new sign-ups through a UUID-minting provisioning path — a user
+  created via normal GCIP sign-up gets a 28-char uid (not a UUID) and would `401` (§0.3).
+- Keep the service-account JSON **out of the repo** (gitignored); run the import only with
+  `CONFIRM_COSTS=yes` + explicit approval.
+- Document that admin invite-by-listing-existing-auth-users (Node's Supabase Admin API in
+  `addAdmins`, AR-L4; Rust `manage.rs` sets `promoted_existing_user: false`) is **not** offered in
+  v1 — admin promotion stays DB-driven via verified-email invitations (no GCIP custom-claim authz).
+
+**Config changes:** `zkvote-staging-setup.sh required_apis += identitytoolkit.googleapis.com`;
+new gitignored `scripts/migration/import-users-to-gcip.js`; GCIP email/password (+ optional OAuth)
+provider; self-registration disabled until cutover.
+
+**Verification gate:**
+- A test sign-in with a migrated **password** voter's existing password yields a GCIP ID token
+  whose `sub` == that voter's old Supabase UUID and that carries a **top-level `email_verified`**.
+- Re-running the import is idempotent (the script guards — `importUsers` does not dedupe and must
+  not relax `emailVerified`).
+- A Supabase-**un**verified user imports as `emailVerified:false` and is dropped as a join key by
+  RUST-AUTH-2.
+- The **OAuth-only partition** is fully accounted for: every such `voters.user_id`/`admins.id`
+  either resolves to a migrated GCIP identity (with `uid`=UUID) or is on the documented-exclusion
+  list — none silently 401.
+
+**dependsOn:** [5].
+
+### Phase 8. Read-Only Rust API Parity — ✅
+
+**Objective:** Port low-risk read surfaces first (`GET /api/elections/{registerable,finalized,
+completed}`); match frontend shapes/field names; route tests with seeded DB. **Verification
+gate:** read-route responses byte-match Node shapes for fixtures; route tests green.
+**dependsOn:** [6].
+
+### Phase 9. Election Creation and Admin Setup — ✅
+
+**Objective:** Port admin setup with strict validation (`POST /api/elections/set`,
+`/:id/setZkDeploy`, `/api/management/addAdmins`). **Tasks:** ISO UTC dates; candidate
+length/non-empty/trimmed-dedup; max candidate count; Merkle depth limits; artifact manifest/hash
+availability before deploy; normalized admin emails; idempotent upsert; invitation acceptance /
+auth-time promotion (verified email); no race-prone unlocked `/setZkDeploy`. **Verification
+gate:** duplicate-label/over-limit candidates rejected; admin upsert idempotent; invited email
+promoted on first authenticated lookup, unverified not. **dependsOn:** [8].
+
+### Phase 10. Voter Allowlist and Registration — ✅
+
+**Objective:** Port voter management + registration with race-safe locking and post-audit privacy
+(`POST /api/elections/:id/voters`, `/:id/register`). **Tasks:** normalize emails; recheck
+state/window inside the DB txn; recheck Redis/on-chain finalization markers; one voter row per
+`user_id`; client keeps the secret, backend stores only the commitment/leaf; `OVER_CAPACITY`
+guard at `2**depth` (AR-H2, backported to Node); voter-secret re-bind/export/passphrase UX
+(AR-H6, matches on `user_id` UUID equality); lock timeout + tests. **Verification gate:**
+registration binds `voters.user_id = token sub` (UUID) and rejects `OVER_CAPACITY`; AR-H6 re-bind
+succeeds only for the same `user_id`; concurrent register is race-safe. **dependsOn:** [9].
+
+### Phase 11. ZK Artifact Pipeline — ✅
+
+**Objective:** Reliable artifact gen/store/manifest/retrieval with **beacon-finalized** zkeys.
+**Tasks:** canonical manifest JSON (Postgres + files local/GCS); validate wasm/zkey/vkey/Solidity
+verifier presence + sha256; beacon-finalize every zkey (`snarkjs zkey beacon` + independent
+contributor, publish transcript, gate `snarkjs zkey verify`; single operator entropy unacceptable
+— AR-H1); browser proving-artifact retrieval replacing Node's `/api/zkp-files` mount (Rust
+streaming route or signed URLs, AR-M6) + per-artifact sha256 + frontend hash verification before
+proving; track public-signal schema/length; Circom production v1; isolate Noir POC.
+**Verification gate:** `snarkjs zkey verify` passes against the beacon-finalized zkey; frontend
+verifies sha256 before proving. **dependsOn:** [10].
+
+### Phase 12. Contract Deployment and Chain Integration — ✅
+
+**Objective:** Contract deploy + relayer behind a typed Rust chain layer with **owner/relayer key
+separation** (AR-M4). **Tasks:** per-env chain config; verifier deploy/lookup; `VotingTally`
+deploy; deployment metadata in Postgres; `configureElection` preflight + tx submit; receipt
+polling + failure classification; verifier/public-input compatibility with the manifest; on-chain
+election-identity check; relayer key only in Secret Manager/`.env`; **distinct owner key**
+(explicit owner or two-step `transferOwnership`) + rotation + gas monitoring; immutable on-chain
+params after `configureElection` + supersede runbook (AR-M7). **Verification gate:** deploy +
+`configureElection` succeed; metadata persisted; deploy script refuses if owner key == relayer
+key. **dependsOn:** [11].
+
+### Phase 13. Finalization Worker — ✅
+
+**Objective:** Recoverable finalization job flow with **bit-identical Poseidon** (AR-H7).
+**Tasks:** acquire election lock; write durable `finalizing` state before any on-chain side
+effect; recheck deadline/state; validate voting end vs `max_voting_duration_days` (default 30,
+AR-M7) with explicit confirmation to exceed; snapshot voters; reject zero-voter; `light-poseidon`
+Merkle root (bit-identical to circom/circomlibjs); create `finalization_jobs` row; submit
+`configureElection`; poll receipt; sync DB only after on-chain success; record partial failures;
+lock fencing/renewal; revalidate snapshot. **Verification gate:** cross-language Poseidon test
+vectors match (circuit / poseidon-lite / circomlibjs / light-poseidon); DB finalized only after
+on-chain success; partial-failure path leaves a recoverable job. **dependsOn:** [12].
+
+### Phase 14. Proof Ticket and Vote Submission — ✅
+
+**Objective:** Port the privacy-critical voting path preserving anonymous-submit + ticket-binding
+invariants (`POST /api/elections/:id/proof`, `/:id/submit`). **Tasks:** single-use ticket bound
+to `(election_id, merkle_root)` **ONLY, never the nullifier** (AR-H5); no identity-to-ticket
+logging (AR-M1); timing-linkage mitigation (client jitter, order-agnostic relayer queue, no
+`/proof` timestamps, AR-M2); short ticket expiry; ticket-scoped Redis lock/Lua
+read-validate-consume; validate proof/public-signal shapes; validate public `election_id` vs
+route/ticket/DB/contract; candidate range; root vs finalized root; nullifier uniqueness vs
+contract + durable records; contract preflight; per-wallet relayer tx serialization (AR-M5);
+front-run reconciliation on duplicate-nullifier revert (AR-L8); persist status + tx hash;
+failed-relay state safety; frontend loading/error handling; **no JWT extractor on submit
+(invariant #1)**. **Verification gate:** `submit` accepts a valid ticket with **no Authorization
+header** and rejects a reused/expired ticket; ticket payload carries no nullifier; logs carry no
+identity→ticket linkage. **dependsOn:** [13, 7].
+
+### Phase 15. Completion and Results — ✅
+
+**Objective:** Port completion + final results (`POST /api/elections/:id/complete`). **Tasks:**
+reject completion before `voting_end_time`; read on-chain tally (or trusted submission-derived
+tally per the finalized decision); persist completed state once; frontend-compatible results;
+define chain-read-failure behavior; re-verify `GET /api/elections/completed` shape (ported in
+Phase 8 — do not re-port). **Verification gate:** completion before `voting_end_time` rejected;
+results shape matches; completed state idempotent. **dependsOn:** [14].
+
+### Phase 16. Frontend Integration and Auth SDK Swap (Supabase JS → Firebase/GCIP) — 🟡 (integration done; **SDK swap is new**)
+
+**Objective:** Repoint the frontend to the Rust API **and replace the Supabase Auth client with
+the Firebase Auth Web SDK** — the largest single code change of the migration — without changing UX.
+
+> **Supersedes the migration spec.** `docs/superpowers/specs/2026-06-19-node-to-rust-migration-design.md`
+> (written 2026-06-19, pre-GCIP-decision) KEEPs `frontend/src/supabase.js` and lists "frontend keeps
+> Supabase auth" as out-of-scope. That is **superseded by §0** (2026-06-20): the SDK swap happens
+> here, in Phase 16, *after* the spec's code-deletion commits (Phase 6.5). The spec's frontend
+> notes are annotated accordingly.
+
+**Tasks:**
+- Add the `firebase` dependency (`firebase/app` + `firebase/auth`); remove `@supabase/supabase-js`.
+  Replace `frontend/src/supabase.js` with a Firebase init using `REACT_APP_FIREBASE_API_KEY` /
+  `_AUTH_DOMAIN` / `_PROJECT_ID` (the Firebase web `apiKey` is **public config, not a secret**).
+- **Rewrite the login UI — it is multi-component, not one file:** `LoginPage.js` (coordinator),
+  `EmailAuthForm` (`signInWithPassword` → `signInWithEmailAndPassword`; `signUp` →
+  `createUserWithEmailAndPassword` + `sendEmailVerification` — **add the in-app verify prompt that
+  did not exist before**; add `sendPasswordResetEmail`), `KakaoAuthButton` + the OAuth redirect
+  handler (currently `supabase.auth.signInWithOAuth({provider:'kakao'})`).
+- **Kakao OAuth — BLOCKING decision (tie to Phase 7 partition):** Kakao is a fully wired feature.
+  Either (a) configure a GCIP OIDC/OAuth provider for Kakao and migrate those identities
+  (`uid`=UUID), or (b) drop Kakao for v1 with a documented user-comms/lockout plan. **OAuth-only
+  users have no bcrypt hash** so they cannot be password-imported in Phase 7 — this decision and
+  that partition are the same decision. Do not leave it implicit.
+- Rewrite `App.js` `AuthHandler`: `onAuthStateChange` → `onAuthStateChanged`; `getSession` → the
+  Firebase `currentUser`; keep dispatching `setUser` and calling `GET /api/me` for `is_admin`
+  (AR-H4, no direct table reads). Rewrite the axios interceptor (`frontend/src/api/axios.js`) to
+  attach `Bearer await user.getIdToken()` instead of `supabase.auth.getSession().access_token`
+  (note: `getIdToken()` is **async** vs Supabase's sync token — interceptor bugs can drop the
+  bearer); **keep `skipAuth` on submit**. Update `axios.test.js` mocks and `authSlice` comments
+  (Supabase user/session → Firebase user/IdToken).
+- **Repoint the frontend CD build args:** `.github/workflows/deploy-frontend.yml` (and
+  `frontend/buildspec.yml`) inject `REACT_APP_SUPABASE_URL`/`_ANON_KEY` at build time — change them
+  to `REACT_APP_FIREBASE_*`, **or** keep the workflow `workflow_dispatch`-disabled until the
+  hosting decision and explicitly forbid dispatching it with stale Supabase env (a build with
+  undefined Firebase config ships a non-functional login).
+- Convert `datetime-local` → ISO; switch read routes first, then writes by lifecycle; keep the
+  **tagged pre-deletion Node image** as fallback until staging E2E passes; browser smoke tests for
+  admin + voter flows.
+
+**Config changes:** `frontend/package.json` `-@supabase/supabase-js, +firebase`; `frontend/.env`
++ `deploy-frontend.yml`/`buildspec.yml` build args `REACT_APP_SUPABASE_URL/_ANON_KEY` →
+`REACT_APP_FIREBASE_API_KEY/_AUTH_DOMAIN/_PROJECT_ID`; `REACT_APP_API_BASE_URL` flag wired to Rust.
+
+**Verification gate:** `npm test --prefix frontend -- --watchAll=false && npm run build --prefix
+frontend` pass; a real GCIP login attaches a `getIdToken()` bearer the Rust API accepts and
+`GET /api/me` returns correct `is_admin`; sign-up sends a verification email and an unverified
+account is not treated as admin/voter; the Kakao decision is recorded and (if kept) a Kakao login
+yields an accepted token. **dependsOn:** [15, 7, 6.5].
+
+### Phase 17. CI/CD and Quality Gates — 🟡 (done; needs Firebase-secret + auth-config deltas)
+
+**Objective:** Make regressions visible pre-deploy across Rust, contracts, circuit, frontend.
+**Tasks:** Rust fmt/clippy/test; Hardhat + MockVerifier tests (success / dup nullifier /
+wrong-election / wrong root / candidate overflow); circuit public-signal length+order checks;
+migration verification; frontend build; **add an auth-config regression asserting
+`validate_token` rejects wrong-issuer / wrong-audience** (guards the GCIP repoint); **update
+frontend CI secrets `REACT_APP_SUPABASE_*` → `REACT_APP_FIREBASE_*`**; optional approval-gated
+staging deploy; keep/disable legacy AWS workflows gated; `npm ci` against committed lockfiles
+everywhere (AR-H8); dependency-audit jobs (`npm audit`/osv-scanner, `cargo audit`/`cargo deny`)
++ pin `snarkjs`/`circomlibjs`/`circomlib`; artifact commit policy.
+
+**Verification gate:** CI green on a clean checkout; dependency-audit jobs pass; the
+wrong-issuer/wrong-audience auth tests fail the build if the verifier is misconfigured.
+**dependsOn:** [16, 6.5].
+
+> **Delta (Node-deletion):** drop `npm ci --prefix server`, the `server` cache path, both
+> `npm audit --prefix server` lines, and narrow the JS syntax gate `find server scripts test` →
+> `find scripts test`; rename the `contracts-and-node` job. Edit in lockstep with the `server/`
+> deletion (migration spec Commit 3).
+
+### Phase 18. GCP Staging Infra Standup and Secret Repointing — 🆕
+
+**Objective:** Provision the scripted GCP staging infra and wire Secret Manager / Cloud Run to
+**GCIP** issuer/JWKS/audience instead of Supabase. **Cost-gated (`CONFIRM_COSTS=yes`) +
+user-approved.**
+
+**Tasks:**
+- Run `scripts/gcp/zkvote-staging-setup.sh` (now including `identitytoolkit` + GCIP from Phase 7)
+  to create Cloud Run, Cloud SQL Postgres 16 (`zkvote-staging-pg`, two DB users), Memorystore
+  Redis 7, VPC connector, Artifact Registry, GCS artifact bucket, service account, per-secret
+  IAM (M9).
+- **Repoint auth secrets — and wire them into the deploy artifact (this is the footgun):** set the
+  JWKS-URL secret to
+  `https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com`
+  (**not** the `/robot/v1/metadata/x509/` PEM endpoint). **Edit `scripts/gcp/deploy-staging-api.sh`**:
+  its `--set-env-vars` currently carries only `ARTIFACT_STORE|CHAIN_ID|CORS_ALLOWED_ORIGINS` and it
+  still binds `SUPABASE_URL` as a secret. Append `SUPABASE_JWT_ISSUER=https://securetoken.google.com/<PROJECT_ID>`
+  and `SUPABASE_JWT_AUDIENCE=<PROJECT_ID>` (as env or secret bindings), **and remove the
+  `SUPABASE_URL` binding** (or accept it as harmless *only* because the explicit issuer now
+  overrides the `config.rs:76-78` derivation). Without this edit a verbatim deploy derives the
+  **Supabase** issuer from `SUPABASE_URL` and **rejects 100% of GCIP tokens**. Optionally rename
+  the secrets to `zkvote-staging-idp-*` in **both** setup + deploy scripts together.
+- **Seed the GCS artifact bucket (otherwise proving fails on an empty bucket):** the setup script
+  *creates* `gs://zkvote-staging-artifacts-<project>` but never populates it, and the Rust
+  `artifacts.rs` streams `build_{depth}_{candidates}` objects from GCS. Add a `gcloud storage cp`
+  of the **exact** `zk/build_4_5` + `zk/build_5_4` bytes + manifest into the canonical object paths
+  that match `artifacts.rs` URL construction, preserving byte-identity (invariant #7) and
+  cross-checking each `sha256` against the manifest after upload.
+- Build + push the Rust image (`cloudbuild-staging-api.yaml`) to Artifact Registry; `gcloud run
+  deploy zkvote-staging-api` with Cloud SQL attach, VPC connector, and secret env mounts
+  (`DATABASE_URL`, `REDIS_URL`, `SUPABASE_JWKS_URL`=GCIP JWKS, `SUPABASE_JWT_ISSUER`,
+  `SUPABASE_JWT_AUDIENCE`, `SEPOLIA_RPC_URL`, `RELAYER_PRIVATE_KEY`, `OWNER_PRIVATE_KEY`,
+  `ARTIFACT_BUCKET`), staging CORS, minimal IAM.
+- Ensure legacy AWS EC2/S3/CloudFront auto-deploy stays gated/disabled.
+
+**Config changes:** `deploy-staging-api.sh` `--set-env-vars` gains `SUPABASE_JWT_ISSUER` +
+`SUPABASE_JWT_AUDIENCE` and drops/neutralizes `SUPABASE_URL`; GCS bucket seeded with the exact
+proving artifacts; Cloud Run env carries the GCIP issuer/audience/JWKS.
+
+**Verification gate:** Cloud Run `/healthz` + `/readyz` return 200; Cloud SQL + Memorystore
+reachable over the VPC connector; **assert the effective issuer == `https://securetoken.google.com/<PROJECT_ID>`
+(not the derived Supabase value)**; a GCIP-issued ID token is accepted and a Supabase-issued token
+is now rejected; a voter can **fetch wasm/zkey from GCS and the sha256 matches the manifest**;
+secret access scoped to `zkvote-staging-*` only; no main-push triggers a live AWS deploy.
+**dependsOn:** [17, 7].
+
+### Phase 19. Security Re-audit and Privacy Review — 🟡 (2026-06 pass done; **GCIP boundary is new**)
+
+**Objective:** Re-run the security review after Phase 1 + the Rust + IdP migrations and confirm no
+blocker was reintroduced.
+
+**Tasks:** reconcile every `audit.md` / `docs/SECURITY_AUDIT_2026-06.md` item (closed/accepted/
+open-blocking); document trust boundaries incl. **the new GCIP token-issuance / email-verification
+boundary**; **re-verify invariant #8 under GCIP** (verification enforced; imported users not
+falsely `emailVerified`; `email_verified` read top-level); review nullifier/root/candidate signal
+leakage; measure ticket-issuance-to-on-chain timing correlation in staging; decide on unlinkable
+authorization + minimum anonymity-set/turnout threshold (AR-M1/AR-M2); record accepted v1 on-chain
+visibility/receipt-ability (AR-L3); review admin scope, Secret Manager access, bucket IAM,
+replay/double-vote, finalization race, client-held-secret privacy vs operators, deployed-artifact
+-vs-manifest hash; **update `docs/SECURITY_REVIEW.md` + `docs/TECH_STACK.md` §auth + `CLAUDE.md`
+invariant #8 to name GCIP as the IdP**.
+
+**Verification gate:** no open Critical/High; the GCIP email-verification control is documented as
+the invariant-#8 carrier; audit closure matrix (C1–H5, M1–M13) complete and current.
+**dependsOn:** [18].
+
+### Phase 20. Data ETL: Supabase Postgres → Cloud SQL — 🆕
+
+**Objective:** One-time, **verified** migration of the four app tables into Cloud SQL, preserving
+the Supabase UUIDs the GCIP uids now mirror. **Cost-gated + user-approved.**
+
+**Tasks:**
+- Run `scripts/migration/etl-supabase-to-postgres.js`: export hosted Supabase rows (`Elections` /
+  `Voters` / `Admins` / `AdminInvitations`) into Cloud SQL with **row-count + checksum
+  verification** (AR-H3). **Preserve `voters.id` ordering** (XCUT-4 Merkle-order invariant) and
+  copy `admins.id` / `voters.user_id` **verbatim** (they must equal the GCIP uids set in Phase 7).
+- Choose the cutover data strategy: write-freeze, or dual-write with a data-rollback path for
+  Rust-written rows (AR-H3).
+- **Cross-check:** the set of `admins.id` / `voters.user_id` in Cloud SQL equals the set of GCIP
+  uids — no orphaned identities.
+
+> **Hard precondition:** the ETL `require('../../server/utils/fieldElement')` (L23) and
+> `require('../../server/supabaseClient')` (L144) only resolve after **Phase 6.5 Commit 2** vendors
+> them into `scripts/`. Running Phase 20 before that commit crashes on a missing `require`.
+
+**Config changes:** ETL run with `CONFIRM_COSTS=yes` + explicit approval; service-account /
+Supabase creds gitignored.
+
+**Verification gate:** migrated row-count + checksum match source per table (AR-H3); **the set of
+`voters.user_id` / `admins.id` in Cloud SQL equals the set of provisioned GCIP uids** (accounting
+for the Phase-7 OAuth-only partition — no row resolves to a non-existent identity); a migrated
+voter signs in and appears in `list_voting_for_user`; `voters.id` ordering preserved (XCUT-4).
+**dependsOn:** [19, 7, 6.5].
+
+### Phase 21. Migration Cutover — 🆕
+
+**Objective:** Move from Node-active to **Rust-active on GCIP auth**, with a rehearsed rollback.
+
+**Tasks:**
+- **Codebase precondition:** the Node→Rust deletion (migration spec Commits 1–6) is merged — Rust
+  is the sole backend, `server/` removed, `zk/` relocated.
+- Freeze the legacy API except critical fixes; run the retained pre-deletion Node image + Rust
+  side by side in staging and compare compatibility-route responses.
+- Switch frontend traffic in order: **reads → admin writes → registration/finalization →
+  proof/submit last**. Cut auth over to GCIP for all users (frontend already on Firebase SDK from
+  Phase 16; backend already validates GCIP tokens from Phase 18).
+- **Rollback artifact set (all three, since `server/` and the Supabase SDK are gone from the
+  tree):** `{ tagged pre-deletion Node image, tagged Supabase-auth frontend build, Supabase data
+  snapshot }`. A backend-only rollback is **auth-incompatible** — a restored Node image expects
+  Supabase JWTs while the live frontend (post-Phase-16) mints GCIP tokens, so the rehearsal **must
+  also** revert the frontend to the Supabase-SDK build and re-point the Supabase auth secrets.
+  Keep all three deployable until one full staging election lifecycle passes on Rust.
+
+**Verification gate:** one full staging election E2E (create → allowlist → register → finalize →
+proof → submit → complete) passes on Rust with GCIP auth; migrated row-count/checksum re-confirmed;
+**rollback rehearsal restores the full set — Node image + Supabase-auth frontend + Supabase data —
+and a user can sign in against the restored Supabase stack**. **dependsOn:** [20, 16, 6.5].
+
+### Phase 22. Production Readiness — 🆕
+
+**Objective:** Prepare production separately from staging, including a **production GCIP**
+configuration.
+
+**Tasks:** separate-named production GCP resources + secrets, incl. a production GCIP
+tenant/project with email-verification enforced and production issuer/audience
+(`https://securetoken.google.com/<prod-project>` / `<prod-project-id>`); plan the production user
+import (or promote the same GCIP project) **keeping `uid` = UUID**; upgrade Cloud SQL tier +
+consider HA; backup/restore policy; Redis persistence/failure behavior; domain/TLS/CORS/monitoring;
+alerting (DB / Redis / Cloud Run / relayer / job backlog / **GCIP sign-in failures**); load +
+concurrency tests for registration/finalization/submit.
+
+**Verification gate:** restore test passes; staging load test demonstrates capacity; prod secrets
+separate from staging; production GCIP issues tokens the prod API accepts and email-verification
+is enforced. **dependsOn:** [21].
 
 ## 6. E2E Milestones
 
-### Milestone A. Local Rust Foundation
-
-Includes phases 0-4.
-
-Exit criteria:
-
-- Audit blocker rebaseline is complete enough to permit Rust work to claim
-  staging readiness later.
-- Local Postgres and Redis are reproducible.
-- Rust API health/readiness is stable.
-- Core config, error, tracing, and module structure are ready.
-
-### Milestone B. Rust Read Parity
-
-Includes phases 5-7.
-
-Exit criteria:
-
-- Supabase JWT validation works.
-- Read-only election APIs match frontend expectations.
-- Frontend can read from Rust behind a flag.
-
-### Milestone C. Admin Lifecycle Parity
-
-Includes phases 8-12.
-
-Exit criteria:
-
-- Admin can create, configure, allowlist, register, and finalize an election in
-  Rust.
-- Finalization is recoverable and race-safe.
-
-### Milestone D. Private Vote Submission Parity
-
-Includes phase 13.
-
-Exit criteria:
-
-- Ticket/proof/submit path is anonymous under the post-audit privacy model:
-  tickets are single-use, root-bound, and election-bound; the server never
-  learns a voter's nullifier before submit; and every accepted vote is
-  contract-verified with on-chain nullifier uniqueness.
-
-### Milestone E. Full Staging E2E
-
-Includes phases 14-19.
-
-Exit criteria:
-
-- Full election lifecycle passes in GCP staging through the React frontend and
-  Rust backend.
-- No Critical or High audit item remains open.
-
-### Milestone F. Production Candidate
-
-Includes phase 20.
-
-Exit criteria:
-
-- Production infra, monitoring, backups, security review, and rollback plan are
-  complete.
+| Milestone | Phases | Exit criteria |
+|---|---|---|
+| **A. Local Rust Foundation** | 0–6 | Audit rebaseline done; local PG/Redis reproducible; Rust core stable; provider-agnostic auth in place |
+| **B. Identity Migration Ready** | 7 | GCIP provisioned; Supabase users importable with `uid`=UUID + bcrypt + verified-status; a migrated user can sign in with `sub`=old UUID |
+| **C. Rust Lifecycle Parity + Node deletion** | 6.5, 8–15 | Full admin+voter lifecycle reaches `completed` in Rust; legacy `server/` deleted (Rust sole backend); finalization recoverable; anonymous submit preserved |
+| **D. Frontend on GCIP** | 16–17 | Frontend talks to Rust + Firebase Auth SDK; CI green incl. auth-config + Firebase-secret regressions |
+| **E. Staging on GCP+GCIP** | 18–20 | Cloud Run accepts GCIP tokens (rejects Supabase); security re-audit clean; Cloud SQL ETL row/checksum-verified; ids resolve to GCIP users |
+| **F. Cutover** | 21 | One full staging election E2E on Rust+GCIP; rollback rehearsed |
+| **G. Production Candidate** | 22 | Prod infra + prod GCIP + monitoring/backups/rollback complete |
 
 ## 7. Suggested Immediate Next Work
 
-1. Promote `audit.md` to `docs/SECURITY_REVIEW.md` or explicitly keep it as the
-   temporary canonical security review.
-2. Implement circuit/contract v2 for C1/H1: public `election_id`, boolean
-   `pathIndices`, regenerated artifacts, `uint[4]` verifier boundary, and
-   backend/frontend public-signal updates.
-3. Redesign registration/proof privacy for H2: client-held voter secret,
-   backend commitment/leaf storage only, and no plaintext secret in `/proof`.
-4. Add MockVerifier and route-level regression tests that would catch C1/H1/H2.
-5. Harden deployment/finalization/ticket flows for H3/H4/M1/M12 before any
-   staging claim.
-6. Fix staging/deployment hygiene from M2/M9/M10/M11: `.ptau`/`circom`,
-   secret-scoped IAM, DB password secret ordering, and AWS CD gating.
-7. Resume Rust route parity only after the security rebaseline has a clear
-   pass/fail status.
+1. **Execute the Node→Rust code deletion** (migration spec Commits 1–6): relocate `server/zkp` →
+   `zk/`, vendor ETL/deploy deps, delete `server/` + CI lockstep, repoint frontend dev URL, docs,
+   delete `deploy-backend.yml`.
+2. **Phase 7 prep (no cost yet):** write `scripts/migration/import-users-to-gcip.js` and add
+   `identitytoolkit.googleapis.com` to the setup script; **do not run** the GCIP enable/import
+   until cost-approved.
+3. **Phase 16 prep:** scaffold the Firebase Auth SDK swap behind the existing API-base-URL flag;
+   decide the Kakao OAuth keep-or-drop.
+4. **Phase 17 deltas:** add the wrong-issuer/wrong-audience auth regression; stage the
+   `REACT_APP_SUPABASE_* → REACT_APP_FIREBASE_*` CI-secret rename.
+5. **Doc reconciliation:** update `docs/TECH_STACK.md` §auth and `CLAUDE.md` invariant #8 to name
+   GCIP (Phase 19 finalizes this).
+6. **Gate everything cost-incurring** (GCIP enable, import, infra standup, ETL) on explicit
+   approval; keep `main` frozen.
 
-## 8. Risk Register
+## 8. Environment Variable Migration Matrix
+
+| Variable | Old (Supabase) | New | Used by |
+|---|---|---|---|
+| `SUPABASE_JWKS_URL` | `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` | `https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com` (**not** the x509 PEM endpoint) | `config.rs:117`, Cloud Run secret, `.env.example` |
+| `SUPABASE_JWT_ISSUER` | unset → derived `{SUPABASE_URL}/auth/v1` | **must set** `https://securetoken.google.com/<PROJECT_ID>` | `config.rs:76-78,118`, `deploy-staging-api.sh` |
+| `SUPABASE_JWT_AUDIENCE` | `authenticated` | `<PROJECT_ID>` (bare id) | `config.rs:119-120`, `token.rs` |
+| `SUPABASE_URL` | Supabase project URL | **unused for auth** once issuer is explicit (was legacy Node data plane) | `config.rs:77` |
+| `REACT_APP_SUPABASE_URL` | Supabase URL | `REACT_APP_FIREBASE_AUTH_DOMAIN` (+ `_PROJECT_ID`) | `frontend/src/supabase.js`→firebase init, `frontend/.env` |
+| `REACT_APP_SUPABASE_ANON_KEY` | Supabase anon key | `REACT_APP_FIREBASE_API_KEY` (public web key, **not** a secret) | frontend init, `frontend/.env` |
+| `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_KEY` | service-role / anon (legacy Node data plane) | **removed** after Node→Rust + ETL (not part of the IdP swap) | `server/.env` (deleted) |
+| `DATABASE_URL` | Supabase Postgres DSN | Cloud SQL unix-socket DSN `host=/cloudsql/<conn>` (`zkvote_app`) | `config.rs:100`, secret |
+| `(migrator) DATABASE_URL` | n/a | Cloud SQL DSN with `zkvote_migrator` DDL role | secret, `db/roles.sql` |
+| `REDIS_URL` | local/dev | `redis://<memorystore-host>:6379` over VPC connector | `config.rs:101`, secret |
+| `ARTIFACT_STORE` / `ARTIFACT_BUCKET` | local | `gcs` / `zkvote-staging-artifacts-<project>` | `config.rs:80-109` |
+| `OWNER_PRIVATE_KEY` vs `RELAYER_PRIVATE_KEY` | — | stay **DISTINCT** secrets (AR-M4); unchanged by IdP swap | Secret Manager |
+| GCP `required_apis` | 9 existing | **+ `identitytoolkit.googleapis.com`** | `zkvote-staging-setup.sh:26-36` |
+| Firebase Admin SA JSON | n/a | **NEW**, gitignored, one-time import script only | `import-users-to-gcip.js` (new) |
+
+## 9. Risk Register
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| C1 election ID is private in circuit | Registered voter can mint multiple valid nullifiers and overvote | Circuit public `election_id`, contract check, regenerated verifier/artifacts, regression tests |
-| H1 Merkle `pathIndices` unconstrained | Registered voter with a valid path can forge membership for arbitrary leaves | Boolean constraints for each path index and verifier regression tests |
-| H2 backend-held voter secret | Backend/operator can deanonymize votes and forge secrets if salt leaks | Client-held secret, backend commitment-only storage, `/proof` never returns secret |
-| H3/H4 deployment/finalization races | Election can become unrecoverable or exclude late registrations silently | Durable deployment/finalizing states, lock fencing/renewal, artifact hash binding, retryable workers |
-| H5 admin invitations never consumed | Invited future admins are never granted access; silent provisioning failure | Invitation acceptance/auth-time promotion from `AdminInvitations`, visible failure on promotion error |
-| Rust route response drift from Node | Frontend breaks during cutover | Compatibility matrix and route tests |
-| Finalization partial failure | Registration or voting state becomes inconsistent | Job model, locks, retry-safe DB state |
-| Ticket replay or premature consume | Double relay attempt or vote UX loss after transient failure | Ticket-scoped lock/Lua consume, mismatch tests, frontend failure handling |
-| ZK artifact mismatch | Invalid verifier/proof pairing or deployed election proof breakage | Manifest, sha256, required artifact validation, election-artifact binding |
-| Relayer key exposure | Chain account compromise | Secret Manager, local `.env`, no committed secrets |
-| Overbroad GCP secret access | Runtime service account can read unrelated project secrets | Secret-level IAM bindings for `zkvote-staging-*` only |
-| Live AWS auto-deploy during migration | Dirty or incomplete migration work reaches EC2/S3/CloudFront | Gate workflows with manual approval/environment protection or disable legacy CD |
-| Redis outage | Locks/tickets unavailable | Readiness checks and explicit degraded behavior |
-| Cloud SQL cost growth | Staging cost surprise | Low-cost staging tier, separate prod sizing |
-| Noir POC confusion | Production ZK path drift | Keep Noir isolated from production artifact selection |
+| **`sub`-format break** (GCIP 28-char uid vs `Uuid::parse_str`, `auth/mod.rs:90-92`) | Every request 401s and matches no DB row | Set GCIP `uid` = existing Supabase UUID at `importUsers`; provision all identities with UUID uids; **verify in staging before cutover**; invasive fallback = `CurrentUser.id: String` + column migration |
+| **x509 vs JWK endpoint** | Wrong (PEM) URL makes the `KeySet` parser reject all keys → all auth fails | Use `/service_accounts/v1/jwk/` only |
+| **Issuer-default footgun** | Unset `SUPABASE_JWT_ISSUER` derives the Supabase issuer → rejects every GCIP token | Set it explicitly to `https://securetoken.google.com/<PROJECT_ID>` |
+| **Audience mismatch** | Leaving default `authenticated` rejects all GCIP tokens | Set `SUPABASE_JWT_AUDIENCE=<PROJECT_ID>`; update test fixtures |
+| **`email_verified` weakening** | If verification off or imports set `emailVerified:true` unconditionally, invariant #8 breaks (claim another's inbox) | Enforce GCIP verification; import `emailVerified` = true Supabase status only; rely on the top-level claim |
+| **Frontend rewrite regression** | Largest code change; `getIdToken()` is async vs Supabase sync token → interceptor can drop the bearer; new verify/reset flows | Careful interceptor port + `axios.test.js`; browser smoke tests; keep Node fallback until E2E |
+| **Kakao OAuth gap** | No automatic GCIP equivalent → OAuth-only users locked out | Configure a GCIP OIDC provider **or** drop Kakao for v1 with a recorded decision |
+| **ETL/import ordering coupling** | If `admins.id`/`voters.user_id` and GCIP uids diverge, migrated users don't resolve | Run GCIP import (Phase 7) before/with the ETL (Phase 20); cross-check the id sets |
+| **Cost-gate / shared-project** | GCIP enable, import, standup, ETL bill a shared POC project | `CONFIRM_COSTS=yes` + explicit approval for each; never run unapproved |
+| **Plan/doc contradiction** | `TECH_STACK.md`/`CLAUDE.md` still say "keep Supabase Auth" | This plan supersedes; reconcile docs in Phase 19 |
+| **`addAdmins` Admin-API gap (AR-L4)** | Rust `manage.rs:144` returns false; no invite-by-listing-auth-users | v1 keeps DB email-invitation flow; document the gap |
+| C1/H1/H2/H3/H4/H5 (closed) | Overvote / forge / deanonymize / unrecoverable election / silent admin failure | Circuit v2, client-held secret, durable lifecycle state, invitation acceptance (see Phase 1) |
+| Owner/relayer key conflation (AR-M4) | Relayer-key leak can freeze an election | Distinct cold owner / hot relayer keys in Secret Manager |
+| ZK artifact mismatch / non-beacon zkey | Invalid proofs / deployed-election breakage | Manifest + sha256 + `snarkjs zkey verify` gate (AR-H1) |
+| Live AWS auto-deploy during migration | Incomplete work reaches EC2/S3/CloudFront | `workflow_dispatch`-gate / disable legacy CD; `main` frozen |
 
-## 9. Completion Definition for the Whole Project
+## 10. Completion Definition for the Whole Project
 
-The project is not complete when the Rust server simply compiles. It is complete
-for the first production candidate only when:
+The project is complete for the first production candidate only when:
 
-- Admin and voter flows pass end-to-end in staging through the frontend.
-- All Critical and High audit findings are closed or explicitly reclassified
-  with code-backed evidence.
-- Staging blockers from Medium audit findings have been fixed or are tracked as
-  intentional non-production limitations.
-- Rust backend owns all required production routes.
-- Node backend is no longer required for normal operation.
-- ZK artifacts are versioned, integrity-checked, and stored outside source-only
-  paths.
-- The production circuit exposes and verifies election identity, constrains
-  Merkle path indices, and uses the post-audit public signal order everywhere.
-- Voter secrets are not generated, stored, or returned by the backend.
-- Contracts are deployed or linked through reproducible tooling.
-- Submission replay, mismatch, and duplicate nullifier cases are tested.
-- Finalization is recoverable after partial DB or chain failures.
-- Production infrastructure is separate from staging.
-- Secrets, IAM, backup, monitoring, and rollback plans are documented and
-  verified.
+- Admin and voter flows pass end-to-end in GCP staging through the frontend on **GCIP auth** and
+  the **Rust** backend.
+- All Critical/High audit findings are closed or reclassified with code-backed evidence; staging
+  blockers from Medium findings are fixed or tracked.
+- **Rust is the sole backend; the legacy Node `server/` is deleted** and no Supabase dependency
+  remains in the runtime path (auth on GCIP, data on Cloud SQL).
+- The IdP swap preserves invariant #8: GCIP email-verification enforced; identities keyed on
+  UUID `sub` = old Supabase UUID; bcrypt passwords migrated; no voter re-registration.
+- ZK artifacts are versioned, integrity-checked, beacon-finalized, and stored outside source-only
+  paths; the production circuit exposes/verifies `election_id`, constrains Merkle path indices,
+  and uses the post-audit public-signal order everywhere.
+- Voter secrets are never generated, stored, or returned by the backend.
+- Contracts are deployed/linked through reproducible tooling with owner ≠ relayer keys.
+- Submission replay, mismatch, and duplicate-nullifier cases are tested; finalization recovers
+  from partial DB/chain failures.
+- Production infra, GCIP, monitoring, backups, IAM, and a rehearsed rollback are documented and
+  verified, separate from staging.

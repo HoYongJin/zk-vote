@@ -3,7 +3,10 @@
 **Date:** 2026-06-19
 **Branch:** `codex/phase1-c1-h1-circuit-contract-v2`
 **Author:** dev+security lead (Claude, under user direction)
-**Status:** approved-pending-user-review
+**Status:** approved-pending-user-review · **partially superseded 2026-06-20** — the frontend-auth
+disposition below ("Supabase auth stays") is overridden by the GCIP auth migration in
+`docs/PROJECT_PLAN.md` §0 / Phase 16. This spec covers only the Node *code* deletion; the frontend
+Supabase→Firebase SDK swap happens in Phase 16, *after* these code-deletion commits.
 
 ## Goal
 
@@ -20,7 +23,7 @@ out of scope, see below).
   16 Node routes to verified Rust equivalents (`parityGaps: []`), including the
   anonymous `submit` route (no auth extractor — invariant #1 intact) and the
   `proof` route (ticket binds `election_id`+`root` only — invariant #2 intact).
-- **Working tree is clean** (HEAD `1eaf926`); the prior-agent WIP is committed, so
+- **Working tree is clean** (verify `git status` is empty before Commit 1; the prior-agent WIP is committed), so
   the migration starts on a clean base and deep-dirty doc edits won't churn.
 - System is **local-demo/dev-only** — nothing runs on real GCP/AWS, so removing
   the Node deploy path breaks no live system.
@@ -64,8 +67,10 @@ out of scope, see below).
   `etlChecksum.js` (contract/circuit/Poseidon/ETL tests — survive `server/` deletion).
 - `.gcloudignore` / `.dockerignore` `.env`+`server/.env` excludes — keep even after
   `server/` removal (INFRA-1 control; `ci.yml` asserts `.env` present).
-- `frontend/src/{api/axios.js,utils/apiBaseUrl.js,store/authSlice.js,supabase.js}` —
-  backend-agnostic; Supabase auth stays (invariant #8).
+- `frontend/src/{api/axios.js,utils/apiBaseUrl.js,store/authSlice.js}` — backend-agnostic; keep.
+  (`supabase.js` was originally KEEP here but is **superseded**: `PROJECT_PLAN.md` §0/Phase 16
+  swaps the frontend to the Firebase/GCIP SDK *after* these code-deletion commits. This spec does
+  not touch frontend auth.)
 - Rust build/deploy infra (`rust-backend/Dockerfile`, `scripts/gcp/*`,
   `docker-compose.yml`, `scripts/local/*`) — cost-gated, do not auto-trigger.
 - `audit.md` — point-in-time evidence; **annotate elsewhere, never rewrite**.
@@ -77,7 +82,9 @@ out of scope, see below).
 - Repoint in the same commit: `scripts/ci/check-artifact-schema.sh` glob (L12) +
   message (L23); `scripts/local/fetch-ptau.sh` `ZKP_DIR` (L16); `scripts/local/
   check-toolchain.sh` snarkjs/ptau paths (L36/L50); `scripts/deployAll.js`
-  `setUpZk.sh` hint (L84); `ci.yml` shell-gate glob (`server/zkp` → `zk`).
+  `setUpZk.sh` hint (L84); `ci.yml` shell-gate glob (`server/zkp` → `zk`); **and
+  `.gcloudignore`** — repoint `server/zkp/{tmp,input,circomlib}/` → `zk/{tmp,input,circomlib}/`
+  and drop `server/node_modules/` (keep the `.env`/`server/.env` excludes, INFRA-1).
 - Copy exact `build_4_5`/`build_5_4` artifacts into `.data/zk-artifacts/` (currently
   empty) so the Rust local-serve path has content.
 - Re-anchor `circomlib` for `setUpZk.sh`: add `circomlib` to **root** `package.json`
@@ -143,8 +150,10 @@ out of scope, see below).
 
 - **Supabase *data*-layer decommissioning** — this is a Node→Rust *code* migration;
   Supabase→Postgres data cutover is Phase-19 (ETL, cost-gated, user-approved).
-  Frontend keeps Supabase auth (invariant #8); `deployAll.js` keeps its (now
-  vendored) Supabase metadata write until Phase-19 retires it.
+  Frontend auth (Supabase→Firebase/GCIP) is **out of scope for this spec but IN scope for the
+  project** — it is done in `PROJECT_PLAN.md` Phase 16, after these commits (this supersedes the
+  earlier "frontend keeps Supabase auth" wording). `deployAll.js` keeps its (now vendored) Supabase
+  metadata write until the Phase-20 ETL / Supabase decommissioning retires it.
 - **GCP staging deploy (Phase 16)** and **ETL run (Phase 19)** — cost money, need
   explicit approval; not triggered.
 - **Frontend hosting decision** (AWS vs GCP) — open; `deploy-frontend.yml`/
