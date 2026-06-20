@@ -113,8 +113,17 @@ multi-chain:**
 **Design caveat (multi-chain simultaneity):** replay protection is the on-chain nullifier mapping
 + in-circuit `election_id` binding — **not** `block.chainid`/EIP-712. Sound within one deployment,
 but the *same proof* could be replayed on a second chain running the same verifier + root.
-**v1 decision: target exactly ONE pinned production chain;** running two chains at once is a
-design change, not an env flip.
+**v1 decision (2026-06-20): the production chain is pinned to Sepolia — chainId `11155111`.**
+Sepolia is a *testnet*, so v1 is "production-shaped on Sepolia," not Ethereum mainnet; a future
+mainnet/L2 move re-opens the gaps above. Running two chains at once is a design change, not an
+env flip.
+
+**Because the target is Sepolia (the codebase default), two of the four gaps auto-close:** gap #3
+(explorer) — the hardcoded `https://sepolia.etherscan.io` is already correct; gap #4
+(gas/finality) — Sepolia is standard EIP-1559, ~12s blocks, low reorg, so the alloy auto-fee +
+900s lease are adequate (an explicit confirmation depth stays optional). **Only two remain:** add
+`chainId: 11155111` to the `sepolia` network in `hardhat.config.js`, and add the `eth_chainId`
+deploy-time guard asserting the live RPC reports `11155111`.
 
 ---
 
@@ -129,7 +138,7 @@ React frontend (Firebase Auth Web SDK / GCIP login)
     -> Cloud SQL PostgreSQL (zkvote_app DML role; zkvote_migrator DDL role)
     -> Memorystore Redis (locks, short-lived proof tickets)
     -> GCS ZK artifact storage
-    -> Ethereum relayer (hot key) / owner key (cold)
+    -> Ethereum relayer (hot key) / owner key (cold) — Sepolia testnet, chainId 11155111
       -> VotingTally + Groth16 verifier contracts
   Identity: GCP Identity Platform (email/password, email-verification enforced)
             JWT validated in Rust by JWKS/issuer/audience (config-swap from Supabase)
@@ -172,7 +181,8 @@ Nothing runs on real GCP/AWS infra yet — the system is local-demo/dev-only.
 - **Auth: migrate Supabase Auth → GCP Identity Platform; validate JWT/JWKS in Rust** (§0).
 - **Database: Cloud SQL PostgreSQL** (data moved from Supabase via Phase-20 ETL).
 - Cache/lock/tickets: Memorystore Redis.
-- Chain: Solidity + Ethereum-compatible relayer (owner key ≠ relayer key).
+- Chain: Solidity + Ethereum-compatible relayer (owner key ≠ relayer key). **Production chain
+  pinned: Sepolia testnet, chainId `11155111`** (§0.5; a future mainnet/L2 move is a scoped change).
 - **Backend: Rust only** — the legacy Node `server/` is deleted, not kept as a reference copy.
 - Plan ordering is security-first and dependency-ordered; each phase has a verification gate.
 
@@ -642,7 +652,7 @@ user-approved.**
 - Build + push the Rust image (`cloudbuild-staging-api.yaml`) to Artifact Registry; `gcloud run
   deploy zkvote-staging-api` with Cloud SQL attach, VPC connector, and secret env mounts
   (`DATABASE_URL`, `REDIS_URL`, `SUPABASE_JWKS_URL`=GCIP JWKS, `SUPABASE_JWT_ISSUER`,
-  `SUPABASE_JWT_AUDIENCE`, `SEPOLIA_RPC_URL`, `RELAYER_PRIVATE_KEY`, `OWNER_PRIVATE_KEY`,
+  `SUPABASE_JWT_AUDIENCE`, `SEPOLIA_RPC_URL`, `CHAIN_ID=11155111`, `RELAYER_PRIVATE_KEY`, `OWNER_PRIVATE_KEY`,
   `ARTIFACT_BUCKET`), staging CORS, minimal IAM.
 - Ensure legacy AWS EC2/S3/CloudFront auto-deploy stays gated/disabled.
 
@@ -739,9 +749,10 @@ with its own secrets, incl. a production GCIP tenant with email-verification + t
 provider, and production issuer/audience (`https://securetoken.google.com/<prod-project>` /
 `<prod-project-id>`); plan the production user import (or promote the staging GCIP project)
 **keeping `uid` = UUID**; **frontend on Firebase Hosting** (prod site, prod `REACT_APP_FIREBASE_*`).
-**Pin the production chain target** (§0.5): choose ONE chain (name + numeric `chainId`) and close
-the four non-env gaps — chainId-pinned `hardhat.config.js` network, an `eth_chainId` deploy guard,
-chainId-derived explorer links, and validated gas/finality/lock-TTL for that chain. Upgrade Cloud
+**Production chain = Sepolia (chainId `11155111`)** — pinned in §0.5. Remaining hardening (gaps #3/#4
+already satisfied by the Sepolia default): add `chainId: 11155111` to the `hardhat.config.js`
+`sepolia` network, and an `eth_chainId` deploy-time guard. (A later mainnet/L2 move re-opens all
+four §0.5 gaps and is a scoped follow-up.) Upgrade Cloud
 SQL tier + consider HA; backup/restore policy; Redis persistence/failure behavior;
 domain/TLS/CORS/monitoring; alerting (DB / Redis / Cloud Run / relayer / job backlog / **GCIP
 sign-in failures**); load + concurrency tests for registration/finalization/submit.
@@ -812,7 +823,7 @@ at deploy** and the four §0.5 gaps are closed. **dependsOn:** [21].
 | **OAuth migration (Kakao→Google, decided)** | A Kakao-only user whose email is not a Google account can't sign in with Google | Google provider + same-email account-linking + `uid`=UUID; non-Google emails fall back to password enrollment or a documented-exclusion list (Phase 7/16) |
 | **ETL/import ordering coupling** | If `admins.id`/`voters.user_id` and GCIP uids diverge, migrated users don't resolve | Run GCIP import (Phase 7) before/with the ETL (Phase 20); cross-check the id sets |
 | **Cost-gate (dedicated project, decided)** | GCIP enable, import, standup, ETL incur billing | **New dedicated** `zkvote-staging`/`zkvote-prod` projects (removes the shared-POC risk); each action `CONFIRM_COSTS=yes` + explicit approval; never run unapproved |
-| **Multi-chain / production chain not pinned** | Soft Sepolia defaults; same proof replayable on another chain sharing the verifier+root if two chains run at once | Pin ONE production chain (name + numeric `chainId`); close the 4 non-env gaps (§0.5); single-chain v1 |
+| **Chain pinned to Sepolia (testnet)** | v1 runs on a testnet (resettable; lacks mainnet economic finality); same proof replayable on a 2nd chain sharing verifier+root | DECIDED: single chain = Sepolia `11155111`; add hardhat `chainId` pin + `eth_chainId` guard (§0.5); mainnet/L2 is a future scoped change |
 | **Plan/doc contradiction** | `TECH_STACK.md`/`CLAUDE.md` still say "keep Supabase Auth" | This plan supersedes; reconcile docs in Phase 19 |
 | **`addAdmins` Admin-API gap (AR-L4)** | Rust `manage.rs:144` returns false; no invite-by-listing-auth-users | v1 keeps DB email-invitation flow; document the gap |
 | C1/H1/H2/H3/H4/H5 (closed) | Overvote / forge / deanonymize / unrecoverable election / silent admin failure | Circuit v2, client-held secret, durable lifecycle state, invitation acceptance (see Phase 1) |
