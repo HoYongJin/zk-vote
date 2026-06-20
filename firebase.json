@@ -1,0 +1,20 @@
+{
+  "hosting": {
+    "public": "frontend/build",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "comment": "SPA fallback: React Router owns client-side routes, so every path serves index.html.",
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "comment": "Long-cache the content-hashed CRA build assets; index.html stays uncached so deploys take effect immediately.",
+        "source": "/static/**",
+        "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+      }
+    ]
+  }
+}
