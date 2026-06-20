@@ -73,11 +73,48 @@ with UUID uids** (import or scripted), or the invasive fallback (change `Current
 - The IdP swap **overrides** the documented "keep Supabase Auth" decision; `docs/TECH_STACK.md`
   and `CLAUDE.md` invariant #8 wording (`Supabase email-confirmation` → `IdP email-verification`)
   are a documentation follow-up tracked in Phase 0/19.
+- **Resolved decisions (2026-06-20):** (i) **OAuth provider = Google** (replaces Kakao) — use
+  GCIP's native Google provider; (ii) **GCP project = a NEW dedicated project** `zkvote-staging`
+  (+ `zkvote-prod`), **not** a shared POC project — provision from scratch (removes the
+  shared-project risk); (iii) **frontend hosting = GCP** — Firebase Hosting (same project as
+  GCIP), retiring the AWS S3/CloudFront CD.
 - **Process invariants (unchanged):** `main` stays frozen (no live-deploy push); enabling GCIP,
   the user import, the GCP infra standup, and the Cloud SQL ETL are all **cost-gated**
   (`CONFIRM_COSTS=yes`) and require **explicit user approval**; legacy AWS workflows stay
   `workflow_dispatch`-gated; never commit real secrets (Firebase Admin SA JSON + Supabase creds
   are gitignored).
+
+### 0.5 Production chain target & multi-chain portability
+
+**Question answered:** *"Can we deploy to multiple EVM chains by changing env vars only?"* →
+**Mostly yes, with four small non-env gaps.** The **Rust backend is chain-agnostic and env-driven**:
+RPC URL (`SEPOLIA_RPC_URL`→`RPC_URL` fallback, `config.rs:121`), `CHAIN_ID` (`config.rs:91`), and
+the relayer/owner keys all come from env/Secret Manager, and **per-election verifier + VotingTally
+addresses are deploy-time outputs persisted per-election in Postgres (with `chain_id`)** — there is
+**no global hardcoded contract address**. So pointing the *backend* at a new chain is an env change.
+
+**The per-chain switch surface (env):** `RPC_URL`/`SEPOLIA_RPC_URL`, `CHAIN_ID`, `RELAYER_PRIVATE_KEY`,
+`OWNER_PRIVATE_KEY`, `OWNER_ADDRESS`, `ETHERSCAN_API_KEY`, `MERKLE_TREE_DEPTH`, `NUM_CANDIDATES`.
+
+**The four gaps that are NOT env (need a code/config edit per chain) — close these before claiming
+multi-chain:**
+1. `hardhat.config.js` has a single `sepolia` network with **no chainId pin** and no generic
+   env-named slot — add a `chainId`-pinned network entry (you can overload the env to repoint it,
+   but the name stays `sepolia`).
+2. **No `eth_chainId` guard** — a wrong `CHAIN_ID` is silently mislabeled, not rejected
+   (`config.rs:91` is metadata only; `crates/chain/src/lib.rs` never calls `eth_chainId`). Add a
+   deploy-time assertion.
+3. Frontend block-explorer URL is **hardcoded `https://sepolia.etherscan.io`**
+   (`VoterMainPage.js`, `AdminMainPage.js`) — make it chainId-derived. Cosmetic, no security impact.
+4. **Gas/finality/lock-TTL are implicit** (alloy auto-fee, ~1-confirmation `get_receipt()`, 900s
+   relayer/deploy lease) — validate against the chosen chain's fee model + block time; a
+   high-reorg or slow chain needs explicit confirmation depth / longer leases.
+
+**Design caveat (multi-chain simultaneity):** replay protection is the on-chain nullifier mapping
++ in-circuit `election_id` binding — **not** `block.chainid`/EIP-712. Sound within one deployment,
+but the *same proof* could be replayed on a second chain running the same verifier + root.
+**v1 decision: target exactly ONE pinned production chain;** running two chains at once is a
+design change, not an env flip.
 
 ---
 
@@ -357,20 +394,24 @@ re-registers and DB FKs stay intact. **Cost-gated + user-approved.**
   email). Configure verification + (optional) password-reset email templates + authorized
   domains/redirect URIs.
 - **Partition the Supabase user population first** (a `SELECT` over `auth.users` / `identities`):
-  **password users** (have a bcrypt hash) vs **OAuth-only users** (e.g. Kakao — **no** password
-  hash). The two are migrated differently and the split is load-bearing for Phase 16 (Kakao
-  decision) and Phase 20 (identity cross-check).
+  **password users** (have a bcrypt hash) vs **OAuth-only users** (currently Kakao — **no** password
+  hash). The two migrate differently; the split is load-bearing for Phase 16 (Kakao→Google swap)
+  and Phase 20 (identity cross-check).
 - **Password users — bulk import:** one-time, **idempotent** `scripts/migration/import-users-to-gcip.js`
   using the Firebase Admin SDK `getAuth().importUsers([...], { hash: { algorithm: 'BCRYPT' } })`,
   batched ≤1000/call. Per user set **`uid` = the existing Supabase UUID string**, `email`,
   `passwordHash` = the raw `$2a/$2b` bcrypt bytes, and **`emailVerified` = the user's actual
   Supabase verified status (NEVER unconditionally `true`)**.
-- **OAuth-only users — explicit decision (tie to Phase 16 Kakao keep/drop):** either (a) configure
-  the matching GCIP OIDC/OAuth provider and import them as federated identities **keeping
-  `uid` = the Supabase UUID**, or (b) enroll them into email/password via a forced password-reset,
-  or (c) **explicitly exclude** them with a documented lockout + user-comms plan. Whichever is
-  chosen, record which `voters.user_id`/`admins.id` rows it covers so the Phase-20 cross-check is
-  a partition match, not a false 1:1.
+- **OAuth-only users — DECIDED (2026-06-20): replace Kakao with Google OAuth** (GCIP's native
+  Google provider; Google-asserted emails arrive `email_verified=true`, satisfying invariant #8).
+  Migrate each existing Kakao-only identity by provisioning a GCIP user with **`uid` = the Supabase
+  UUID** + that user's email; they re-authenticate via Google and, because authority is
+  email-keyed, the same email resolves to the same admin/voter row (rely on GCIP same-email
+  account-linking, or pre-create the Google `providerData`). **Residual:** a Kakao account whose
+  email is not a Google-accessible address cannot sign in with Google — fall back to email/password
+  enrollment (a password-reset link) or place it on a **documented-exclusion** list. Record which
+  `voters.user_id`/`admins.id` rows each path covers so the Phase-20 cross-check is a partition
+  match, not a false 1:1.
 - **Close the non-UUID signup window:** until cutover (Phase 21), either **disable open GCIP
   self-registration** or route all new sign-ups through a UUID-minting provisioning path — a user
   created via normal GCIP sign-up gets a 28-char uid (not a UUID) and would `401` (§0.3).
@@ -381,8 +422,9 @@ re-registers and DB FKs stay intact. **Cost-gated + user-approved.**
   v1 — admin promotion stays DB-driven via verified-email invitations (no GCIP custom-claim authz).
 
 **Config changes:** `zkvote-staging-setup.sh required_apis += identitytoolkit.googleapis.com`;
-new gitignored `scripts/migration/import-users-to-gcip.js`; GCIP email/password (+ optional OAuth)
-provider; self-registration disabled until cutover.
+new gitignored `scripts/migration/import-users-to-gcip.js`; GCIP email/password **+ Google OAuth**
+provider; self-registration disabled until cutover; provisioned in the **new dedicated** project
+`zkvote-staging`.
 
 **Verification gate:**
 - A test sign-in with a migrated **password** voter's existing password yields a GCIP ID token
@@ -449,6 +491,12 @@ params after `configureElection` + supersede runbook (AR-M7). **Verification gat
 `configureElection` succeed; metadata persisted; deploy script refuses if owner key == relayer
 key. **dependsOn:** [11].
 
+> **Chain-portability delta (§0.5):** the chain layer is env-driven and addresses are per-election
+> in Postgres, so retargeting is mostly env. Before pinning the production chain (Phase 22), close
+> the four non-env gaps: chainId-pinned `hardhat.config.js` network, an `eth_chainId` deploy-time
+> guard (today `CHAIN_ID` is metadata-only and unverified), chainId-derived explorer links, and
+> validated gas/finality/lock-TTL for the chosen chain.
+
 ### Phase 13. Finalization Worker — ✅
 
 **Objective:** Recoverable finalization job flow with **bit-identical Poseidon** (AR-H7).
@@ -504,13 +552,13 @@ the Firebase Auth Web SDK** — the largest single code change of the migration 
 - **Rewrite the login UI — it is multi-component, not one file:** `LoginPage.js` (coordinator),
   `EmailAuthForm` (`signInWithPassword` → `signInWithEmailAndPassword`; `signUp` →
   `createUserWithEmailAndPassword` + `sendEmailVerification` — **add the in-app verify prompt that
-  did not exist before**; add `sendPasswordResetEmail`), `KakaoAuthButton` + the OAuth redirect
-  handler (currently `supabase.auth.signInWithOAuth({provider:'kakao'})`).
-- **Kakao OAuth — BLOCKING decision (tie to Phase 7 partition):** Kakao is a fully wired feature.
-  Either (a) configure a GCIP OIDC/OAuth provider for Kakao and migrate those identities
-  (`uid`=UUID), or (b) drop Kakao for v1 with a documented user-comms/lockout plan. **OAuth-only
-  users have no bcrypt hash** so they cannot be password-imported in Phase 7 — this decision and
-  that partition are the same decision. Do not leave it implicit.
+  did not exist before**; add `sendPasswordResetEmail`), and a **`GoogleAuthButton`** that
+  **replaces** the current `KakaoAuthButton` — `signInWithPopup(new GoogleAuthProvider())` instead
+  of `supabase.auth.signInWithOAuth({provider:'kakao'})`; remove the Kakao redirect handler.
+- **OAuth provider — DECIDED: Kakao → Google** (GCIP native Google provider). Configure the Google
+  provider in GCIP; existing Kakao-only users migrate per Phase 7 (provision `uid`=UUID + email,
+  re-auth via Google by same-email account-linking; non-Google emails fall back to password
+  enrollment or documented exclusion — they have no bcrypt hash to import).
 - Rewrite `App.js` `AuthHandler`: `onAuthStateChange` → `onAuthStateChanged`; `getSession` → the
   Firebase `currentUser`; keep dispatching `setUser` and calling `GET /api/me` for `is_admin`
   (AR-H4, no direct table reads). Rewrite the axios interceptor (`frontend/src/api/axios.js`) to
@@ -518,24 +566,26 @@ the Firebase Auth Web SDK** — the largest single code change of the migration 
   (note: `getIdToken()` is **async** vs Supabase's sync token — interceptor bugs can drop the
   bearer); **keep `skipAuth` on submit**. Update `axios.test.js` mocks and `authSlice` comments
   (Supabase user/session → Firebase user/IdToken).
-- **Repoint the frontend CD build args:** `.github/workflows/deploy-frontend.yml` (and
-  `frontend/buildspec.yml`) inject `REACT_APP_SUPABASE_URL`/`_ANON_KEY` at build time — change them
-  to `REACT_APP_FIREBASE_*`, **or** keep the workflow `workflow_dispatch`-disabled until the
-  hosting decision and explicitly forbid dispatching it with stale Supabase env (a build with
-  undefined Firebase config ships a non-functional login).
+- **Frontend hosting — DECIDED: GCP (Firebase Hosting).** Retire the AWS S3/CloudFront CD
+  (`.github/workflows/deploy-frontend.yml`, `frontend/buildspec.yml`) and replace it with a
+  **Firebase Hosting** deploy (same project as GCIP; `firebase deploy --only hosting` via a CI
+  workflow). The new build env injects `REACT_APP_FIREBASE_*` (not the old `REACT_APP_SUPABASE_*`).
+  Until the new CD lands, keep the AWS workflow `workflow_dispatch`-disabled — never dispatch it
+  with stale Supabase env (a build with undefined Firebase config ships a non-functional login).
 - Convert `datetime-local` → ISO; switch read routes first, then writes by lifecycle; keep the
   **tagged pre-deletion Node image** as fallback until staging E2E passes; browser smoke tests for
   admin + voter flows.
 
 **Config changes:** `frontend/package.json` `-@supabase/supabase-js, +firebase`; `frontend/.env`
-+ `deploy-frontend.yml`/`buildspec.yml` build args `REACT_APP_SUPABASE_URL/_ANON_KEY` →
-`REACT_APP_FIREBASE_API_KEY/_AUTH_DOMAIN/_PROJECT_ID`; `REACT_APP_API_BASE_URL` flag wired to Rust.
+`REACT_APP_SUPABASE_URL/_ANON_KEY` → `REACT_APP_FIREBASE_API_KEY/_AUTH_DOMAIN/_PROJECT_ID`; new
+**Firebase Hosting** CD (replaces the AWS `deploy-frontend.yml`/`buildspec.yml`);
+`REACT_APP_API_BASE_URL` flag wired to Rust.
 
 **Verification gate:** `npm test --prefix frontend -- --watchAll=false && npm run build --prefix
 frontend` pass; a real GCIP login attaches a `getIdToken()` bearer the Rust API accepts and
 `GET /api/me` returns correct `is_admin`; sign-up sends a verification email and an unverified
-account is not treated as admin/voter; the Kakao decision is recorded and (if kept) a Kakao login
-yields an accepted token. **dependsOn:** [15, 7, 6.5].
+account is not treated as admin/voter; a **Google** sign-in yields a token the Rust API accepts
+(its `sub`/uid resolves to the migrated UUID). **dependsOn:** [15, 7, 6.5].
 
 ### Phase 17. CI/CD and Quality Gates — 🟡 (done; needs Firebase-secret + auth-config deltas)
 
@@ -565,6 +615,9 @@ wrong-issuer/wrong-audience auth tests fail the build if the verifier is misconf
 user-approved.**
 
 **Tasks:**
+- **Create the new dedicated GCP project** `zkvote-staging` (`gcloud projects create`), link
+  billing, and set it active **before** running the setup script — this is a fresh project, **not**
+  the shared POC project; point `zkvote-staging-setup.sh`'s project var at it.
 - Run `scripts/gcp/zkvote-staging-setup.sh` (now including `identitytoolkit` + GCIP from Phase 7)
   to create Cloud Run, Cloud SQL Postgres 16 (`zkvote-staging-pg`, two DB users), Memorystore
   Redis 7, VPC connector, Artifact Registry, GCS artifact bucket, service account, per-secret
@@ -681,17 +734,22 @@ and a user can sign in against the restored Supabase stack**. **dependsOn:** [20
 **Objective:** Prepare production separately from staging, including a **production GCIP**
 configuration.
 
-**Tasks:** separate-named production GCP resources + secrets, incl. a production GCIP
-tenant/project with email-verification enforced and production issuer/audience
-(`https://securetoken.google.com/<prod-project>` / `<prod-project-id>`); plan the production user
-import (or promote the same GCIP project) **keeping `uid` = UUID**; upgrade Cloud SQL tier +
-consider HA; backup/restore policy; Redis persistence/failure behavior; domain/TLS/CORS/monitoring;
-alerting (DB / Redis / Cloud Run / relayer / job backlog / **GCIP sign-in failures**); load +
-concurrency tests for registration/finalization/submit.
+**Tasks:** the **new dedicated** production project `zkvote-prod` (separate from `zkvote-staging`)
+with its own secrets, incl. a production GCIP tenant with email-verification + the **Google**
+provider, and production issuer/audience (`https://securetoken.google.com/<prod-project>` /
+`<prod-project-id>`); plan the production user import (or promote the staging GCIP project)
+**keeping `uid` = UUID**; **frontend on Firebase Hosting** (prod site, prod `REACT_APP_FIREBASE_*`).
+**Pin the production chain target** (§0.5): choose ONE chain (name + numeric `chainId`) and close
+the four non-env gaps — chainId-pinned `hardhat.config.js` network, an `eth_chainId` deploy guard,
+chainId-derived explorer links, and validated gas/finality/lock-TTL for that chain. Upgrade Cloud
+SQL tier + consider HA; backup/restore policy; Redis persistence/failure behavior;
+domain/TLS/CORS/monitoring; alerting (DB / Redis / Cloud Run / relayer / job backlog / **GCIP
+sign-in failures**); load + concurrency tests for registration/finalization/submit.
 
 **Verification gate:** restore test passes; staging load test demonstrates capacity; prod secrets
-separate from staging; production GCIP issues tokens the prod API accepts and email-verification
-is enforced. **dependsOn:** [21].
+separate from staging; production GCIP (Google + email/password) issues tokens the prod API
+accepts and email-verification is enforced; **the pinned chain's `eth_chainId` matches `CHAIN_ID`
+at deploy** and the four §0.5 gaps are closed. **dependsOn:** [21].
 
 ## 6. E2E Milestones
 
@@ -714,7 +772,7 @@ is enforced. **dependsOn:** [21].
    `identitytoolkit.googleapis.com` to the setup script; **do not run** the GCIP enable/import
    until cost-approved.
 3. **Phase 16 prep:** scaffold the Firebase Auth SDK swap behind the existing API-base-URL flag;
-   decide the Kakao OAuth keep-or-drop.
+   wire the **Kakao→Google** OAuth swap (decided) and the Firebase Hosting CD (replaces AWS).
 4. **Phase 17 deltas:** add the wrong-issuer/wrong-audience auth regression; stage the
    `REACT_APP_SUPABASE_* → REACT_APP_FIREBASE_*` CI-secret rename.
 5. **Doc reconciliation:** update `docs/TECH_STACK.md` §auth and `CLAUDE.md` invariant #8 to name
@@ -751,9 +809,10 @@ is enforced. **dependsOn:** [21].
 | **Audience mismatch** | Leaving default `authenticated` rejects all GCIP tokens | Set `SUPABASE_JWT_AUDIENCE=<PROJECT_ID>`; update test fixtures |
 | **`email_verified` weakening** | If verification off or imports set `emailVerified:true` unconditionally, invariant #8 breaks (claim another's inbox) | Enforce GCIP verification; import `emailVerified` = true Supabase status only; rely on the top-level claim |
 | **Frontend rewrite regression** | Largest code change; `getIdToken()` is async vs Supabase sync token → interceptor can drop the bearer; new verify/reset flows | Careful interceptor port + `axios.test.js`; browser smoke tests; keep Node fallback until E2E |
-| **Kakao OAuth gap** | No automatic GCIP equivalent → OAuth-only users locked out | Configure a GCIP OIDC provider **or** drop Kakao for v1 with a recorded decision |
+| **OAuth migration (Kakao→Google, decided)** | A Kakao-only user whose email is not a Google account can't sign in with Google | Google provider + same-email account-linking + `uid`=UUID; non-Google emails fall back to password enrollment or a documented-exclusion list (Phase 7/16) |
 | **ETL/import ordering coupling** | If `admins.id`/`voters.user_id` and GCIP uids diverge, migrated users don't resolve | Run GCIP import (Phase 7) before/with the ETL (Phase 20); cross-check the id sets |
-| **Cost-gate / shared-project** | GCIP enable, import, standup, ETL bill a shared POC project | `CONFIRM_COSTS=yes` + explicit approval for each; never run unapproved |
+| **Cost-gate (dedicated project, decided)** | GCIP enable, import, standup, ETL incur billing | **New dedicated** `zkvote-staging`/`zkvote-prod` projects (removes the shared-POC risk); each action `CONFIRM_COSTS=yes` + explicit approval; never run unapproved |
+| **Multi-chain / production chain not pinned** | Soft Sepolia defaults; same proof replayable on another chain sharing the verifier+root if two chains run at once | Pin ONE production chain (name + numeric `chainId`); close the 4 non-env gaps (§0.5); single-chain v1 |
 | **Plan/doc contradiction** | `TECH_STACK.md`/`CLAUDE.md` still say "keep Supabase Auth" | This plan supersedes; reconcile docs in Phase 19 |
 | **`addAdmins` Admin-API gap (AR-L4)** | Rust `manage.rs:144` returns false; no invite-by-listing-auth-users | v1 keeps DB email-invitation flow; document the gap |
 | C1/H1/H2/H3/H4/H5 (closed) | Overvote / forge / deanonymize / unrecoverable election / silent admin failure | Circuit v2, client-held secret, durable lifecycle state, invitation acceptance (see Phase 1) |
