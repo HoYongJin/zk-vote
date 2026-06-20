@@ -47,19 +47,25 @@ the idempotent setup re-creates them on the next run.
 
 Memorystore ($36) + the VPC connector ($12) are the **irreducible floor** in the managed
 architecture (no smaller managed Redis tier exists). The app uses Redis only for submission tickets +
-finalize/deploy locks, so moving Redis off Memorystore reaches **~$8/mo or near-$0**:
+finalize/deploy locks, so moving Redis off Memorystore reaches **~$8/mo or near-$0**.
+
+**This is now WIRED via a `REDIS_BACKEND` toggle** (no code change needed to switch):
+- `REDIS_BACKEND=memorystore` (default) — creates Memorystore + the VPC connector; deploy attaches `--vpc-connector`.
+- `REDIS_BACKEND=external` — **skips Memorystore AND the VPC connector**; you supply a `REDIS_URL`
+  (the setup writes it to the `zkvote-staging-redis-url` secret, refusing if absent), and the deploy
+  omits `--vpc-connector`. Cloud SQL is still reached via `--add-cloudsql-instances`.
+
+Set the SAME `REDIS_BACKEND` on both `zkvote-staging-setup.sh` and `deploy-staging-api.sh`. Two ways
+to provide the external Redis:
 
 - **Option A — Upstash Redis (serverless, free tier):** a public `rediss://` endpoint (free ≈ 10k
-  cmds/day). Set the `REDIS_URL` secret + `REDIS_TLS=true`; **drop Memorystore AND the VPC connector**
-  (Cloud SQL reaches Cloud Run via `--add-cloudsql-instances`, no connector needed). → **~$8/mo**
-  (Cloud SQL only). Third-party dependency, fine for demo/staging.
+  cmds/day). `REDIS_BACKEND=external REDIS_URL=rediss://...upstash.io:6379 …`. → **~$8/mo** (Cloud SQL
+  only). Least ops; third-party dependency, fine for demo/staging.
 - **Option B — Redis on a free e2-micro Compute Engine VM:** always-free e2-micro (us-central1 /
-  us-west1 / us-east1 only) running Redis 7, reached over the VPC. Drops Memorystore (~$36) but keeps
-  a connector; more ops/security surface (lock the VM down). → **~$8–12/mo**.
-- **Option C — keep managed, accept ~$56/mo** (simplest; covered by the free-trial credit).
-
-These are architecture choices (third-party dep / extra VM / US region) that are the operator's call.
-Tell me which and I'll wire `zkvote-staging-setup.sh` + the deploy env to it.
+  us-west1 / us-east1 only) running Redis 7; `REDIS_BACKEND=external REDIS_URL=redis://<vm-ip>:6379`.
+  → **~$8–12/mo**. More ops/security surface (lock the VM down to the Cloud Run egress).
+- **Option C — keep managed, accept ~$56/mo** (`REDIS_BACKEND=memorystore`, the default; simplest,
+  covered by the free-trial credit).
 
 ## 2. Ordered standup sequence (idempotent; each step re-runnable)
 

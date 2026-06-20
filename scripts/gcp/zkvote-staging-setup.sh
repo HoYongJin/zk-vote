@@ -34,6 +34,11 @@ SQL_TIER="${SQL_TIER:-db-f1-micro}"               # cheapest shared-core
 SQL_STORAGE_TYPE="${SQL_STORAGE_TYPE:-HDD}"       # HDD < SSD for a demo
 SQL_STORAGE_SIZE="${SQL_STORAGE_SIZE:-10}"        # 10GB is the floor
 SQL_ENABLE_BACKUPS="${SQL_ENABLE_BACKUPS:-false}" # off for minimal staging
+# REDIS_BACKEND=memorystore (managed, ~$36/mo + connector) | external (operator
+# supplies REDIS_URL, e.g. a free Upstash rediss:// endpoint or a self-hosted VM;
+# Memorystore AND the VPC connector are then SKIPPED entirely → ~$8/mo). The Rust
+# API only needs a reachable Redis for submission tickets + finalize/deploy locks.
+REDIS_BACKEND="${REDIS_BACKEND:-memorystore}"
 REDIS_TIER="${REDIS_TIER:-basic}"                 # no HA (smallest tier)
 REDIS_SIZE="${REDIS_SIZE:-1}"                     # 1GB is the floor
 VPC_MIN_INSTANCES="${VPC_MIN_INSTANCES:-2}"       # 2 is the connector floor
@@ -256,31 +261,40 @@ else
   MIGRATOR_DATABASE_URL_SECRET_WRITTEN="true"
 fi
 
-if ! gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud redis instances create "${REDIS_INSTANCE}" \
-    --project "${PROJECT_ID}" \
-    --region "${REGION}" \
-    --tier "${REDIS_TIER}" \
-    --size "${REDIS_SIZE}" \
-    --redis-version redis_7_0 \
-    --quiet
-fi
-
-if ! gcloud compute networks vpc-access connectors describe "${VPC_CONNECTOR}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud compute networks vpc-access connectors create "${VPC_CONNECTOR}" \
-    --project "${PROJECT_ID}" \
-    --region "${REGION}" \
-    --network "${NETWORK}" \
-    --range "${VPC_RANGE}" \
-    --min-instances "${VPC_MIN_INSTANCES}" \
-    --max-instances "${VPC_MAX_INSTANCES}" \
-    --machine-type e2-micro \
-    --quiet
-fi
-
 CONNECTION_NAME="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
-REDIS_HOST="$(gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" --format='value(host)')"
-REDIS_URL="redis://${REDIS_HOST}:6379"
+
+if [[ "${REDIS_BACKEND}" == "memorystore" ]]; then
+  if ! gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud redis instances create "${REDIS_INSTANCE}" \
+      --project "${PROJECT_ID}" \
+      --region "${REGION}" \
+      --tier "${REDIS_TIER}" \
+      --size "${REDIS_SIZE}" \
+      --redis-version redis_7_0 \
+      --quiet
+  fi
+  # The VPC connector exists solely to give Cloud Run private-IP access to
+  # Memorystore (Cloud SQL uses --add-cloudsql-instances, no connector needed).
+  if ! gcloud compute networks vpc-access connectors describe "${VPC_CONNECTOR}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud compute networks vpc-access connectors create "${VPC_CONNECTOR}" \
+      --project "${PROJECT_ID}" \
+      --region "${REGION}" \
+      --network "${NETWORK}" \
+      --range "${VPC_RANGE}" \
+      --min-instances "${VPC_MIN_INSTANCES}" \
+      --max-instances "${VPC_MAX_INSTANCES}" \
+      --machine-type e2-micro \
+      --quiet
+  fi
+  REDIS_HOST="$(gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" --format='value(host)')"
+  REDIS_URL="redis://${REDIS_HOST}:6379"
+else
+  # external Redis (e.g. a free Upstash rediss:// endpoint or a self-hosted VM):
+  # no Memorystore, no VPC connector. The operator supplies REDIS_URL (written to
+  # the secret below); the deploy must then OMIT --vpc-connector (REDIS_BACKEND=external).
+  echo "REDIS_BACKEND=external — skipping Memorystore + VPC connector (deploy omits --vpc-connector)."
+  REDIS_URL="${REDIS_URL:-}"
+fi
 
 if [[ -n "${RELAYER_PRIVATE_KEY:-}" && -n "${OWNER_PRIVATE_KEY:-}" && "${RELAYER_PRIVATE_KEY}" == "${OWNER_PRIVATE_KEY}" ]]; then
   echo "Refusing to write staging secrets: RELAYER_PRIVATE_KEY and OWNER_PRIVATE_KEY must be different." >&2
@@ -324,7 +338,14 @@ if [[ "${MIGRATOR_DATABASE_URL_SECRET_WRITTEN}" == "false" && "${SQL_MIGRATOR_US
     exit 1
   fi
 fi
-add_secret_version zkvote-staging-redis-url "${REDIS_URL}"
+# memorystore: REDIS_URL is computed above (always non-empty). external: the
+# operator must supply REDIS_URL (or have a prior enabled secret version).
+if [[ -n "${REDIS_URL}" ]]; then
+  add_secret_version zkvote-staging-redis-url "${REDIS_URL}"
+elif ! secret_has_enabled_version zkvote-staging-redis-url; then
+  echo "Refusing to continue: REDIS_BACKEND=external but no REDIS_URL provided and zkvote-staging-redis-url has no enabled version. Export REDIS_URL (e.g. an Upstash rediss:// endpoint)." >&2
+  exit 1
+fi
 add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 
 [[ -n "${SUPABASE_URL:-}" ]] && add_secret_version zkvote-staging-supabase-url "${SUPABASE_URL}"

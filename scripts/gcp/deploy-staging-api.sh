@@ -21,6 +21,9 @@ SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-staging-api}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_EMAIL:-${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-staging-vpc}"
+# Must match the setup run: memorystore attaches the VPC connector; external
+# (Upstash/VM) omits it and reaches Redis over the public rediss:// REDIS_URL.
+REDIS_BACKEND="${REDIS_BACKEND:-memorystore}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-}"
 RELAYER_PRIVATE_KEY_SECRET="${RELAYER_PRIVATE_KEY_SECRET:-zkvote-staging-relayer-private-key}"
 OWNER_PRIVATE_KEY_SECRET="${OWNER_PRIVATE_KEY_SECRET:-}"
@@ -81,7 +84,6 @@ deploy_args=(
   --region "${REGION}"
   --image "${IMAGE}"
   --service-account "${SERVICE_ACCOUNT_EMAIL}"
-  --vpc-connector "${VPC_CONNECTOR}"
   --add-cloudsql-instances "${CONNECTION_NAME}"
   --allow-unauthenticated
   # Minimal/free-tier: scale to zero when idle (no Cloud Run charge), cap at 1.
@@ -99,6 +101,13 @@ deploy_args=(
   # 100% of GCIP tokens. The audience is the BARE GCIP/Firebase project id.
   --set-env-vars "^|^ARTIFACT_STORE=gcs|CHAIN_ID=11155111|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}|SUPABASE_JWT_ISSUER=https://securetoken.google.com/${PROJECT_ID}|SUPABASE_JWT_AUDIENCE=${PROJECT_ID}"
 )
+
+# Attach the VPC connector ONLY for Memorystore (private IP). For external Redis
+# (REDIS_BACKEND=external — Upstash/VM over public rediss://) there is no connector;
+# Cloud SQL is still reached via --add-cloudsql-instances above.
+if [[ "${REDIS_BACKEND}" == "memorystore" ]]; then
+  deploy_args+=(--vpc-connector "${VPC_CONNECTOR}")
+fi
 
 secret_bindings=(
   "DATABASE_URL=zkvote-staging-database-url:latest"
