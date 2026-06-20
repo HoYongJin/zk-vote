@@ -72,6 +72,11 @@ to provide the external Redis:
 > The exact env/flags for each cost-gated command live in the cited scripts. This is the order;
 > the scripts enforce the `CONFIRM_COSTS=yes` gate.
 
+**Rehearse first (free, no auth):** preview the exact resolved provisioning with your own values —
+`DRY_RUN=yes GCP_PROJECT_ID=<id> REDIS_BACKEND=external REDIS_URL=rediss://… bash scripts/gcp/zkvote-staging-setup.sh`
+prints the full plan (project, bucket, Cloud SQL specs, Redis topology, secrets, ordered actions) and
+exits without a single GCP call, cost, or authentication. Confirm it reads right, then drop `DRY_RUN`.
+
 1. **Create + select the project** (per the §0 decision) and link billing:
    `gcloud projects create <PROJECT_ID>` (skip if reusing shared POC) → `gcloud config set project <PROJECT_ID>`.
 2. **Infra standup** — `CONFIRM_COSTS=yes … scripts/gcp/zkvote-staging-setup.sh`

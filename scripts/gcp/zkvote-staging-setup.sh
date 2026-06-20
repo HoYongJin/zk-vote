@@ -44,8 +44,12 @@ REDIS_SIZE="${REDIS_SIZE:-1}"                     # 1GB is the floor
 VPC_MIN_INSTANCES="${VPC_MIN_INSTANCES:-2}"       # 2 is the connector floor
 VPC_MAX_INSTANCES="${VPC_MAX_INSTANCES:-2}"       # no scaling headroom (minimal)
 
-if [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
-  echo "Refusing to run: set CONFIRM_COSTS=yes after explicit user approval (this creates billable GCP resources)." >&2
+# DRY_RUN=yes/1/true previews the RESOLVED plan with NO GCP call, NO cost, NO auth.
+DRY_RUN="${DRY_RUN:-}"
+is_dry_run() { [[ -n "${DRY_RUN}" && "${DRY_RUN}" != "false" && "${DRY_RUN}" != "0" && "${DRY_RUN}" != "no" ]]; }
+
+if ! is_dry_run && [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
+  echo "Refusing to run: set CONFIRM_COSTS=yes after explicit user approval (this creates billable GCP resources). Or set DRY_RUN=yes to preview the plan (no cost, no auth)." >&2
   exit 1
 fi
 
@@ -64,6 +68,37 @@ required_apis=(
   # and importing users is the cost/approval-gated step done separately.
   identitytoolkit.googleapis.com
 )
+
+if is_dry_run; then
+  if [[ "${REDIS_BACKEND}" == "memorystore" ]]; then
+    redis_plan="Memorystore ${REDIS_TIER}/${REDIS_SIZE}GB + VPC connector ${VPC_MIN_INSTANCES}-${VPC_MAX_INSTANCES} x e2-micro"
+    redis_step="Memorystore + VPC connector"
+  else
+    redis_plan="external (REDIS_URL=${REDIS_URL:-<supply REDIS_URL>}); Memorystore + connector SKIPPED"
+    redis_step="(external Redis: nothing created; REDIS_URL written to the secret)"
+  fi
+  if [[ "${SQL_ENABLE_BACKUPS}" == "true" ]]; then backups_plan="--backup-start-time 19:00"; else backups_plan="--no-backup"; fi
+  cat <<PLAN
+== DRY-RUN plan — no GCP calls, no cost, no auth. Resolved configuration:
+   project         : ${PROJECT_ID}    region: ${REGION}
+   redis backend   : ${REDIS_BACKEND} -> ${redis_plan}
+   cloud sql       : ${SQL_INSTANCE} (${SQL_TIER}, ${SQL_STORAGE_TYPE}, ${SQL_STORAGE_SIZE}GB, ZONAL, ${backups_plan})
+   artifact bucket : gs://${BUCKET}  (seeded byte-exact from zk/build_4_5 + zk/build_5_4, sha256-verified)
+   runtime SA      : ${SERVICE_ACCOUNT_EMAIL}  (storage.objectViewer + cloudsql.client + log/metric writer)
+
+Would idempotently ensure, in order:
+   1. enable APIs              : ${required_apis[*]}
+   2. GCS bucket + versioning + lifecycle, then seed-artifacts.sh
+   3. runtime service account + least-privilege IAM
+   4. Cloud SQL + database '${SQL_DATABASE}' + app/migrator users (URL-safe passwords)
+   5. ${redis_step}
+   6. secrets w/ per-secret IAM: database-url, redis-url, supabase-jwks-url (fixed GCIP endpoint),
+      sepolia-rpc-url, relayer/owner private keys, artifact-bucket
+
+Re-run withOUT DRY_RUN — with CONFIRM_COSTS=yes and an authenticated CORRECT account — to apply.
+PLAN
+  exit 0
+fi
 
 ensure_secret() {
   local secret_name="$1"
