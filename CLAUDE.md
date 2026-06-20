@@ -29,9 +29,12 @@ Postgres→Cloud SQL, and GCP staging/cutover (see `docs/PROJECT_PLAN.md`).
   the frontend Supabase→Firebase SDK swap (Phase 16), GCP staging infra (Phase 18), the
   Supabase→Cloud SQL ETL (Phase 20), and cutover/production (Phases 21–22). Nothing runs on
   real GCP infra yet; the system is local-demo/dev-only.
-- All work lives on branch `codex/phase1-c1-h1-circuit-contract-v2` (badly misnamed — it
-  carries every phase, well ahead of `main`). **`main` is intentionally frozen** because a
-  push to `main` can trigger the legacy AWS auto-deploy (now `workflow_dispatch`-gated, audit M11).
+- **`main` is now the working branch** (de-frozen 2026-06-21; the misnamed
+  `codex/phase1-c1-h1-circuit-contract-v2` was fast-forwarded into it). The old "main is
+  frozen" rule is **lifted** — its rationale (a push to `main` triggering the legacy AWS
+  auto-deploy, audit M11) is resolved: `deploy-backend.yml` is deleted, `deploy-frontend.yml`
+  is `workflow_dispatch`-only, and `ci.yml` now runs on `main` pushes. `origin/main` is NOT
+  yet pushed — push is a separate explicit step (now safe; no auto-deploy fires).
 - The cost-gated cloud steps (GCIP enable, user import, GCP standup, ETL, deploy) need
   explicit user approval (`CONFIRM_COSTS=yes`). Never commit real secrets.
 
@@ -131,11 +134,14 @@ Always run the relevant gate before claiming work is done — evidence before as
 
 ## Working rules
 
-- **This session is docs/setup-only** unless told otherwise: understand the code, fix docs,
-  set up the environment. **Do not change application/contract/circuit code** yet.
-- **Preserve the uncommitted WIP.** Never revert prior-agent dirty changes.
-- **Do not push to `main`** or trigger any live deploy. GCP staging deploy and any ETL run
-  **cost money and need explicit user approval**.
+- **Implementation is active.** The no-cost migration phases (6.5 Node deletion, 7 GCIP
+  prep, 16 frontend Firebase swap, 17 CI, 18 deploy-script prep, 19 docs) are DONE and
+  green; the remaining work is the **cost-gated cloud rollout** (18 execute / 20 / 21 / 22).
+- **Commit working changes** behind their CI-mirror gate (the prior uncommitted WIP is now
+  committed). Run the relevant gate before claiming done — evidence before assertions.
+- **`main` is the working branch** — pushing it is safe (no auto-deploy fires). But any
+  cost-incurring action (GCP standup, GCIP enable/import, Cloud SQL ETL, Cloud Run deploy)
+  still needs **`CONFIRM_COSTS=yes` + explicit user approval**.
 - Edit **docs only** where they are clean or clearly stale; for the deep-dirty docs see
   `docs/DOC_DEBT.md` and apply those fixes only after the WIP is committed.
 - Never commit real secrets. Hardhat dev keys and the test-only RSA key in
