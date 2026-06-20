@@ -1,6 +1,6 @@
 /**
  * @file scripts/migration/etl-supabase-to-postgres.js
- * @desc One-time cutover ETL (PROJECT_PLAN Phase 19, architecture review
+ * @desc One-time cutover ETL (PROJECT_PLAN Phase 20, architecture review
  * AR-H3): copies the hosted-Supabase PascalCase tables into the snake_case
  * Cloud SQL schema (docs/DATA_MODEL.md §1 mapping), then verifies row
  * counts AND content checksums on both sides before reporting success.
@@ -10,7 +10,7 @@
  * outside the scalar field — that would indicate a pre-H2 plaintext-era row or
  * corrupted commitment that must never be copied.
  *
- * Usage (reads hosted Supabase via server/.env; target via TARGET_DATABASE_URL):
+ * Usage (reads hosted Supabase via scripts/migration/.env; target via TARGET_DATABASE_URL):
  *   TARGET_DATABASE_URL=postgres://zkvote:...@localhost:5432/zkvote \
  *     node scripts/migration/etl-supabase-to-postgres.js [--dry-run]
  *
@@ -227,6 +227,14 @@ async function main() {
 
     // ---- Transform + privacy gate (H2) ------------------------------------
     for (const voter of voters) {
+        // voters.email is NOT NULL in Cloud SQL (migrations/0001_initial.sql L59);
+        // a null/empty source email would abort the whole transaction mid-load at
+        // the constraint. Fail fast, before any write, with the offending row id.
+        if (voter.email == null || String(voter.email).trim() === "") {
+            throw new Error(
+                `ABORT: Voters row ${voter.id} has a null/empty email — voters.email is NOT NULL in Cloud SQL. Investigate the source row before migrating.`
+            );
+        }
         if (voter.user_secret != null && !isDecimalFieldElementString(voter.user_secret)) {
             throw new Error(
                 `ABORT: Voters row ${voter.id} has a non-decimal field-element user_secret — possible pre-H2 plaintext-era data, non-decimal encoding, or out-of-field commitment. Refusing to migrate.`

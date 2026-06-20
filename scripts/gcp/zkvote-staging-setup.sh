@@ -4,9 +4,16 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 
-PROJECT_ID="${GCP_PROJECT_ID:-scopeball-registry-poc-g}"
+# PROJECT_PLAN §18: this is a DEDICATED staging project, NOT the shared POC project.
+# The Cloud Run project, the GCIP/Identity-Platform project, the JWT audience
+# (deploy-staging-api.sh sets SUPABASE_JWT_AUDIENCE=<PROJECT_ID>), and the frontend
+# Firebase project (REACT_APP_FIREBASE_PROJECT_ID / .firebaserc) MUST ALL be this
+# same id. If they diverge, the backend's audience check rejects 100% of the
+# frontend's GCIP tokens. Override GCP_PROJECT_ID for your real (globally-unique)
+# project id; the default is intentionally not the shared POC project.
+PROJECT_ID="${GCP_PROJECT_ID:-zkvote-staging}"
 REGION="${GCP_REGION:-asia-northeast3}"
-BUCKET="${ARTIFACT_BUCKET:-zkvote-staging-artifacts-scopeball-registry-poc-g}"
+BUCKET="${ARTIFACT_BUCKET:-zkvote-staging-artifacts-${PROJECT_ID}}"
 SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"
 SQL_DATABASE="${SQL_DATABASE:-zkvote}"
 SQL_APP_USER="${SQL_APP_USER:-${SQL_USER:-zkvote_app}}"
@@ -115,6 +122,16 @@ gcloud storage buckets update "gs://${BUCKET}" \
   --lifecycle-file "${PROJECT_ROOT}/infra/gcp/artifact-lifecycle.json" \
   --quiet
 
+# Seed the proving artifacts into the freshly-created bucket. Without this the
+# bucket is empty and, at runtime (ARTIFACT_STORE=gcs), every voter's wasm/zkey
+# GET 404s — proving is impossible (audit Phase-18 must-fix). seed-artifacts.sh
+# uploads the byte-exact zk/build_*/ files to the object keys artifacts.rs serves
+# and sha256-verifies each upload (invariant #7). Idempotent: re-running is safe.
+# Runs under the OPERATOR's gcloud credentials (not the runtime SA, which is
+# read-only). Must precede `deploy-staging-api.sh` so the first /proof flow works.
+PROJECT_ID="${PROJECT_ID}" BUCKET="${BUCKET}" CONFIRM_COSTS="${CONFIRM_COSTS}" \
+  bash "${SCRIPT_DIR}/seed-artifacts.sh"
+
 if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud iam service-accounts create "${SERVICE_ACCOUNT}" \
     --project "${PROJECT_ID}" \
@@ -129,9 +146,15 @@ for role in roles/cloudsql.client roles/logging.logWriter roles/monitoring.metri
     --quiet >/dev/null
 done
 
+# Least-privilege (audit Phase-18 review): the runtime API only performs
+# authenticated GETs against GCS (artifacts.rs read_gcs_artifact) — it never
+# writes/deletes objects. objectViewer (read-only) is sufficient; objectAdmin
+# would let a compromised --allow-unauthenticated instance overwrite/delete
+# proving artifacts (invariant #7 risk). Artifact SEEDING runs under the
+# operator's own credentials (seed-artifacts.sh below), not this runtime SA.
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
-  --role roles/storage.objectAdmin \
+  --role roles/storage.objectViewer \
   --quiet >/dev/null
 
 if ! gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
@@ -283,8 +306,29 @@ add_secret_version zkvote-staging-redis-url "${REDIS_URL}"
 add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 
 [[ -n "${SUPABASE_URL:-}" ]] && add_secret_version zkvote-staging-supabase-url "${SUPABASE_URL}"
-[[ -n "${SUPABASE_JWKS_URL:-}" ]] && add_secret_version zkvote-staging-supabase-jwks-url "${SUPABASE_JWKS_URL}"
+
+# The GCIP JWKS endpoint is a FIXED public constant (PROJECT_PLAN §18 + §8), not a
+# per-deploy secret value. Write it UNCONDITIONALLY so deploy's `--set-secrets
+# SUPABASE_JWKS_URL=zkvote-staging-supabase-jwks-url:latest` always resolves to an
+# enabled version. An exported SUPABASE_JWKS_URL still overrides it. config.rs:117
+# does NOT empty-filter this value, so refuse an empty override (would mount Some("")
+# and break token verification) rather than fail opaquely at deploy time.
+GCIP_JWKS_DEFAULT="https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+SUPABASE_JWKS_URL="${SUPABASE_JWKS_URL:-$GCIP_JWKS_DEFAULT}"
+if [[ -z "${SUPABASE_JWKS_URL// /}" ]]; then
+  echo "Refusing: SUPABASE_JWKS_URL is empty (would mount an empty JWKS and break token verification)." >&2
+  exit 1
+fi
+add_secret_version zkvote-staging-supabase-jwks-url "${SUPABASE_JWKS_URL}"
+
+# SEPOLIA_RPC_URL is a genuine operator-supplied endpoint (cannot be defaulted).
+# Add its version if exported, then fail FAST if the secret still has no enabled
+# version — otherwise `gcloud run deploy ...sepolia-rpc-url:latest` fails opaquely later.
 [[ -n "${SEPOLIA_RPC_URL:-}" ]] && add_secret_version zkvote-staging-sepolia-rpc-url "${SEPOLIA_RPC_URL}"
+if ! secret_has_enabled_version zkvote-staging-sepolia-rpc-url; then
+  echo "Refusing to continue: zkvote-staging-sepolia-rpc-url has no enabled version. Export SEPOLIA_RPC_URL so setup writes it (the deploy binds it at :latest)." >&2
+  exit 1
+fi
 [[ -n "${RELAYER_PRIVATE_KEY:-}" ]] && add_secret_version zkvote-staging-relayer-private-key "${RELAYER_PRIVATE_KEY}"
 if [[ -n "${OWNER_PRIVATE_KEY:-}" ]]; then
   add_secret_version zkvote-staging-owner-private-key "${OWNER_PRIVATE_KEY}"

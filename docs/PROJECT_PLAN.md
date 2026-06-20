@@ -632,23 +632,24 @@ user-approved.**
   to create Cloud Run, Cloud SQL Postgres 16 (`zkvote-staging-pg`, two DB users), Memorystore
   Redis 7, VPC connector, Artifact Registry, GCS artifact bucket, service account, per-secret
   IAM (M9).
-- **Repoint auth secrets — and wire them into the deploy artifact (this is the footgun):** set the
-  JWKS-URL secret to
+- **Repoint auth secrets — already wired into the deploy artifact (was the footgun, now closed):**
+  `scripts/gcp/deploy-staging-api.sh` already sets `SUPABASE_JWT_ISSUER=https://securetoken.google.com/<PROJECT_ID>`
+  and `SUPABASE_JWT_AUDIENCE=<PROJECT_ID>` as env and does **not** bind `SUPABASE_URL`, so the
+  `config.rs:76-78` Supabase-issuer derivation is dead (the explicit issuer wins). `zkvote-staging-setup.sh`
+  now writes the JWKS-URL secret **unconditionally** to the fixed GCIP JWK endpoint
   `https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com`
-  (**not** the `/robot/v1/metadata/x509/` PEM endpoint). **Edit `scripts/gcp/deploy-staging-api.sh`**:
-  its `--set-env-vars` currently carries only `ARTIFACT_STORE|CHAIN_ID|CORS_ALLOWED_ORIGINS` and it
-  still binds `SUPABASE_URL` as a secret. Append `SUPABASE_JWT_ISSUER=https://securetoken.google.com/<PROJECT_ID>`
-  and `SUPABASE_JWT_AUDIENCE=<PROJECT_ID>` (as env or secret bindings), **and remove the
-  `SUPABASE_URL` binding** (or accept it as harmless *only* because the explicit issuer now
-  overrides the `config.rs:76-78` derivation). Without this edit a verbatim deploy derives the
-  **Supabase** issuer from `SUPABASE_URL` and **rejects 100% of GCIP tokens**. Optionally rename
-  the secrets to `zkvote-staging-idp-*` in **both** setup + deploy scripts together.
-- **Seed the GCS artifact bucket (otherwise proving fails on an empty bucket):** the setup script
-  *creates* `gs://zkvote-staging-artifacts-<project>` but never populates it, and the Rust
-  `artifacts.rs` streams `build_{depth}_{candidates}` objects from GCS. Add a `gcloud storage cp`
-  of the **exact** `zk/build_4_5` + `zk/build_5_4` bytes + manifest into the canonical object paths
-  that match `artifacts.rs` URL construction, preserving byte-identity (invariant #7) and
-  cross-checking each `sha256` against the manifest after upload.
+  (**not** the `/robot/v1/metadata/x509/` PEM endpoint). **The remaining operator obligation is
+  project-id consistency:** `<PROJECT_ID>` is the JWT audience, so the Cloud Run project, the GCIP
+  project, and the frontend Firebase project (`REACT_APP_FIREBASE_PROJECT_ID` / `.firebaserc`) MUST
+  all be the same dedicated `zkvote-staging` id — a mismatch rejects 100% of GCIP tokens.
+- **Seed the GCS artifact bucket — automated (otherwise proving fails on an empty bucket):**
+  `zkvote-staging-setup.sh` now invokes `scripts/gcp/seed-artifacts.sh` after creating the bucket.
+  It uploads the **exact** `zk/build_4_5` + `zk/build_5_4` bytes to the canonical object keys
+  `build_{depth}_{candidates}/{circuit_final.zkey, verification_key.json, VoteCheck_temp_js/VoteCheck_temp.wasm}`
+  that the Rust `routes/artifacts.rs` (`read_gcs_artifact`) serves, and **sha256 round-trip-verifies**
+  each upload against the on-disk source bytes (invariant #7 byte-identity), aborting on mismatch.
+  Idempotent: re-running skips already-current objects. The runtime SA is read-only (`objectViewer`);
+  seeding runs under the operator's own credentials.
 - Build + push the Rust image (`cloudbuild-staging-api.yaml`) to Artifact Registry; `gcloud run
   deploy zkvote-staging-api` with Cloud SQL attach, VPC connector, and secret env mounts
   (`DATABASE_URL`, `REDIS_URL`, `SUPABASE_JWKS_URL`=GCIP JWKS, `SUPABASE_JWT_ISSUER`,
@@ -702,9 +703,10 @@ the Supabase UUIDs the GCIP uids now mirror. **Cost-gated + user-approved.**
 - **Cross-check:** the set of `admins.id` / `voters.user_id` in Cloud SQL equals the set of GCIP
   uids — no orphaned identities.
 
-> **Hard precondition:** the ETL `require('../../server/utils/fieldElement')` (L23) and
-> `require('../../server/supabaseClient')` (L144) only resolve after **Phase 6.5 Commit 2** vendors
-> them into `scripts/`. Running Phase 20 before that commit crashes on a missing `require`.
+> **Precondition (satisfied by Phase 6.5):** the ETL requires `./fieldElement` and `./supabaseClient`,
+> both vendored into `scripts/migration/` (the old `server/utils/*` paths are gone with `server/`).
+> `supabaseClient.js` reads `scripts/migration/.env` (`SUPABASE_URL` + service-role key); root deps
+> `pg`, `dotenv`, `@supabase/supabase-js` are present. No missing-`require` crash remains.
 
 **Config changes:** ETL run with `CONFIRM_COSTS=yes` + explicit approval; service-account /
 Supabase creds gitignored.
