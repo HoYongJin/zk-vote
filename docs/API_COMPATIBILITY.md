@@ -1,7 +1,13 @@
 # zk-vote API Compatibility Matrix
 
-This document captures the current Node/Express API surface that the Rust
-backend must preserve or intentionally replace with a documented migration.
+This document captures the legacy Node/Express API surface that the Rust
+backend was built to preserve.
+
+> **Status (Phase 6.5, 2026-06-20): the Node `server/` was deleted; Rust is the
+> sole backend.** The "Node" references below are now **historical reference** —
+> the contract they describe is what the Rust handlers implement at parity, not a
+> live second backend. Verify behavior against the Rust routes, not against
+> `server/` (which no longer exists).
 
 > **Contract revision: v2 (post-audit, 2026-06-12).** This matrix documents the
 > Phase-1-fixed boundary: 4-element `publicSignals` including `electionId`
@@ -48,7 +54,7 @@ Base path:
 
 > `/api/zkp-files/*` is a static file mount, not a JSON route handler. It serves
 > the client-side proving artifacts (`build_<d>_<c>/*.wasm`, `circuit_final.zkey`).
-> It currently exposes the entire `server/zkp` directory (including `setUpZk.sh`,
+> It currently exposes the entire `zk` directory (including `setUpZk.sh`,
 > `.circom` sources, and the pre-contribution `circuit_0000.zkey`); per the audit
 > it should be scope-narrowed to `build_*/` artifacts. Note that public exposure
 > of `.wasm`/`.zkey` is also part of the C1 attack surface (a forged-proof

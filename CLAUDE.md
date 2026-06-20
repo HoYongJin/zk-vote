@@ -12,31 +12,35 @@ Circom/Groth16 circuit; an on-chain `VotingTally` contract verifies the proof,
 enforces one-vote-per-voter via a nullifier, and tallies results. The server never
 learns who voted for what.
 
-The project is **mid-migration**: a legacy **Node/Express + Supabase + Redis** backend
-(`server/`) is being replaced by a new **Rust** backend (`rust-backend/`).
+The project is **mid-migration**: the legacy **Node/Express** backend (`server/`) has
+been **deleted (Phase 6.5)** and replaced by the **Rust** backend (`rust-backend/`).
+The remaining migration is the cloud rollout — Supabase Auth→GCIP, Supabase
+Postgres→Cloud SQL, and GCP staging/cutover (see `docs/PROJECT_PLAN.md`).
 
 ## Current status — read this before assuming anything
 
-- The Rust backend is **NOT a scaffold**. It has reached **full route parity** with the
-  Node API (16 routes incl. anonymous `submit`, `proof`, `finalize`, `setZkDeploy`,
-  artifacts, admin/voter lists) plus a large Phase 5–13 integration-test suite.
-  Phases 0–15, 17, 18 of the 20-phase plan are **done on this branch**.
-- The **Node backend is still the live API surface** — not because Rust is unfinished,
-  but because the **GCP staging deploy (Phase 16), residual privacy measurements
-  (Phase 18: AR-M1/AR-M2/AR-H1 beacon), and the live cutover+ETL (Phase 19) have not been
-  executed**. Nothing runs on real GCP infra yet; the system is local-demo/dev-only.
+- The Rust backend is the **sole backend** (not a scaffold). It has **full route parity**
+  with the old Node API (16 routes incl. anonymous `submit`, `proof`, `finalize`,
+  `setZkDeploy`, artifacts, admin/voter lists) plus a large Phase 5–13 integration-test
+  suite, verified green locally (db repos 6/6; the real-proof vote-pipeline E2E).
+- The **legacy Node `server/` was deleted (Phase 6.5)** and the ZK toolchain relocated to
+  top-level `zk/`. Implementation + hardening (Phases 0–15, 17, and 6.5) are done on this
+  branch. What remains is the **cloud rollout**: GCIP auth standup + user import (Phase 7),
+  the frontend Supabase→Firebase SDK swap (Phase 16), GCP staging infra (Phase 18), the
+  Supabase→Cloud SQL ETL (Phase 20), and cutover/production (Phases 21–22). Nothing runs on
+  real GCP infra yet; the system is local-demo/dev-only.
 - All work lives on branch `codex/phase1-c1-h1-circuit-contract-v2` (badly misnamed — it
-  carries all 20 phases, ~34 commits ahead of `main`). **`main` is intentionally frozen**
-  because a push to `main` can trigger the legacy AWS auto-deploy (now `workflow_dispatch`-gated, audit M11).
-- There is a large **uncommitted working tree** (prior-agent WIP: supersede redesign,
-  field-element helpers, submission jitter, Rust `artifacts` route, ETL, GCP cloudbuild,
-  frontend tests). **Preserve it — do not revert it.**
+  carries every phase, well ahead of `main`). **`main` is intentionally frozen** because a
+  push to `main` can trigger the legacy AWS auto-deploy (now `workflow_dispatch`-gated, audit M11).
+- The cost-gated cloud steps (GCIP enable, user import, GCP standup, ETL, deploy) need
+  explicit user approval (`CONFIRM_COSTS=yes`). Never commit real secrets.
 
 ## Architecture
 
 ```
-Current (live):  React → Node/Express → Supabase(Postgres+Auth) + Redis + Circom/snarkjs → Solidity VotingTally + Groth16Verifier
-Target:          React → Rust API (axum) → Cloud SQL(Postgres) + Memorystore(Redis) + GCS artifacts + alloy relayer → VotingTally + Groth16Verifier
+Current (local): React → Rust API (axum) → Postgres + Redis + Circom/snarkjs (zk/) → Solidity VotingTally + Groth16Verifier
+                 (frontend still on Supabase Auth JS until Phase 16; Rust validates Supabase JWTs until the Phase-18 GCIP repoint)
+Target:          React (Firebase/GCIP) → Rust API (axum) → Cloud SQL(Postgres) + Memorystore(Redis) + GCS artifacts + alloy relayer → VotingTally + Groth16Verifier
 ```
 
 Rust workspace crates: `api` (axum routes), `domain` (services + state machine),
@@ -109,8 +113,8 @@ cargo test -p zkvote-api -- --ignored                          # then the #[igno
 # Contracts + JS helpers
 npx hardhat test --no-compile
 # JS/shell syntax gates (mirror CI)
-find server scripts test -name '*.js' -not -path 'server/node_modules/*' -print0 | xargs -0 -n1 node --check
-find scripts server/zkp -name '*.sh' -print0 | xargs -0 -n1 bash -n
+find scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
+find scripts zk -name '*.sh' -print0 | xargs -0 -n1 bash -n
 
 # Frontend
 npm test --prefix frontend -- --watchAll=false && npm run build --prefix frontend

@@ -85,14 +85,14 @@ Status: ✅ done · ⏳ pending (apply after WIP commit) · 🔧 needs a code ch
 | # | Item | Action |
 |---|---|---|
 | 28 | Stale **`uint[3]` verifier `.sol` files** (`Groth16Verifier_3/_4_10/_6_10/_10_10/Groth16Verifier.sol`) are ABI-incompatible with `VotingTally`'s `uint[4]`; `deployAll.js` could name-resolve and deploy a broken pairing. | Delete/regenerate to `uint[4]`; extend `scripts/ci/check-artifact-schema.sh` to assert `uint[4]` across **all** `Groth16Verifier_*.sol`. |
-| 29 | **`server/routes/secret.js`** is fully commented-out dead code (legacy secret-return endpoint). | Delete it so it can't be mistaken for live behavior or ported. |
-| 30 | **`frontend/src/setupProxy.js`** is commented out but references a dead EC2 IP + pre-REST routes; `http-proxy-middleware` dep unused. | Delete (or rewrite against `/api`) and drop the dep. |
-| 31 | **Node `server/package.json` phantom deps** — `express-rate-limit`, `fs-extra`, `uuid` declared but unused. | Remove, or document why retained. |
+| 29 | **`server/routes/secret.js`** is fully commented-out dead code (legacy secret-return endpoint). | ✅ RESOLVED (Phase 6.5 C3): `server/` deleted entirely. |
+| 30 | **`frontend/src/setupProxy.js`** is commented out but references a dead EC2 IP + pre-REST routes; `http-proxy-middleware` dep unused. | ✅ RESOLVED (Phase 6.5 C4): `setupProxy.js` deleted. (Frontend now points at the Rust API via `REACT_APP_API_BASE_URL`.) |
+| 31 | **Node `server/package.json` phantom deps** — `express-rate-limit`, `fs-extra`, `uuid` declared but unused. | ✅ RESOLVED (Phase 6.5 C3): `server/` (incl. its `package.json`) deleted. |
 | 32 | **`CreateVotePage.js` merkle-depth placeholder** says "예: 10 (2^10)" but input `max=5` and artifacts only support depth 2–5. | Change placeholder to a valid in-range example. |
 | 33 | **`deploy-staging-api.sh`** sets `REQUIRE_BEACON`/`APP_ENV` that the Rust binary ignores (Node-only flags). | Remove from the Rust deploy env, or implement them in `config.rs`. |
 | 34 | **No `rust-toolchain.toml`** — CI floats `stable`, container pins 1.96. | Add `rust-backend/rust-toolchain.toml` (1.96). |
 | 35 | **`ignition/`** empty/vestigial. | Remove or document that deploys use plain Hardhat scripts. |
-| 36 | **`zkp-files` static route scope** — Node exposes the whole `server/zkp` dir; should be narrowed to `build_*/` (the Rust port already restricts to allowed artifacts). | Narrow Node route. |
+| 36 | **`zkp-files` static route scope** — Node exposed the whole `zk` dir; should be narrowed to `build_*/` (the Rust port already restricts to allowed artifacts). | ✅ RESOLVED (Phase 6.5 C3): the Node route was deleted; Rust `artifacts.rs` serves only allow-listed `build_*` artifacts. |
 
 ---
 

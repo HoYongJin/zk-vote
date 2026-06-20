@@ -41,7 +41,7 @@ restarts from registration (normal case) or is being voided entirely.
 4. **Create a replacement election row** through the normal creation flow,
    reusing the intended candidates/depth and allowlist as needed. If artifacts
    are being regenerated, remove only the replacement row's stale artifact
-   binding from `server/zkp/artifact-manifest.json` (M5).
+   binding from `zk/artifact-manifest.json` (M5).
 5. **Deploy the replacement** through the normal flow (`/setZkDeploy` →
    finalize). A fresh `VotingTally` (with the correct explicit owner, AR-M4)
    is deployed and bound to the replacement election.

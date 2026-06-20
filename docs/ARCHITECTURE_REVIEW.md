@@ -36,8 +36,8 @@
 
 - **종류**: 아키텍처 결함 (audit M2/M5와 별개 — M2는 도구 부재, M5는 아티팩트 키잉)
 - **Evidence**:
-  - `server/zkp/setUpZk.sh:100-103` — `"$SNARKJS_BIN" zkey contribute ... -e="$(head -n 4096 /dev/urandom | openssl sha1)"` (기여 1회, 엔트로피를 **운영자 머신에서 생성**)
-  - `server/zkp/setUpZk.sh:107-108` — 후속 `zkey beacon`/추가 기여 없이 단일 기여 zkey에서 vkey·Solidity verifier를 직접 export
+  - `zk/setUpZk.sh:100-103` — `"$SNARKJS_BIN" zkey contribute ... -e="$(head -n 4096 /dev/urandom | openssl sha1)"` (기여 1회, 엔트로피를 **운영자 머신에서 생성**)
+  - `zk/setUpZk.sh:107-108` — 후속 `zkey beacon`/추가 기여 없이 단일 기여 zkey에서 vkey·Solidity verifier를 직접 export
 - **문제**: phase-2 toxic waste를 아는 자(= `/setZkDeploy`를 실행하는 서버 운영자)는 배포된 `Groth16Verifier_*`가 수락하는 **임의 공개입력의 유효 증명을 위조**할 수 있다. C1/H1을 고쳐도 온체인 verifier라는 신뢰 앵커 자체가 운영자 신뢰로 환원되며, 집계 조작이 가능하다.
 - **수정**: 선거별 zkey를 공개 랜덤 beacon(`snarkjs zkey beacon`, 예: 미래 블록해시)으로 finalize하거나 독립 기여자 1인 이상 포함 MPC 수행 + transcript 공개 + `snarkjs zkey verify` 게이트. → **Phase 10에 태스크·게이트 반영됨.**
 

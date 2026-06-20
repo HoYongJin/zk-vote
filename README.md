@@ -1,26 +1,26 @@
 # zk-vote
 
-Zero-knowledge voting project with the current Node/Express backend, React
-frontend, Circom/Groth16 proof pipeline, Solidity contracts, and a Rust backend
-that has reached full API route parity and is awaiting a staged cutover.
+Zero-knowledge voting project with a Rust backend (the sole API surface), a
+React frontend, a Circom/Groth16 proof pipeline, and Solidity contracts. The
+legacy Node/Express backend was removed in Phase 6.5 — Rust is canonical.
 
 ## Current Architecture
 
 ```text
 React frontend
-  -> Node/Express backend
-    -> Supabase tables/auth
+  -> Rust API backend (axum; sole backend, legacy Node deleted in Phase 6.5)
+    -> PostgreSQL (Cloud SQL target; local Docker Postgres for dev)
     -> Redis locks and submission tickets
-    -> Circom/snarkjs artifacts
+    -> Circom/snarkjs artifacts (zk/)
     -> Solidity VotingTally + Groth16 verifier
 ```
 
-The backend target is Rust with PostgreSQL, Redis, GCS artifact storage, and a
-typed alloy relayer layer. The Rust backend already implements the full route
-surface (16 routes) with a Phase 5–13 integration-test suite on the feature
-branch. The Node backend remains the **active API** only until the GCP staging
-deploy and live migration cutover are executed — not because Rust is unfinished.
-Nothing runs on real GCP infrastructure yet; this is local-demo/dev-only.
+The Rust backend implements the full route surface (16 routes) with a Phase
+5–13 integration-test suite, verified green locally (db repos + the real-proof
+vote pipeline E2E). The remaining work is the **cloud rollout** — GCP staging
+infra, the Supabase Auth→GCP Identity Platform swap, and the Supabase→Cloud SQL
+ETL (see `docs/PROJECT_PLAN.md`). Nothing runs on real GCP infrastructure yet;
+this is local-demo/dev-only.
 
 **Frontend hosting:** the committed frontend CD currently targets legacy AWS
 S3/CloudFront (`frontend/buildspec.yml`, `.github/workflows/deploy-frontend.yml`),
@@ -85,18 +85,19 @@ hash published in the snarkjs README; it fails closed on any mismatch.
 
 ## Environment Files
 
-- Root `.env` (see `.env.example`): Rust backend + Hardhat
-  (`SEPOLIA_RPC_URL`, `PRIVATE_KEY`, `ETHERSCAN_API_KEY`).
-- `server/.env` (see `server/.env.example`): the ONLY file the Node API
-  loads — Supabase keys, Redis, relayer key, `PORT`, `CIRCOM_BIN`.
+- Root `.env` (see `.env.example`): the Rust backend + Hardhat
+  (`DATABASE_URL`, `REDIS_URL`, `SUPABASE_JWKS_URL`, `SEPOLIA_RPC_URL`,
+  `PRIVATE_KEY`/`RELAYER_PRIVATE_KEY`, `ETHERSCAN_API_KEY`).
+- `scripts/migration/.env` (gitignored): Supabase service-role creds for the
+  deploy/ETL tooling only (the legacy `server/.env` was removed in Phase 6.5).
 
 ## Verification
 
 Node and scripts:
 
 ```bash
-find server scripts test -name '*.js' -not -path 'server/node_modules/*' -print0 | xargs -0 -n1 node --check
-find scripts server/zkp -name '*.sh' -print0 | xargs -0 -n1 bash -n
+find scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
+find scripts zk -name '*.sh' -print0 | xargs -0 -n1 bash -n
 ```
 
 Contracts and helper tests:

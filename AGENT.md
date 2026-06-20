@@ -2,11 +2,11 @@
 
 ## Project Snapshot
 
-`zk-vote` is a zero-knowledge voting project that currently has a working
-Node/Express backend, React frontend, Solidity contracts, Circom/snarkjs ZK
-artifacts, and a Rust backend that has reached **full API route parity** with
-the Node backend (Phases 4–15 of the migration plan are implemented on this
-branch, with a Phase 5–13 integration-test suite).
+`zk-vote` is a zero-knowledge voting project built on a **Rust backend (the sole
+API surface)**, a React frontend, Solidity contracts, and Circom/snarkjs ZK
+artifacts (`zk/`). The Rust backend has **full route parity** with the deleted
+legacy Node API (Phases 4–15 + the Phase-6.5 Node deletion are done on this
+branch, with a Phase 5–13 integration-test suite verified green locally).
 
 The intended target architecture is:
 
@@ -33,19 +33,21 @@ staged cutover is done and verified.
 .
 ├── contracts/              Solidity VotingTally and generated verifier contracts
 ├── frontend/               React app and browser-side proof generation worker
-├── server/                 Current Node/Express backend
-├── rust-backend/           New Rust backend migration scaffold
+├── rust-backend/           Rust backend (axum) — the sole API surface
+├── zk/                     ZK toolchain: VoteCheck.circom, build_*/, setUpZk.sh (relocated from server/zkp in Phase 6.5)
 ├── docs/                   Project plan and API compatibility notes
-├── scripts/                Hardhat deploy scripts and local/GCP setup scripts
+├── scripts/                Hardhat deploy + ETL/migration + local/GCP setup scripts
 ├── infra/                  GCP infra support files
-├── test/                   Hardhat and backend helper tests
+├── test/                   Hardhat contract/circuit/Poseidon/ETL helper tests
 ├── docker-compose.yml      Local Postgres + Redis development services
 └── .env.example            Local/Rust backend environment template
 ```
 
-## Current Node Backend
+## API Surface (Rust backend)
 
-The active backend entrypoint is `server/index.js`.
+The backend entrypoint is `rust-backend/crates/api/src/main.rs` (axum). The legacy
+Node `server/` was deleted in Phase 6.5; these routes are now served by Rust at full
+parity.
 
 Important routes:
 
@@ -63,15 +65,14 @@ GET  /api/elections/finalized
 GET  /api/elections/completed
 ```
 
-Important helpers:
+Important helpers (Rust crates — the Node `server/utils/*` equivalents were deleted):
 
 ```text
-server/utils/merkle.js              Merkle tree, voter registration lock, final snapshot
-server/utils/redisLock.js           Redis compare-delete distributed lock
-server/utils/submissionTickets.js   Redis-backed single-use submit tickets
-server/utils/submitValidation.js    submit proof/publicSignals validation
-server/utils/finalizationState.js   Redis marker for on-chain configured elections
-server/utils/email.js               shared email normalization
+crates/zkp        bit-exact Poseidon + FixedMerkleTree (root, voter snapshot)
+crates/domain     state machine, registration/finalization/submit validation
+crates/api tickets.rs   Redis-backed single-use submit tickets (binds election+root only)
+crates/db         sqlx repos (elections, voters, admins, submission_tickets, ...)
+crates/chain      alloy relayer: deploy, configureElection, receipt polling
 ```
 
 State-sensitive invariants:
@@ -109,13 +110,13 @@ Current contract direction:
 - Generated Groth16 verifier contracts are produced by Circom/snarkjs setup.
 - Hardhat is still the current contract test/deploy toolchain.
 
-ZK files live under `server/zkp/`.
+ZK files live under `zk/`.
 
 ```text
-server/zkp/circuits/
-server/zkp/build_<depth>_<candidates>/
-server/zkp/setUpZk.sh
-server/zkp/prove.sh
+zk/circuits/
+zk/build_<depth>_<candidates>/
+zk/setUpZk.sh
+zk/prove.sh
 ```
 
 Production v1 remains Circom/snarkjs. Noir is planned as a POC only.
@@ -300,13 +301,11 @@ also verifies that the secret has a latest version before mounting it.
 
 ## Verification Commands
 
-Node/backend syntax examples:
+JS/shell syntax gates (mirror CI — `server/` is gone):
 
 ```bash
-node --check server/routes/finalizeVote.js
-node --check server/routes/submitZk.js
-node --check server/utils/merkle.js
-bash -n server/zkp/setUpZk.sh
+find scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
+find scripts zk -name '*.sh' -print0 | xargs -0 -n1 bash -n
 ```
 
 Hardhat:

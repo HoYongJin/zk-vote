@@ -25,7 +25,7 @@ Phase 1 잔여(Goal 2 검증·완성 → Goal 3 → Goal 4 → Phase 1 게이트
 - 비밀값(.env, PRIVATE_KEY, ptau 제외 대용량 바이너리) 커밋 금지. `*.ptau`는 gitignore됨.
 
 ### 환경 사실 (재검증 없이 사용 가능)
-- circom 2.2.3: `/Users/jhy/.local/circom/bin/circom` (setUpZk 실행 시 `PATH` 또는 `CIRCOM_BIN` 지정). snarkjs는 로컬 `node_modules/.bin`. `server/zkp/powersOfTau28_hez_final_12.ptau`(blake2b 검증본, depth≤5) 존재. depth 6~10 빌드 필요 시 `_16.ptau`를 `storage.googleapis.com/zkevm/ptau/`에서 받아 snarkjs README 해시로 검증.
+- circom 2.2.3: `/Users/jhy/.local/circom/bin/circom` (setUpZk 실행 시 `PATH` 또는 `CIRCOM_BIN` 지정). snarkjs는 로컬 `node_modules/.bin`. `zk/powersOfTau28_hez_final_12.ptau`(blake2b 검증본, depth≤5) 존재. depth 6~10 빌드 필요 시 `_16.ptau`를 `storage.googleapis.com/zkevm/ptau/`에서 받아 snarkjs README 해시로 검증.
 - gcloud 인증: `sujini000522@gmail.com`. **GCP 리소스 생성/변경(비용 발생)은 실행 전 보고하고 승인받는다.**
 - Node 서버는 `server/.env`만 로드(루트 .env 아님). hardhat은 루트 `.env`(SEPOLIA_RPC_URL, PRIVATE_KEY).
 - 표준 검증 명령: `npx hardhat test` / `node --check <파일>` / `cd rust-backend && cargo fmt --check && cargo test --workspace && cargo clippy --workspace -- -D warnings` / `cd frontend && npm run build`.
@@ -48,7 +48,7 @@ zk-vote Phase 1 audit-blocker 중 C1+H1 회로/컨트랙트 v2를 구현하라.
 
 - `audit.md` rev4의 C1, H1 항목
 - `docs/PROJECT_PLAN.md`의 "Phase 1. Audit Blocker Rebaseline"
-- `server/zkp/circuits/VoteCheck.circom`
+- `zk/circuits/VoteCheck.circom`
 - `contracts/VotingTally.sol`
 - `server/routes/submitZk.js`
 - `server/utils/submitValidation.js`
@@ -74,7 +74,7 @@ zk-vote Phase 1 audit-blocker 중 C1+H1 회로/컨트랙트 v2를 구현하라.
 
 - `circom` 설치 여부를 확인하라.
 - `snarkjs`는 전역 설치하지 말고 repo/local `node_modules/.bin/snarkjs` 또는 `npx snarkjs`를 사용하라.
-- `server/zkp/`에 필요한 `.ptau`가 없으면 공식 출처에서 다운로드하고 체크섬 검증을 수행하라.
+- `zk/`에 필요한 `.ptau`가 없으면 공식 출처에서 다운로드하고 체크섬 검증을 수행하라.
   - depth <= 5: `powersOfTau28_hez_final_12.ptau`
   - depth <= 10: `powersOfTau28_hez_final_16.ptau`
   - depth <= 20: `powersOfTau28_hez_final_20.ptau`
@@ -82,7 +82,7 @@ zk-vote Phase 1 audit-blocker 중 C1+H1 회로/컨트랙트 v2를 구현하라.
 
 ### 구현 범위
 
-#### 1. 회로 수정 — `server/zkp/circuits/VoteCheck.circom`
+#### 1. 회로 수정 — `zk/circuits/VoteCheck.circom`
 
 - `MerkleProof` 루프 내부에 모든 레벨에 대해 다음 boolean constraint를 추가하라:
   `pathIndices[i] * (1 - pathIndices[i]) === 0;`
@@ -96,11 +96,11 @@ zk-vote Phase 1 audit-blocker 중 C1+H1 회로/컨트랙트 v2를 구현하라.
 #### 2. artifact 재생성 범위 확정 및 실행
 
 - 먼저 현재 artifact inventory를 만들라:
-  - `server/zkp/build_*`
+  - `zk/build_*`
   - `contracts/Groth16Verifier*.sol`
-  - `server/zkp/build_*/verification_key.json`
-- active artifact set은 `server/zkp/build_*` 중 `verification_key.json`과 `circuit_final.zkey`가 있는 조합으로 본다.
-- active 조합은 모두 `server/zkp/setUpZk.sh`로 재생성하라.
+  - `zk/build_*/verification_key.json`
+- active artifact set은 `zk/build_*` 중 `verification_key.json`과 `circuit_final.zkey`가 있는 조합으로 본다.
+- active 조합은 모두 `zk/setUpZk.sh`로 재생성하라.
 - contract만 있고 build directory가 없는 orphan verifier는 임의 삭제하지 말고, 실제 deploy/setup 경로에서 참조되는지 확인한 뒤 필요 시 재생성하거나 변경 요약에 orphan으로 명시하라.
 - 재생성 후 각 active `verification_key.json`의 `nPublic`이 `4`인지 확인하라.
 - 생성된 Solidity verifier의 public input 배열 크기도 `uint[4]`인지 확인하라.
@@ -187,14 +187,14 @@ MockVerifier만으로 H1은 검증할 수 없다. 실제 circuit artifact를 사
 
 ### 검증 명령
 
-- `bash -n server/zkp/setUpZk.sh`
+- `bash -n zk/setUpZk.sh`
 - 변경한 JS 파일들에 대해 `node --check`
   - `server/routes/submitZk.js`
   - `server/utils/submitValidation.js`
   - `frontend/src/pages/Voter/VotePage.js`
 - `npx hardhat test`
 - artifact 확인:
-  - active `server/zkp/build_*/verification_key.json`의 `nPublic == 4`
+  - active `zk/build_*/verification_key.json`의 `nPublic == 4`
   - regenerated verifier Solidity가 `uint[4]` public input을 사용
 
 ### 수용 기준
