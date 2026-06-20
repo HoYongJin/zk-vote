@@ -575,6 +575,8 @@ async fn deploy_with_locked_election(
             election_uuid_to_u256(election_id)?,
             U256::from(latest.num_candidates as u64),
             owner,
+            // §0.5 gap #2: refuse to deploy unless the live RPC reports this chain id.
+            state.config.chain_id as u64,
         )
         .await
     };

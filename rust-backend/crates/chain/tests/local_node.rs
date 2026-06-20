@@ -45,6 +45,7 @@ async fn deploys_and_enforces_owner_separation() {
         U256::from(123u64),
         U256::from(5u64),
         owner,
+        31337, // hardhat local node chain id (§0.5 gap #2)
     )
     .await
     .expect("deployment failed — is `npx hardhat node` running?");
@@ -113,4 +114,38 @@ async fn deploys_and_enforces_owner_separation() {
     .unwrap_err();
     assert!(matches!(duplicate, ChainError::Reverted(_)));
     assert_eq!(election.merkle_root().await.unwrap(), U256::from(42u64));
+}
+
+// PROJECT_PLAN §0.5 gap #2: deploy_election must refuse when the live RPC's
+// chain id != the expected CHAIN_ID. Before this guard a mis-set RPC_URL would
+// have silently deployed to the wrong chain. The local node reports 31337, so
+// claiming Sepolia (11155111) must fail with a Config error before any deploy.
+#[tokio::test]
+#[ignore = "requires a local hardhat node (npx hardhat node)"]
+async fn refuses_to_deploy_on_a_chain_id_mismatch() {
+    let config = ChainConfig {
+        rpc_url: RPC.to_string(),
+        relayer_private_key: RELAYER_KEY.to_string(),
+    };
+    let owner: Address = OWNER_ADDR.parse().unwrap();
+
+    let err = deploy_election(
+        &config,
+        bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+        bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+        U256::from(123u64),
+        U256::from(5u64),
+        owner,
+        11_155_111, // wrong: the local node is 31337
+    )
+    .await
+    .expect_err("must refuse to deploy when the RPC chain id != expected CHAIN_ID");
+    assert!(
+        matches!(err, ChainError::Config(_)),
+        "expected a Config (chain-id mismatch) error, got {err:?}"
+    );
+    assert!(
+        !err.is_retryable(),
+        "a wrong-chain config error is permanent"
+    );
 }

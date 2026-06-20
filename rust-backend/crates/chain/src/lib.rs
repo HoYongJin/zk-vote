@@ -132,8 +132,29 @@ async fn deploy_bytecode(
     Ok((address, format!("{:#x}", receipt.transaction_hash)))
 }
 
+/// PROJECT_PLAN §0.5 gap #2: assert the live RPC actually serves the chain we
+/// intend to deploy to. `config.chain_id` / `CHAIN_ID` is metadata only; without
+/// this check a mis-set RPC_URL would silently deploy the verifier + VotingTally
+/// to whatever chain the URL serves (e.g. mainnet instead of Sepolia).
+async fn verify_chain_id(
+    provider: &(impl Provider + Clone),
+    expected: u64,
+) -> Result<(), ChainError> {
+    let actual = provider
+        .get_chain_id()
+        .await
+        .map_err(|err| ChainError::Transport(err.to_string()))?;
+    if actual != expected {
+        return Err(ChainError::Config(format!(
+            "RPC chain id {actual} does not match expected CHAIN_ID {expected}; refusing to deploy to the wrong chain"
+        )));
+    }
+    Ok(())
+}
+
 /// Deploys the Groth16 verifier and a `VotingTally` bound to it, signed by
 /// the relayer key, with `owner` as the explicit contract owner (AR-M4).
+/// Verifies the live RPC's chain id == `expected_chain_id` before deploying.
 pub async fn deploy_election(
     config: &ChainConfig,
     verifier_bytecode: Vec<u8>,
@@ -141,8 +162,11 @@ pub async fn deploy_election(
     election_id: U256,
     num_candidates: U256,
     owner: Address,
+    expected_chain_id: u64,
 ) -> Result<DeployedElection, ChainError> {
     let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    // §0.5 gap #2: never deploy to the wrong chain (fail before spending gas).
+    verify_chain_id(&provider, expected_chain_id).await?;
 
     let (verifier_address, _) = deploy_bytecode(&provider, verifier_bytecode).await?;
 

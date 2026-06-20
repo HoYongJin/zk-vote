@@ -1687,6 +1687,7 @@ mod tests {
                 .unwrap(),
             alloy::primitives::U256::from(2u64),
             OWNER_ADDR.parse().unwrap(),
+            31337, // hardhat local node chain id (§0.5 gap #2)
         )
         .await
         .expect("deploy failed — is `npx hardhat node` running?");
@@ -1938,6 +1939,7 @@ mod tests {
             alloy::primitives::U256::from(123u64),
             alloy::primitives::U256::from(5u64),
             OWNER_ADDR.parse().unwrap(),
+            31337, // hardhat local node chain id (§0.5 gap #2)
         )
         .await
         .expect("deploy failed — is `npx hardhat node` running?");
