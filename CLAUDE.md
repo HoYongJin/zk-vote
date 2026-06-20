@@ -39,7 +39,7 @@ Postgres→Cloud SQL, and GCP staging/cutover (see `docs/PROJECT_PLAN.md`).
 
 ```
 Current (local): React → Rust API (axum) → Postgres + Redis + Circom/snarkjs (zk/) → Solidity VotingTally + Groth16Verifier
-                 (frontend still on Supabase Auth JS until Phase 16; Rust validates Supabase JWTs until the Phase-18 GCIP repoint)
+                 (frontend now on the Firebase/GCIP SDK — Phase 16 done; the Rust backend still validates Supabase-issued JWTs until the Phase-18 GCIP secret repoint)
 Target:          React (Firebase/GCIP) → Rust API (axum) → Cloud SQL(Postgres) + Memorystore(Redis) + GCS artifacts + alloy relayer → VotingTally + Groth16Verifier
 ```
 
@@ -52,13 +52,13 @@ consumed queue).
 ## Tech stack (summary — full rationale in `docs/TECH_STACK.md`)
 
 - **Backend:** Rust — axum 0.7, tokio 1, sqlx 0.8 (postgres, **rustls**, compile-checked),
-  redis 0.27, alloy 1, jsonwebtoken 9 (Supabase JWKS), light-poseidon 0.2 + ark-bn254 0.4,
+  redis 0.27, alloy 1, jsonwebtoken 9 (JWKS verifier — GCIP target, config-swappable), light-poseidon 0.2 + ark-bn254 0.4,
   utoipa 5, tower-http 0.6, reqwest 0.12 (rustls).
 - **Contracts:** Solidity 0.8.20, Hardhat 2.24 + hardhat-toolbox 5 (no Ignition).
 - **ZK:** Circom 2.2.3 + snarkjs 0.7.5, Groth16 over BN254. `nPublic = 4`:
   `[root_out, vote_index, nullifier_hash, election_id]`.
 - **Frontend:** React 19, Create React App (react-scripts 5), Redux Toolkit 2.9,
-  axios 1.12, @supabase/supabase-js 2.74, poseidon-lite 0.3.0 + snarkjs (browser proving).
+  axios 1.12, firebase 12 (Firebase Auth Web SDK / GCIP), poseidon-lite 0.3.0 + snarkjs (browser proving).
 - **Data:** PostgreSQL (Cloud SQL target), Redis (Memorystore target). Two-role DB
   privilege model (`zkvote_migrator` DDL / `zkvote_app` DML-only).
 - **Infra:** GCP Cloud Run / Cloud SQL / Memorystore / Secret Manager / Artifact Registry /
@@ -86,12 +86,16 @@ consumed queue).
    gated for any staging/production election.
 7. **Poseidon must be bit-identical** across circuit, frontend (poseidon-lite), server
    (circomlibjs), and Rust (light-poseidon) — a 1-bit divergence invalidates every proof.
-8. **Admin promotion & voter eligibility trust the JWT `email` claim.** The Supabase
-   project **MUST** have e-mail confirmation enabled (no autoconfirm) so an `email` claim
-   implies the caller controls that inbox — otherwise an attacker could claim a pending
-   admin invitation or a voter slot for someone else's address. The backend additionally
-   refuses an *explicitly* unverified e-mail (RUST-AUTH-2), but the deployment setting is
-   the primary control.
+8. **Admin promotion & voter eligibility trust the JWT `email` claim.** Under **GCP
+   Identity Platform (GCIP)** — the IdP that replaces Supabase Auth — there is **no
+   provider-level "require verified e-mail before sign-in" toggle** for basic
+   email/password, so the invariant is carried **app-side**: the backend reads the
+   **top-level `email_verified`** claim and RUST-AUTH-2 **refuses an explicitly
+   unverified e-mail**, so it cannot consume a pending admin invitation or a voter slot
+   for someone else's inbox. Supporting controls: GCIP does not autoconfirm password
+   sign-ups (the verify-email flow is real) and Google-asserted e-mails arrive
+   `email_verified=true`. (Pre-migration this was primarily the Supabase "confirm email"
+   deployment setting; post-migration the **app-layer check is the primary control**.)
 
 **Deployment & security findings:** the 2026-06-19 adversarial audit and its remediation
 are tracked in `docs/SECURITY_AUDIT_2026-06.md` (read it before deploy; it lists the

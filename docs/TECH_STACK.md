@@ -18,7 +18,7 @@ Status legend: **LOCKED** (decided, in use) · **OPEN** (decision still required
 | **sqlx** | 0.8, `postgres` + **rustls** + `uuid` + `time` + `json` + `macros` | **Compile-time-checked SQL** against the real schema — the durable DB is the "last line of defense," so query/type drift must fail the build, not production. `rustls` avoids OpenSSL in the container image. |
 | **redis** | 0.27, `tokio-comp` | Single-use submission tickets (TTL), registration/finalize locks, relay serialization. Async client matching tokio. |
 | **alloy** | 1.x, `full` | Modern, typed Ethereum library (successor to ethers-rs). Typed `VotingTally`/verifier bindings; deploys the verifier + tally and relays `configureElection`/`submitTally`. Replaces the legacy `ethers.js` v5 surface. |
-| **jsonwebtoken** | 9 | Validates Supabase-issued JWTs against the project JWKS. Auth (`auth.users`) **stays in Supabase** after cutover — only the data plane moves to Cloud SQL — so the backend remains a pure JWT verifier (issuer/audience checked). |
+| **jsonwebtoken** | 9 | Validates IdP-issued JWTs against the IdP JWKS (RS256), checking issuer + audience. The verifier is **provider-agnostic / config-swappable**: auth migrates **Supabase Auth → GCP Identity Platform (GCIP)** (`securetoken` JWKS / `https://securetoken.google.com/<project>` issuer / `<project>` audience), so the backend stays a pure JWT verifier and the swap is an env change, not a code change (PROJECT_PLAN §0). |
 | **light-poseidon** + **ark-bn254** + **ark-ff** | 0.2 / 0.4 / 0.4 | Poseidon over the BN254 scalar field, parameterized to be **bit-identical** to the Circom circuit and circomlibjs (audit AR-H7). The Rust backend computes Merkle roots that must match client-generated proofs exactly. |
 | **utoipa** | 5 | `ToSchema` derives for API types. NOTE: schema derives exist but **no OpenAPI document is served yet** — treat as a TODO, not a shipped feature. |
 | **tower / tower-http** | 0.5 / 0.6 (`cors`, `trace`, `request-id`) | CORS, request-id propagation, and tracing middleware. |
@@ -66,7 +66,7 @@ pg advisory locks. If a true background worker is ever needed, this is where it 
 | **Create React App** (react-scripts) | 5.0.1 | Existing build tooling. (Long-term, a Vite/Next migration is a candidate but **out of scope** for the backend migration.) |
 | **Redux Toolkit** + react-redux | 2.9 / 9.2 | Auth/session state. |
 | **axios** | 1.12 | API client; base URL is feature-flagged (`apiBaseUrl.js`) to switch Node→Rust. |
-| **@supabase/supabase-js** | 2.74 | Supabase Auth (login/session) only — role lookups now go through the backend `/api/me` (audit AR-H4), not direct table reads. |
+| **firebase** (Firebase Auth Web SDK) | 12 | GCP Identity Platform (GCIP) login/session — email/password (+ e-mail verification, password reset) and Google OAuth (replaces Supabase Auth + Kakao, Phase 16). Role lookups go through the backend `/api/me` (audit AR-H4), not direct table reads. The web `apiKey` is public client config, not a secret. |
 | **poseidon-lite** | 0.3.0 | Browser Poseidon for the client-held secret + leaf commitment. Chosen over circomlibjs because **circomlibjs cannot be bundled under CRA/webpack 5**. Must stay bit-identical to the circuit. |
 | **snarkjs** (browser) + web worker | 0.7.5 | Browser-side Groth16 proof generation in `proof.worker.js`, so the **secret never leaves the client** (audit H2). |
 
@@ -76,7 +76,7 @@ pg advisory locks. If a true background worker is ever needed, this is where it 
 
 | Choice | Why |
 |---|---|
-| **GCP Cloud Run** | Stateless, scale-to-zero container hosting for `zkvote-api`; graceful SIGTERM drain. Built from `rust-backend/Dockerfile` via Cloud Build. Currently deployed `--allow-unauthenticated` (auth enforced in-app via Supabase JWT). |
+| **GCP Cloud Run** | Stateless, scale-to-zero container hosting for `zkvote-api`; graceful SIGTERM drain. Built from `rust-backend/Dockerfile` via Cloud Build. Deployed `--allow-unauthenticated` (auth enforced in-app via IdP JWT verification — GCIP target, Supabase pre-cutover). |
 | **Cloud SQL (Postgres)** + **Memorystore (Redis)** | Managed Postgres/Redis reached over a **VPC connector**. |
 | **Secret Manager** | Per-secret IAM (audit M9), `zkvote-staging-*` prefix. The owner key (`zkvote-staging-owner-private-key`) is mounted and **must differ** from the relayer key. |
 | **Artifact Registry / GCS** | Container images + ZK artifacts (served via SA metadata token in `gcs` mode, audit AR-M6). |
@@ -86,11 +86,11 @@ pg advisory locks. If a true background worker is ever needed, this is where it 
 
 ## 6. OPEN decisions (need an owner)
 
-1. **Frontend hosting after cutover.** Backend is moving to GCP, but the only committed
-   frontend CD targets **AWS S3/CloudFront** (`deploy-frontend.yml`, `frontend/buildspec.yml`).
-   Decide: (a) keep frontend on AWS and whitelist its CloudFront origin in the Cloud Run
-   `CORS_ALLOWED_ORIGINS`, or (b) move to GCS static + Cloud CDN / Firebase Hosting. The
-   chosen origin gates `deploy-staging-api.sh`'s CORS configuration.
+1. **Frontend hosting after cutover — RESOLVED (2026-06-20): GCP / Firebase Hosting**
+   (PROJECT_PLAN §0.4). The frontend moves to Firebase Hosting (same project as GCIP),
+   retiring the AWS S3/CloudFront CD (`deploy-frontend.yml`, `frontend/buildspec.yml` —
+   kept `workflow_dispatch`-only until the Firebase Hosting CD lands in Phase 18). The
+   chosen origin gates `deploy-staging-api.sh`'s `CORS_ALLOWED_ORIGINS`.
 2. **AR-M1 — cryptographic unlinkable authorization.** Today the operator de-anonymization
    ceiling is the submission ticket, mitigated only by a non-logging principle. Whether to
    adopt blind-signed / anonymous-credential tokens is **deferred to a Phase-18 decision**
