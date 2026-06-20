@@ -1,10 +1,10 @@
 /**
  * @file test/helpers/zkProof.js
  * @desc Test helpers that build real ZK proof inputs for the VoteCheck circuit,
- * mirroring the production Merkle/leaf/nullifier derivation in
- * `server/utils/merkle.js` (same Poseidon, same ZERO_ELEMENT, same
- * fixed-merkle-tree). Used by the real-circuit tests that exercise C1/H1 end to
- * end (election binding + path-index booleanity).
+ * mirroring the production Merkle/leaf/nullifier derivation in the Rust
+ * `zkvote-zkp` crate + the VoteCheck circuit (same Poseidon, same ZERO_ELEMENT,
+ * same fixed-merkle-tree). Used by the real-circuit tests that exercise C1/H1
+ * end to end (election binding + path-index booleanity).
  */
 
 const path = require("path");
@@ -12,7 +12,7 @@ const snarkjs = require("snarkjs");
 const { buildPoseidon } = require("circomlibjs");
 const { MerkleTree } = require("fixed-merkle-tree");
 
-// Must match server/utils/merkle.js exactly so the off-chain tree and the
+// Must match the Rust `zkvote-zkp` crate + the circuit exactly so the off-chain tree and the
 // circuit agree on the root.
 const ZERO_ELEMENT =
     "21663839004416932945382355908790599225266501822907911457504978515578255421292";

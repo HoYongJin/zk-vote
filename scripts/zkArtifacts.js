@@ -1,5 +1,5 @@
 /**
- * @file server/utils/zkArtifacts.js
+ * @file scripts/zkArtifacts.js
  * @desc Binds deployed elections to the exact ZK artifacts (zkey/vkey/wasm)
  * they were deployed with (audit M5). Artifacts are keyed on disk only by
  * (depth, candidates); if any artifact is regenerated, the new zkey carries

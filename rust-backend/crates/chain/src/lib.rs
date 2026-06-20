@@ -185,6 +185,17 @@ pub async fn deploy_election(
 /// Calls `configureElection` with a preflight `eth_call` first, so permanent
 /// failures (wrong owner, already configured) are classified as `Reverted`
 /// before any gas is spent. Signed by `owner_private_key` (AR-M4).
+///
+/// FOLLOW-UP (§0.5 chain-id guard): unlike `deploy_election`, this path does NOT
+/// re-verify `eth_chainId`. It targets a `voting_tally_address` that a prior
+/// `deploy_election` already created on the chain-id-verified chain, so the
+/// normal flow is safe. The residual gap is operator-only: if `RPC_URL` is
+/// switched to a different chain *between* deploy and finalize, the preflight
+/// `eth_call` to the (now codeless) address returns empty/Ok for a no-return
+/// function rather than reverting, so a wrong-chain owner-signed tx could be
+/// sent. Impact is negligible on a testnet (a no-op against a codeless address),
+/// but adding `verify_chain_id` here + in `submit_tally` would make it fail
+/// closed with a crisp Config error. Tracked, not blocking v1.
 pub async fn configure_election(
     config: &ChainConfig,
     owner_private_key: &str,
