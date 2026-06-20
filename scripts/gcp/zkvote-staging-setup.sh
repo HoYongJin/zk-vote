@@ -33,6 +33,10 @@ required_apis=(
   run.googleapis.com
   cloudbuild.googleapis.com
   artifactregistry.googleapis.com
+  # PROJECT_PLAN Phase 7: GCP Identity Platform (GCIP) — the IdP that replaces
+  # Supabase Auth. Enabling the API is free; provisioning the tenant/providers
+  # and importing users is the cost/approval-gated step done separately.
+  identitytoolkit.googleapis.com
 )
 
 ensure_secret() {
