@@ -35,6 +35,7 @@ Architecture-review items closed since rev5:
 
 | 경계 | 신뢰 가정 | 통제 |
 |------|-----------|------|
+| 인증 / IdP 토큰 발급 (**GCIP**) | IdP가 신원과 `email_verified`를 정직하게 단언 | 백엔드가 GCIP ID 토큰을 검증(issuer `https://securetoken.google.com/<proj>`, audience `<proj>`, securetoken JWKS — Supabase 아님); **top-level `email_verified` 판독, RUST-AUTH-2가 명시적 미검증 이메일을 거부**(invariant #8, app-layer 1차 통제); 관리자 승격·유권자 자격은 JWT `email` 클레임 신뢰; 프론트 Firebase 프로젝트 == 백엔드 audience == Cloud Run 프로젝트 id 일치 필수(불일치 시 토큰 100% 거부) |
 | 브라우저 증명 생성 | 클라이언트만 평문 secret 보유 (H2) | secret은 localStorage 한정; wasm/zkey는 배포 해시 검증 후에만 사용(AR-M6); poseidon-lite ↔ circomlibjs 비트 동일 테스트 |
 | `/proof` 발급 (인증) | 서버는 nullifier를 알 수 없음 | 티켓 = election+root만(AR-H5); 커밋먼트 기반 Merkle 경로 |
 | Redis 티켓 | 단일 사용, 5분 TTL | validate-then-consume(GETDEL은 preflight 통과 후, M1) |
@@ -67,15 +68,17 @@ Architecture-review items closed since rev5:
 ## 5. Verification gate status (Phase 18)
 
 - 커밋된 파일에 릴레이어 키/DB 비밀번호 없음 — 위 4절 예외만 존재 ✅
-- 아티팩트 버킷 IAM 버킷 스코프(M9) ✅ (스크립트 수준; 실배포는 Phase 16)
-- submit 경로 replay/mismatch/relayer 직렬화 테스트 ✅ (Node 81 + Rust E2E 게이트)
+- 아티팩트 버킷 IAM 버킷 스코프(M9) ✅; 런타임 SA는 읽기 전용 objectViewer (스크립트 수준; 실배포는 Phase 18)
+- **GCIP 토큰 경계**: issuer/audience를 Supabase→GCIP로 명시 설정(deploy 스크립트), `scripts/gcp/verify-staging.sh`가 배포 후 GCIP 토큰 수락 / Supabase 토큰 거부를 검증 ⏳ (스테이징 의존)
+- submit 경로 replay/mismatch/relayer 직렬화 테스트 ✅ (Rust E2E 게이트)
 - C1/H1/H2 회귀 테스트 존재, 실패 버전 이해됨 ✅
 - finalize 부분 실패 테스트 존재 ✅ (Node 5케이스 + Rust 게이트)
 
 ## 6. Remaining pre-production work
 
-스테이징 의존(전부 PROJECT_PLAN에 귀속): Phase 16(Cloud Run 배포 — 비용
-승인 필요), AR-M2 시간 상관 측정 + 릴레이 큐 순서 검증, AR-M1 최종 결정, Phase 19
-ETL/롤백 리허설(AR-H3), Phase 20 운영 준비. 로컬 범위 잔여 Low는 모두 해소됨(2026-06-12): AR-L9/L11 플랜 게이트 문구
+스테이징 의존(전부 PROJECT_PLAN에 귀속): Phase 18(Cloud Run 배포 — 비용
+승인 필요) + 라이브 invariant-#8(GCIP email-verification) 재확인, AR-M2 시간 상관 측정 +
+릴레이 큐 순서 검증, AR-M1 최종 결정, Phase 20 ETL + Phase 21 컷오버/롤백 리허설(AR-H3),
+Phase 22 운영 준비. 로컬 범위 잔여 Low는 모두 해소됨(2026-06-12): AR-L9/L11 플랜 게이트 문구
 정정, `/api/zkp-files` 마운트를 build_* 산출물 3종으로 축소(실측: 산출물
 200 / 스크립트·소스·circuit_0000 404).
