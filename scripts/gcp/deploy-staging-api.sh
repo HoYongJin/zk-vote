@@ -85,13 +85,21 @@ deploy_args=(
   # implied a trusted-setup beacon enforcement the deployed service does not
   # perform; dropped to avoid a false sense of assurance. The beacon ceremony
   # gate lives in the artifact pipeline, not the API runtime.
-  --set-env-vars "^|^ARTIFACT_STORE=gcs|CHAIN_ID=11155111|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}"
+  # GCIP (PROJECT_PLAN §0 / Phase 18): set the JWT issuer + audience EXPLICITLY so
+  # the backend validates Google `securetoken` JWTs. WITHOUT these two, config.rs
+  # derives the issuer from SUPABASE_URL (`{SUPABASE_URL}/auth/v1`) and rejects
+  # 100% of GCIP tokens. The audience is the BARE GCIP/Firebase project id.
+  --set-env-vars "^|^ARTIFACT_STORE=gcs|CHAIN_ID=11155111|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}|SUPABASE_JWT_ISSUER=https://securetoken.google.com/${PROJECT_ID}|SUPABASE_JWT_AUDIENCE=${PROJECT_ID}"
 )
 
 secret_bindings=(
   "DATABASE_URL=zkvote-staging-database-url:latest"
   "REDIS_URL=zkvote-staging-redis-url:latest"
-  "SUPABASE_URL=zkvote-staging-supabase-url:latest"
+  # SUPABASE_URL is intentionally NOT bound: it is unused for auth once the issuer
+  # is explicit (above) and was only the legacy Node data plane. The JWKS secret
+  # VALUE must be the GCIP JWK endpoint
+  # (https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com),
+  # NOT the /robot/v1/metadata/x509/ PEM endpoint and NOT a Supabase JWKS URL.
   "SUPABASE_JWKS_URL=zkvote-staging-supabase-jwks-url:latest"
   "SEPOLIA_RPC_URL=zkvote-staging-sepolia-rpc-url:latest"
   "RELAYER_PRIVATE_KEY=${RELAYER_PRIVATE_KEY_SECRET}:latest"
