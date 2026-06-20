@@ -1,5 +1,11 @@
 name: Deploy Frontend to S3 and CloudFront
 
+# DEPRECATED (PROJECT_PLAN Phase 16/18): the frontend now authenticates via
+# Firebase/GCIP and the hosting target moved to GCP (Firebase Hosting). This
+# AWS S3/CloudFront CD is kept workflow_dispatch-only and will be removed once
+# the Firebase Hosting CD lands in Phase 18. The build args below were repointed
+# from REACT_APP_SUPABASE_* to REACT_APP_FIREBASE_* so a manual dispatch builds a
+# functional (Firebase) login rather than a broken Supabase one.
 on:
   workflow_dispatch:
 
@@ -30,8 +36,11 @@ jobs:
         run: npm run build
         env:
           REACT_APP_API_BASE_URL: /api
-          REACT_APP_SUPABASE_URL: ${{ secrets.REACT_APP_SUPABASE_URL }}
-          REACT_APP_SUPABASE_ANON_KEY: ${{ secrets.REACT_APP_SUPABASE_ANON_KEY }}
+          # Firebase web config is PUBLIC (not secret), but kept as Actions
+          # secrets so the project id is not hard-coded per environment.
+          REACT_APP_FIREBASE_API_KEY: ${{ secrets.REACT_APP_FIREBASE_API_KEY }}
+          REACT_APP_FIREBASE_AUTH_DOMAIN: ${{ secrets.REACT_APP_FIREBASE_AUTH_DOMAIN }}
+          REACT_APP_FIREBASE_PROJECT_ID: ${{ secrets.REACT_APP_FIREBASE_PROJECT_ID }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
