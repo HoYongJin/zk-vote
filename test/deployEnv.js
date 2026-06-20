@@ -35,7 +35,7 @@ describe("deploy env loader", function () {
         fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it("keeps root Hardhat vars but lets server/.env own Supabase vars", function () {
+    it("keeps root Hardhat vars but lets the migration env own Supabase vars", function () {
         const rootEnvPath = path.join(tempDir, ".env");
         const serverEnvPath = path.join(tempDir, "server.env");
         fs.writeFileSync(
@@ -67,7 +67,7 @@ describe("deploy env loader", function () {
         });
     });
 
-    it("does not leak root Supabase vars when server/.env omits them", function () {
+    it("does not leak root Supabase vars when the migration env omits them", function () {
         const rootEnvPath = path.join(tempDir, ".env");
         const serverEnvPath = path.join(tempDir, "server.env");
         fs.writeFileSync(
@@ -92,7 +92,7 @@ describe("deploy env loader", function () {
         });
     });
 
-    it("ignores non-Supabase variables from server/.env", function () {
+    it("ignores non-Supabase variables from the migration env", function () {
         const rootEnvPath = path.join(tempDir, ".env");
         const serverEnvPath = path.join(tempDir, "server.env");
         fs.writeFileSync(rootEnvPath, "PRIVATE_KEY=0xroot\nSEPOLIA_RPC_URL=https://root-rpc.example\n");

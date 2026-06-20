@@ -6,7 +6,7 @@ const {
     computeArtifactHashes,
     recordElectionArtifacts,
     verifyElectionArtifacts,
-} = require("../server/utils/zkArtifacts");
+} = require("../scripts/zkArtifacts");
 
 function makeFakeBuild(zkpDir, depth, candidates) {
     const buildDir = path.join(zkpDir, `build_${depth}_${candidates}`);

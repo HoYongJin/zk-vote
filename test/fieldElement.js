@@ -3,7 +3,7 @@ const {
     FIELD_ELEMENT_MODULUS_DEC,
     isFieldElementString,
     parseFieldElement,
-} = require("../server/utils/fieldElement");
+} = require("../scripts/migration/fieldElement");
 
 describe("fieldElement", function () {
     it("normalizes decimal and hex field elements", function () {

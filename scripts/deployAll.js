@@ -3,8 +3,8 @@ const { loadDeployEnv } = require("./deployEnv");
 loadDeployEnv();
 
 const hre = require("hardhat");
-const supabase = require("../server/supabaseClient"); // Import Supabase client from the server directory.
-const { recordElectionArtifacts } = require("../server/utils/zkArtifacts");
+const supabase = require("./migration/supabaseClient"); // Import the vendored Supabase client (scripts/migration/, Phase 6.5 C2).
+const { recordElectionArtifacts } = require("./zkArtifacts");
 const { assertUint4Verifier } = require("./assertVerifierArity");
 
 function isMissingColumnError(error) {

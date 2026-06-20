@@ -2,6 +2,7 @@
   "name": "zk-vote",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@supabase/supabase-js": "^2.49.4",
     "circomlib": "2.0.5",
     "circomlibjs": "0.1.7",
     "fixed-merkle-tree": "0.7.3",

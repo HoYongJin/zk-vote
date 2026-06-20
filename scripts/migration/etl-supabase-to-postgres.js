@@ -20,7 +20,7 @@
 
 const crypto = require("crypto");
 const { Client } = require("pg");
-const { isFieldElementString } = require("../../server/utils/fieldElement");
+const { isFieldElementString } = require("./fieldElement");
 
 const DRY_RUN = process.argv.includes("--dry-run");
 let supabaseClient;
@@ -141,7 +141,7 @@ function deriveElectionState(election, now = new Date()) {
 
 function getSupabase() {
     if (!supabaseClient) {
-        supabaseClient = require("../../server/supabaseClient");
+        supabaseClient = require("./supabaseClient");
     }
     return supabaseClient;
 }

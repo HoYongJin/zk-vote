@@ -30,7 +30,11 @@ function loadRootEnv(rootEnvPath = path.join(__dirname, "..", ".env")) {
     return parsed;
 }
 
-function loadServerSupabaseEnv(serverEnvPath = path.join(__dirname, "..", "server", ".env")) {
+// The legacy Supabase service-role creds used to live in server/.env. After the
+// Node→Rust deletion (Phase 6.5) the secondary Supabase env for the deploy/ETL
+// tooling lives at scripts/migration/.env (gitignored) — the same file the
+// vendored scripts/migration/supabaseClient.js loads.
+function loadServerSupabaseEnv(serverEnvPath = path.join(__dirname, "migration", ".env")) {
     const parsed = parseEnvFile(serverEnvPath);
     const applied = {};
 
@@ -46,7 +50,7 @@ function loadServerSupabaseEnv(serverEnvPath = path.join(__dirname, "..", "serve
 
 function loadDeployEnv({
     rootEnvPath = path.join(__dirname, "..", ".env"),
-    serverEnvPath = path.join(__dirname, "..", "server", ".env"),
+    serverEnvPath = path.join(__dirname, "migration", ".env"),
 } = {}) {
     loadRootEnv(rootEnvPath);
     return loadServerSupabaseEnv(serverEnvPath);
