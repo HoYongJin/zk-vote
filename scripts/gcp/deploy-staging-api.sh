@@ -84,8 +84,10 @@ deploy_args=(
   --vpc-connector "${VPC_CONNECTOR}"
   --add-cloudsql-instances "${CONNECTION_NAME}"
   --allow-unauthenticated
-  --min-instances 0
-  --max-instances 2
+  # Minimal/free-tier: scale to zero when idle (no Cloud Run charge), cap at 1.
+  # Prod raises MIN_INSTANCES (cold-start avoidance) + MAX_INSTANCES per load test.
+  --min-instances "${MIN_INSTANCES:-0}"
+  --max-instances "${MAX_INSTANCES:-1}"
   # INFRA-2: APP_ENV and REQUIRE_BEACON were inert here — the Rust binary reads
   # neither (REQUIRE_BEACON is a Node-only flag). Setting REQUIRE_BEACON=true
   # implied a trusted-setup beacon enforcement the deployed service does not

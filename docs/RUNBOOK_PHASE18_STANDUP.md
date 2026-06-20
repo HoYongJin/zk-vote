@@ -22,30 +22,44 @@ Two inputs only you (the operator) can provide:
    `GCP_PROJECT_ID=scopeball-registry-poc-g` in **all three** places consistently.)
 2. **Billing approval** (`CONFIRM_COSTS=yes`) after reading the estimate below.
 
-## 1. Cost estimate (asia-northeast3 / Seoul, approximate)
+## 1. Cost estimate — minimal / free-tier config (asia-northeast3, approximate)
 
-Always-on monthly cost if the stack is left running. Figures are order-of-magnitude — confirm
-in the [GCP Pricing Calculator](https://cloud.google.com/products/calculator) for the exact
-region/SKU before approving.
+`zkvote-staging-setup.sh` now defaults every resource to its cheapest floor (db-f1-micro **HDD**,
+**no automated backups**, Memorystore basic 1 GB, VPC connector **2 × e2-micro** min, Cloud Run
+**min 0 / max 1**). All specs are env-overridable for prod (see `PRODUCTION_READINESS.md`). Confirm
+in the [GCP Pricing Calculator](https://cloud.google.com/products/calculator) before approving.
 
-| Resource | Config (from setup script) | ~Monthly (always-on) | Notes |
+| Resource | Minimal config | ~Monthly | Free tier? |
 |---|---|---|---|
-| **Memorystore Redis** | basic, 1 GB | **~$36** | Largest line item; `~$0.049/GB-hr × 730`. Bills 24/7 even idle. No SLA on basic. |
-| **Serverless VPC connector** | 2–3 × e2-micro | **~$12–18** | `min-instances 2, max 3`; ~$6/e2-micro-mo. Bills 24/7 even idle. |
-| **Cloud SQL** | db-f1-micro PG16, ZONAL, 10 GB SSD | **~$10–13** | Shared-core, no SLA/CUD. Instance ~$8–10 + storage ~$1.7 + backups. |
-| **Cloud Run** | min 0 / max 2 | **~$0 idle** | Scales to zero; pay per request. Negligible for demo traffic. |
-| **Artifact Registry** | 1 Rust image (~1–2 GB) | ~$0.20 | $0.10/GB-mo storage. |
-| **GCS artifact bucket** | zk build_* (tens of MB) + versioning | <$0.10 | |
-| **Secret Manager** | ~8 secrets | ~$0.50 | $0.06/active version-mo + access ops. |
-| **Cloud Build** | Rust image build (infrequent) | ~$0 | 120 free build-min/day; Rust compile is long but infrequent. |
-| **GCIP / Identity Platform** | small import, < 50k MAU | $0 | Free below 50k MAU (no multi-tenancy). |
-| **Total (always-on)** | | **~$60–70/mo** | Dominated by Redis + VPC connector + Cloud SQL (~$58–67), all 24/7. |
+| **Memorystore Redis** | basic, 1 GB | **~$36** | ❌ no free tier; 1 GB basic is the smallest managed Redis |
+| **Serverless VPC connector** | 2 × e2-micro (floor) | **~$12** | ❌ needed only for Memorystore's private IP |
+| **Cloud SQL** | db-f1-micro, HDD, 10 GB, no-backup, ZONAL | **~$8** | ❌ no free tier; cheapest shared-core tier |
+| **Cloud Run** | min 0 / max 1 | **~$0** | ✅ scales to zero; 2M req + 360k GB-s/mo free |
+| Artifact Registry / GCS / Secret Manager / Cloud Build / GCIP | minimal | **~$0–1** | ✅ mostly within always-free |
+| **Total (always-on, managed)** | | **~$56/mo** | — |
 
-**Cost lever for academic/demo use:** Memorystore, the VPC connector, and Cloud SQL bill around
-the clock regardless of traffic; Cloud Run scales to zero. For a demo/coursework cadence, prefer
-**stand-up → demo → tear-down** (delete the Redis instance, VPC connector, and Cloud SQL instance
-when idle) to drop idle burn from ~$60/mo toward ~$0. Re-running the idempotent setup re-creates
-them; the Cloud SQL data survives if you keep the instance, or re-runs the ETL if you don't.
+**Free-trial note:** a new GCP account's **$300 / 90-day** trial credit covers this ~$56/mo stack for
+the full trial (~$168 over 90 days) — effectively free for a time-boxed demo/course; after the trial
+it bills at ~$56/mo. Teardown (delete Redis + connector + Cloud SQL when idle) drops it toward ~$0;
+the idempotent setup re-creates them on the next run.
+
+### Cost minimization — getting below the ~$48 managed floor
+
+Memorystore ($36) + the VPC connector ($12) are the **irreducible floor** in the managed
+architecture (no smaller managed Redis tier exists). The app uses Redis only for submission tickets +
+finalize/deploy locks, so moving Redis off Memorystore reaches **~$8/mo or near-$0**:
+
+- **Option A — Upstash Redis (serverless, free tier):** a public `rediss://` endpoint (free ≈ 10k
+  cmds/day). Set the `REDIS_URL` secret + `REDIS_TLS=true`; **drop Memorystore AND the VPC connector**
+  (Cloud SQL reaches Cloud Run via `--add-cloudsql-instances`, no connector needed). → **~$8/mo**
+  (Cloud SQL only). Third-party dependency, fine for demo/staging.
+- **Option B — Redis on a free e2-micro Compute Engine VM:** always-free e2-micro (us-central1 /
+  us-west1 / us-east1 only) running Redis 7, reached over the VPC. Drops Memorystore (~$36) but keeps
+  a connector; more ops/security surface (lock the VM down). → **~$8–12/mo**.
+- **Option C — keep managed, accept ~$56/mo** (simplest; covered by the free-trial credit).
+
+These are architecture choices (third-party dep / extra VM / US region) that are the operator's call.
+Tell me which and I'll wire `zkvote-staging-setup.sh` + the deploy env to it.
 
 ## 2. Ordered standup sequence (idempotent; each step re-runnable)
 

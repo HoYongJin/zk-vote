@@ -25,6 +25,20 @@ SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
 NETWORK="${NETWORK:-default}"
 VPC_RANGE="${VPC_RANGE:-10.8.0.0/28}"
 
+# --- Minimal / free-tier-leaning specs (defaults are the cheapest floor for a
+#     staging/demo on the free trial; override these for production — see
+#     docs/PRODUCTION_READINESS.md). Memorystore basic 1GB + the VPC connector
+#     are the irreducible managed cost floor; see RUNBOOK_PHASE18_STANDUP.md
+#     "Cost minimization" for the Redis-off-Memorystore routes to ~$0. ---
+SQL_TIER="${SQL_TIER:-db-f1-micro}"               # cheapest shared-core
+SQL_STORAGE_TYPE="${SQL_STORAGE_TYPE:-HDD}"       # HDD < SSD for a demo
+SQL_STORAGE_SIZE="${SQL_STORAGE_SIZE:-10}"        # 10GB is the floor
+SQL_ENABLE_BACKUPS="${SQL_ENABLE_BACKUPS:-false}" # off for minimal staging
+REDIS_TIER="${REDIS_TIER:-basic}"                 # no HA (smallest tier)
+REDIS_SIZE="${REDIS_SIZE:-1}"                     # 1GB is the floor
+VPC_MIN_INSTANCES="${VPC_MIN_INSTANCES:-2}"       # 2 is the connector floor
+VPC_MAX_INSTANCES="${VPC_MAX_INSTANCES:-2}"       # no scaling headroom (minimal)
+
 if [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
   echo "Refusing to run: set CONFIRM_COSTS=yes after explicit user approval (this creates billable GCP resources)." >&2
   exit 1
@@ -158,17 +172,25 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --quiet >/dev/null
 
 if ! gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud sql instances create "${SQL_INSTANCE}" \
-    --project "${PROJECT_ID}" \
-    --database-version POSTGRES_16 \
-    --edition ENTERPRISE \
-    --region "${REGION}" \
-    --tier db-f1-micro \
-    --availability-type ZONAL \
-    --storage-type SSD \
-    --storage-size 10 \
-    --backup-start-time 19:00 \
-    --quiet
+  sql_create_args=(
+    "${SQL_INSTANCE}"
+    --project "${PROJECT_ID}"
+    --database-version POSTGRES_16
+    --edition ENTERPRISE
+    --region "${REGION}"
+    --tier "${SQL_TIER}"
+    --availability-type ZONAL
+    --storage-type "${SQL_STORAGE_TYPE}"
+    --storage-size "${SQL_STORAGE_SIZE}"
+  )
+  if [[ "${SQL_ENABLE_BACKUPS}" == "true" ]]; then
+    sql_create_args+=(--backup-start-time 19:00)
+  else
+    # Minimal/demo: skip automated backups (no backup-storage cost). Prod must
+    # set SQL_ENABLE_BACKUPS=true (PITR/backup is a Phase-22 gate).
+    sql_create_args+=(--no-backup)
+  fi
+  gcloud sql instances create "${sql_create_args[@]}" --quiet
 fi
 
 if ! gcloud sql databases describe "${SQL_DATABASE}" --instance "${SQL_INSTANCE}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
@@ -238,8 +260,8 @@ if ! gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --
   gcloud redis instances create "${REDIS_INSTANCE}" \
     --project "${PROJECT_ID}" \
     --region "${REGION}" \
-    --tier basic \
-    --size 1 \
+    --tier "${REDIS_TIER}" \
+    --size "${REDIS_SIZE}" \
     --redis-version redis_7_0 \
     --quiet
 fi
@@ -250,8 +272,8 @@ if ! gcloud compute networks vpc-access connectors describe "${VPC_CONNECTOR}" -
     --region "${REGION}" \
     --network "${NETWORK}" \
     --range "${VPC_RANGE}" \
-    --min-instances 2 \
-    --max-instances 3 \
+    --min-instances "${VPC_MIN_INSTANCES}" \
+    --max-instances "${VPC_MAX_INSTANCES}" \
     --machine-type e2-micro \
     --quiet
 fi
