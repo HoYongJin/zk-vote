@@ -7,7 +7,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../../supabase';
+import { signOut } from 'firebase/auth';
+import { auth } from '../../firebase';
 import axios from '../../api/axios';
 import {
   calculateSecretCommitment,
@@ -72,12 +73,12 @@ function VoterMainPage() {
     }, [fetchAllVotesForVoter]);
   
     /**
-     * Handles user logout via Supabase.
+     * Handles user logout via Firebase (GCIP).
      */
     const handleLogout = async () => {
-      await supabase.auth.signOut();
-      // The App.js AuthHandler will likely catch the auth state change
-      // and redirect to /login automatically.
+      await signOut(auth);
+      // The App.js AuthHandler catches the auth state change (onAuthStateChanged)
+      // and redirects to /login automatically.
     };
   
     /**

@@ -1,12 +1,13 @@
 /**
  * @file frontend/src/App.js
- * @desc Main router and global Supabase auth state handler.
+ * @desc Main router and global Firebase (GCIP) auth state handler.
  */
 import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { setUser, setAdmin, clearUser, setRedirectComplete } from './store/authSlice';
-import { supabase } from './supabase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from './firebase';
 import { store } from './store/store';
 import axios from './api/axios';
 
@@ -54,35 +55,24 @@ function AuthHandler({ children }) {
       }
     };
 
-    // Supabase 인증 상태 변경 리스너
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (event === 'SIGNED_IN') {
-          if (session) {
-            dispatch(setUser({ user: session.user, session }));
-            checkAdminAndRedirect(session.user);
-          }
-        } else if (event === 'SIGNED_OUT') {
-          dispatch(clearUser());
-          navigate('/login');
-        }
+    // Firebase(GCIP) 인증 상태 리스너. onAuthStateChanged는 최초 로드 시 현재
+    // 사용자(또는 null)로 한 번 발화하고 이후 로그인/로그아웃마다 발화하므로,
+    // Supabase의 onAuthStateChange + getSession 두 경로를 하나로 대체한다
+    // (새로고침 시 로그인 유지는 Firebase가 영속화한 세션을 첫 발화로 복원).
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Firebase에는 Supabase 같은 session 객체가 없다. ID 토큰은 요청 시점에
+        // axios 인터셉터가 user.getIdToken()으로 즉석에서 가져온다.
+        dispatch(setUser({ user, session: null }));
+        checkAdminAndRedirect(user);
+      } else {
+        dispatch(clearUser());
+        navigate('/login');
       }
-    );
-
-    // 페이지 첫 로드 시 현재 세션 확인 (새로고침 시 로그인 유지)
-    const checkInitialSession = async () => {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-            dispatch(setUser({ user: session.user, session }));
-            dispatch(setAdmin(await fetchIsAdmin()));
-        } else {
-            dispatch(clearUser());
-        }
-    };
-    checkInitialSession();
+    });
 
     return () => {
-      authListener.subscription.unsubscribe();
+      unsubscribe();
     };
   }, [dispatch, navigate]);
 

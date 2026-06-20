@@ -11,8 +11,10 @@ import { createSlice } from '@reduxjs/toolkit';
  * The initial state for the authentication slice.
  */
 const initialState = {
-  user: null,         // Supabase user object
-  session: null,      // Supabase session object (contains JWT)
+  user: null,         // Firebase (GCIP) user object
+  session: null,      // unused with Firebase (the ID token is fetched per-request
+                      // via user.getIdToken() in the axios interceptor); kept for shape compat
+
   isLoggedIn: false,  // True if user session is active
   isAdmin: false,     // True when the active backend's /api/me reports admin role
   

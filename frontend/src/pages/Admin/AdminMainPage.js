@@ -14,7 +14,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from '../../api/axios';
 import Modal from '../../components/Modal';
-import { supabase } from '../../supabase';
+import { signOut } from 'firebase/auth';
+import { auth } from '../../firebase';
 
 // --- Style Definitions ---
 // [PERFORMANCE] Styles are defined outside the component function
@@ -133,12 +134,13 @@ function AdminMainPage() {
     // --- Action Handlers (API Calls) ---
 
     const handleLogout = async () => {
-        const { error } = await supabase.auth.signOut();
-        if (error) {
+        try {
+            await signOut(auth);
+        } catch (error) {
             console.error('로그아웃 중 오류 발생:', error);
             alert('로그아웃에 실패했습니다.');
         }
-        // AuthHandler in App.js will redirect to /login
+        // AuthHandler in App.js (onAuthStateChanged) redirects to /login
     };
 
     /**

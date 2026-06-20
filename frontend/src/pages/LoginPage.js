@@ -1,22 +1,31 @@
 /**
  * @file frontend/src/pages/LoginPage.js
  * @desc Renders the login page for the application.
- * This component is refactored into smaller sub-components (EmailAuthForm, KakaoAuthButton)
- * to better manage state and improve maintainability.
- * It provides methods for Email + Password (Sign In / Sign Up) and OAuth via Kakao.
+ * Refactored into smaller sub-components (EmailAuthForm, GoogleAuthButton).
+ * Auth is via GCP Identity Platform (Firebase Auth Web SDK): Email + Password
+ * (Sign In / Sign Up with e-mail verification + password reset) and OAuth via
+ * Google (PROJECT_PLAN Phase 16 — replaces the legacy Supabase + Kakao flow).
  */
 
 import React, { useState } from 'react';
-import { supabase } from '../supabase';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithPopup,
+  GoogleAuthProvider,
+} from 'firebase/auth';
+import { auth } from '../firebase';
 
 // --- [PERFORMANCE] Style Definitions ---
 // Moved outside the component function to prevent re-creation on every render.
-const pageStyle = { 
-  width: '320px', 
-  margin: '60px auto', 
-  padding: '20px', 
-  border: '1px solid #ccc', 
-  borderRadius: '8px', 
+const pageStyle = {
+  width: '320px',
+  margin: '60px auto',
+  padding: '20px',
+  border: '1px solid #ccc',
+  borderRadius: '8px',
   boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
 };
 const formStyle = { display: 'flex', flexDirection: 'column' };
@@ -28,37 +37,45 @@ const buttonStyle = { flex: 1, padding: '10px', border: 'none', borderRadius: '4
 const primaryButtonStyle = { ...buttonStyle, backgroundColor: '#007bff', color: 'white' };
 const secondaryButtonStyle = { ...buttonStyle, backgroundColor: '#6c757d', color: 'white' };
 const disabledButtonStyle = { ...buttonStyle, backgroundColor: '#aaa', cursor: 'not-allowed', color: 'white' };
-const kakaoButtonStyle = { ...buttonStyle, backgroundColor: '#FEE500', color: '#000000', marginTop: '10px', width: '100%' };
+const googleButtonStyle = { ...buttonStyle, backgroundColor: '#ffffff', color: '#3c4043', border: '1px solid #dadce0', marginTop: '10px', width: '100%' };
+const linkButtonStyle = { background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', fontSize: '0.85em', padding: 0, marginTop: '4px', textAlign: 'left' };
 const errorStyle = { color: 'red', marginTop: '10px', fontSize: '0.9em' };
+const infoStyle = { color: '#1a7f37', marginTop: '10px', fontSize: '0.9em' };
 const dividerStyle = { margin: '20px 0', border: 0, borderTop: '1px solid #eee' };
 
 /**
- * [UX] Helper function to parse common Supabase auth errors into user-friendly messages.
- * @param {string} errorMessage - The raw error message from Supabase.
+ * [UX] Map common Firebase Auth (GCIP) error codes to friendly Korean messages.
+ * Firebase surfaces a stable `error.code` (e.g. 'auth/invalid-credential'),
+ * unlike Supabase's free-text `error.message`.
+ * @param {string} code - The Firebase `error.code`.
  * @returns {string} A user-friendly error message in Korean.
  */
-const parseAuthError = (errorMessage) => {
-  if (!errorMessage) return "알 수 없는 오류가 발생했습니다.";
-  
-  // Use switch for clarity and easy expansion
-  switch (errorMessage) {
-    case "Invalid login credentials":
-      return "이메일 또는 비밀번호가 잘못되었습니다.";
-    case "User already registered":
-      return "이미 가입된 이메일입니다.";
-    case "Password should be at least 6 characters":
-      return "비밀번호는 6자리 이상이어야 합니다.";
-    case "Unable to validate email address: invalid format":
-      return "유효하지 않은 이메일 형식입니다.";
+const parseAuthError = (code) => {
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return '이메일 또는 비밀번호가 잘못되었습니다.';
+    case 'auth/email-already-in-use':
+      return '이미 가입된 이메일입니다.';
+    case 'auth/weak-password':
+      return '비밀번호는 6자리 이상이어야 합니다.';
+    case 'auth/invalid-email':
+      return '유효하지 않은 이메일 형식입니다.';
+    case 'auth/too-many-requests':
+      return '시도가 너무 많습니다. 잠시 후 다시 시도해주세요.';
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+      return '로그인 창이 닫혔습니다. 다시 시도해주세요.';
     default:
-      return errorMessage; // Return the raw message if not recognized
+      return '인증 중 오류가 발생했습니다. 다시 시도해주세요.';
   }
 };
 
 /**
  * @component EmailAuthForm
- * @desc A self-contained form for handling Email/Password sign-in and sign-up.
- * Manages its own state for inputs, loading, and errors.
+ * @desc Email/Password sign-in + sign-up (with e-mail verification) + password
+ * reset, against GCP Identity Platform.
  * @param {object} props
  * @param {function} props.onLoadingChange - Callback to notify the parent of loading state.
  */
@@ -66,12 +83,9 @@ const EmailAuthForm = ({ onLoadingChange }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
+  const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  /**
-   * Sets the loading state both locally and in the parent component.
-   * @param {boolean} isLoading - The new loading state.
-   */
   const setCombinedLoading = (isLoading) => {
     setLoading(isLoading);
     onLoadingChange(isLoading); // Notify parent (LoginPage)
@@ -84,45 +98,72 @@ const EmailAuthForm = ({ onLoadingChange }) => {
     e.preventDefault();
     setCombinedLoading(true);
     setError(null);
-    
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email,
-      password: password,
-    });
-    
-    if (signInError) {
-      setError(parseAuthError(signInError.message));
+    setInfo(null);
+
+    try {
+      const { user } = await signInWithEmailAndPassword(auth, email, password);
+      // Invariant #8: an unverified e-mail is not treated as admin/voter by the
+      // backend. Surface the prompt rather than silently showing empty lists.
+      if (user && !user.emailVerified) {
+        setInfo('이메일 인증이 완료되지 않았습니다. 받은 편지함의 인증 링크를 확인해주세요.');
+        try {
+          await sendEmailVerification(user);
+        } catch (_) {
+          // resend is best-effort; ignore rate-limit errors here
+        }
+      }
+      // On success, the App.js AuthHandler redirects.
+    } catch (signInError) {
+      setError(parseAuthError(signInError.code));
+    } finally {
+      setCombinedLoading(false);
     }
-    // On success, the App.js AuthHandler will automatically redirect.
-    setCombinedLoading(false);
   };
 
   /**
-   * Handles the email/password sign-up attempt.
+   * Handles the email/password sign-up attempt (sends a verification e-mail).
    */
   const handleSignUp = async () => {
     setCombinedLoading(true);
     setError(null);
-    
-    const { error: signUpError } = await supabase.auth.signUp({
-      email: email,
-      password: password,
-    });
-    
-    if (signUpError) {
-      setError(parseAuthError(signUpError.message));
-    } else {
-      // [UX FIX] Changed alert message to inform user about email verification.
+    setInfo(null);
+
+    try {
+      const { user } = await createUserWithEmailAndPassword(auth, email, password);
+      await sendEmailVerification(user);
       alert('회원가입이 완료되었습니다!\n이메일을 확인하여 인증을 완료해주세요.');
+    } catch (signUpError) {
+      setError(parseAuthError(signUpError.code));
+    } finally {
+      setCombinedLoading(false);
     }
-    setCombinedLoading(false);
+  };
+
+  /**
+   * Sends a password-reset e-mail to the entered address.
+   */
+  const handlePasswordReset = async () => {
+    if (!email) {
+      setError('비밀번호를 재설정할 이메일을 먼저 입력해주세요.');
+      return;
+    }
+    setCombinedLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setInfo('비밀번호 재설정 메일을 보냈습니다. 받은 편지함을 확인해주세요.');
+    } catch (resetError) {
+      setError(parseAuthError(resetError.code));
+    } finally {
+      setCombinedLoading(false);
+    }
   };
 
   return (
     <form onSubmit={handleEmailLogin} style={formStyle}>
       {/* Email Input */}
       <div style={inputGroupStyle}>
-        {/* [Accessibility] Added label and id/htmlFor */}
         <label style={labelStyle} htmlFor="email-input">이메일</label>
         <input
           id="email-input"
@@ -134,7 +175,7 @@ const EmailAuthForm = ({ onLoadingChange }) => {
           required
         />
       </div>
-      
+
       {/* Password Input */}
       <div style={inputGroupStyle}>
         <label style={labelStyle} htmlFor="password-input">비밀번호</label>
@@ -148,110 +189,96 @@ const EmailAuthForm = ({ onLoadingChange }) => {
           required
         />
       </div>
-      
+
       {/* Action Buttons */}
       <div style={buttonContainerStyle}>
-        <button 
-          type="submit" 
-          style={loading ? disabledButtonStyle : primaryButtonStyle} 
+        <button
+          type="submit"
+          style={loading ? disabledButtonStyle : primaryButtonStyle}
           disabled={loading}
-          aria-live="polite" // Announce loading state change
+          aria-live="polite"
         >
           {loading ? '처리중...' : '로그인'}
         </button>
-        <button 
-          type="button" 
-          onClick={handleSignUp} 
-          style={loading ? disabledButtonStyle : secondaryButtonStyle} 
+        <button
+          type="button"
+          onClick={handleSignUp}
+          style={loading ? disabledButtonStyle : secondaryButtonStyle}
           disabled={loading}
           aria-live="polite"
         >
           {loading ? '처리중...' : '회원가입'}
         </button>
       </div>
-      
-      {/* Error Message Display */}
+
+      {/* Password reset */}
+      <button type="button" onClick={handlePasswordReset} style={linkButtonStyle} disabled={loading}>
+        비밀번호를 잊으셨나요?
+      </button>
+
+      {/* Error / Info Messages */}
       {error && <p style={errorStyle} role="alert">{error}</p>}
+      {info && <p style={infoStyle} role="status">{info}</p>}
     </form>
   );
 };
 
 /**
- * @component KakaoAuthButton
- * @desc A component for handling Kakao OAuth login.
+ * @component GoogleAuthButton
+ * @desc Google OAuth sign-in via GCP Identity Platform (replaces Kakao). Uses a
+ * popup (no full-page redirect); App.js AuthHandler reacts to the auth state.
  * @param {object} props
  * @param {function} props.onLoadingChange - Callback to notify the parent of loading state.
  * @param {boolean} props.disabled - Whether the button should be disabled by the parent.
  */
-const KakaoAuthButton = ({ onLoadingChange, disabled }) => {
-  
-  /**
-   * Handles the Kakao OAuth sign-in attempt.
-   */
-  const handleKakaoLogin = async () => {
-    // [UX FIX] Set loading state immediately on click to disable all buttons.
+const GoogleAuthButton = ({ onLoadingChange, disabled }) => {
+  const handleGoogleLogin = async () => {
     onLoadingChange(true);
-    
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'kakao',
-      options: {
-        // [IMPORTANT] This ensures the user is redirected back to the
-        // correct URL (e.g., localhost OR the deployed CloudFront domain).
-        redirectTo: window.location.origin,
-      },
-    });
-
-    // This error handling is only for *pre-redirect* errors (e.g., config wrong).
-    if (error) {
-      console.error('카카오 로그인 중 오류가 발생했습니다:', error.message);
-      alert(`카카오 로그인 실패: ${error.message}`);
-      onLoadingChange(false); // Turn off loading only if an error occurs *before* redirect
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+      // On success the user is signed in; AuthHandler redirects. Google-asserted
+      // e-mails arrive verified, satisfying invariant #8.
+    } catch (error) {
+      console.error('Google 로그인 중 오류가 발생했습니다:', error.code);
+      alert(`Google 로그인 실패: ${parseAuthError(error.code)}`);
+      onLoadingChange(false);
     }
-    // On success, the user is redirected *away* from this page to Kakao.
   };
 
   return (
-    <button 
-      onClick={handleKakaoLogin} 
-      style={disabled ? disabledButtonStyle : kakaoButtonStyle} 
+    <button
+      onClick={handleGoogleLogin}
+      style={disabled ? disabledButtonStyle : googleButtonStyle}
       disabled={disabled}
       aria-live="polite"
     >
-      {disabled ? '처리중...' : '카카오로 로그인하기'}
+      {disabled ? '처리중...' : 'Google로 로그인하기'}
     </button>
   );
 };
 
-
 /**
  * @component LoginPage
- * @desc Renders the main LoginPage component.
- * It coordinates the Email and Kakao auth components, sharing a single
- * loading state (`isAuthLoading`) to disable all buttons during any auth operation.
- *
+ * @desc Coordinates the Email and Google auth components, sharing a single
+ * loading state (`isAuthLoading`) to disable all buttons during any auth op.
  * @returns {React.ReactElement} The rendered LoginPage component.
  */
 function LoginPage() {
-  // [UX] This single loading state is shared by both child components
-  // to prevent simultaneous auth attempts (e.g., clicking Kakao and Email login at once).
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
   return (
-    // Use <main> for semantic HTML and accessibility
     <main style={pageStyle}>
       <h2 style={{ textAlign: 'center' }}>ZK-VOTE 로그인</h2>
-      
+
       {/* --- Email Login/Sign-up Form --- */}
-      {/* Pass the loading state handler down */}
       <EmailAuthForm onLoadingChange={setIsAuthLoading} />
-      
+
       <hr style={dividerStyle} />
 
-      {/* --- Kakao OAuth Login Button --- */}
-      {/* Pass the loading state handler and the shared disabled state down */}
-      <KakaoAuthButton 
-        onLoadingChange={setIsAuthLoading} 
-        disabled={isAuthLoading} 
+      {/* --- Google OAuth Login Button --- */}
+      <GoogleAuthButton
+        onLoadingChange={setIsAuthLoading}
+        disabled={isAuthLoading}
       />
     </main>
   );

@@ -1,6 +1,6 @@
 // frontend/src/api/axios.js
 import axios from 'axios';
-import { supabase } from '../supabase';
+import { auth } from '../firebase';
 import { getApiBaseUrl } from '../utils/apiBaseUrl';
 
 // 기본 URL 및 설정을 포함한 axios 인스턴스 생성
@@ -37,14 +37,14 @@ instance.interceptors.request.use(async (config) => {
     return config;
   }
 
-  // Supabase에서 현재 세션 정보를 가져옵니다.
-  const { data } = await supabase.auth.getSession();
-  const session = data.session;
-
-  if (session) {
-    // 세션이 있다면, Authorization 헤더에 JWT 토큰을 추가합니다.
+  // Firebase(GCIP)에서 현재 사용자의 ID 토큰을 가져옵니다.
+  // getIdToken()은 비동기다 (Supabase의 동기 access_token과 다름) — 이 인터셉터가
+  // async이므로 await로 안전하게 처리한다. Firebase가 만료된 토큰은 자동 갱신한다.
+  const user = auth.currentUser;
+  if (user) {
+    const token = await user.getIdToken();
     config.headers = config.headers || {};
-    setHeader(config.headers, 'Authorization', `Bearer ${session.access_token}`);
+    setHeader(config.headers, 'Authorization', `Bearer ${token}`);
   }
   return config;
 }, (error) => {
