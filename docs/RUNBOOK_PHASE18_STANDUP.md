@@ -78,10 +78,13 @@ them; the Cloud SQL data survives if you keep the instance, or re-runs the ETL i
    OWNER_PRIVATE_KEY_SECRET=zkvote-staging-owner-private-key … scripts/gcp/deploy-staging-api.sh`
    (Cloud Build → Artifact Registry → `gcloud run deploy` with Cloud SQL attach, VPC connector,
    secret mounts, GCIP issuer/audience env).
-8. **Verify (Phase 18 gate):** `/healthz` + `/readyz` 200; effective issuer == `securetoken.google.com/<PROJECT_ID>`
-   (not a derived Supabase value); a GCIP token is accepted and a Supabase token is rejected; a voter
-   fetches wasm/zkey from GCS and the sha256 matches the manifest; secret access scoped to `zkvote-staging-*`;
-   no `main` push triggers a live AWS deploy.
+8. **Verify (Phase 18 gate)** — run `scripts/gcp/verify-staging.sh` (read-only, no cost):
+   `STAGING_BASE_URL=<cloud-run-url> [GCIP_ID_TOKEN=..] [SUPABASE_ID_TOKEN=..] bash scripts/gcp/verify-staging.sh`.
+   It asserts `/healthz` + `/readyz` 200; every proving artifact GETs 200 **and is byte-identical to the
+   committed `zk/` bytes** (invariant #7 — proves the bucket was seeded right); and, when sample tokens
+   are supplied, that a GCIP token is **accepted** and a stale Supabase token is **rejected** (proves the
+   issuer/audience repoint). Manually also confirm secret access is scoped to `zkvote-staging-*` and no
+   `main` push triggers a live AWS deploy.
 
 ## Audit remediations
 
