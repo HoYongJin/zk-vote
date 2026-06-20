@@ -29,7 +29,7 @@ const ZK_DEPLOY_LOCK_OPTIONS = {
 };
 
 function getZkpArtifactPaths(depth, numCandidates) {
-    const buildDir = path.join(projectRoot, "server", "zkp", `build_${depth}_${numCandidates}`);
+    const buildDir = path.join(projectRoot, "zk", `build_${depth}_${numCandidates}`);
     const verifierContractName = `Groth16Verifier_${depth}_${numCandidates}.sol`;
 
     return {
@@ -233,7 +233,7 @@ router.post("/", authAdmin, async (req, res) => {
                     details: "Merkle depth is too large for the configured Powers of Tau files."
                 });
             }
-            const ptauPath = path.join(projectRoot, "server", "zkp", ptauName);
+            const ptauPath = path.join(projectRoot, "zk", ptauName);
             if (!fs.existsSync(ptauPath)) {
                 return res.status(500).json({
                     error: "ZKP_SETUP_PREREQUISITE_MISSING",
@@ -249,7 +249,7 @@ router.post("/", authAdmin, async (req, res) => {
                 });
             }
 
-            const zkpScriptPath = path.join(projectRoot, "server", "zkp", "setUpZk.sh"); 
+            const zkpScriptPath = path.join(projectRoot, "zk", "setUpZk.sh"); 
             const zkpWorkingDir = path.dirname(zkpScriptPath);
             
             try {

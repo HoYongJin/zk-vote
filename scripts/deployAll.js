@@ -81,7 +81,7 @@ async function main() {
     } catch (e) {
         console.error(`\nError: Could not find the contract factory for "${verifierContractName}".`);
         console.error("Please ensure you have run the `setUpZk.sh` script for this specific depth and candidate count.");
-        console.error(`Example: bash server/zkp/setUpZk.sh ${election.merkle_tree_depth} ${election.num_candidates}\n`);
+        console.error(`Example: bash zk/setUpZk.sh ${election.merkle_tree_depth} ${election.num_candidates}\n`);
         process.exit(1);
     }
 

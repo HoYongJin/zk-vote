@@ -9,7 +9,7 @@ PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 cd "${PROJECT_ROOT}"
 
 checked=0
-for vk in server/zkp/build_*/verification_key.json; do
+for vk in zk/build_*/verification_key.json; do
   [ -f "$vk" ] || continue
   n=$(node -e "console.log(require('./$vk').nPublic)")
   if [ "$n" != "4" ]; then
@@ -20,7 +20,7 @@ for vk in server/zkp/build_*/verification_key.json; do
   checked=$((checked + 1))
 done
 if [ "$checked" -eq 0 ]; then
-  echo "FAIL: no verification keys found under server/zkp/build_*/" >&2
+  echo "FAIL: no verification keys found under zk/build_*/" >&2
   exit 1
 fi
 

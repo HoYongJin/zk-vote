@@ -1,12 +1,12 @@
 node_modules
 .env
 .env.local
-server/zkp/tmp/
-server/zkp/input/
-server/zkp/circomlib/
-server/zkp/build/circuit_0000.zkey
+zk/tmp/
+zk/input/
+zk/circomlib/
+zk/build/circuit_0000.zkey
 # Per-environment deployment state: binds deployed elections to artifact hashes (audit M5).
-server/zkp/artifact-manifest.json
+zk/artifact-manifest.json
 *.ptau
 zk-vote-key.pem
 build_3

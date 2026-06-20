@@ -47,7 +47,7 @@ fi
 # Powers of Tau files: required for circuit setup (audit M2). Use
 # scripts/local/fetch-ptau.sh <12|16|20> to download + checksum-verify.
 for power in 12 16 20; do
-  ptau="${PROJECT_ROOT}/server/zkp/powersOfTau28_hez_final_${power}.ptau"
+  ptau="${PROJECT_ROOT}/zk/powersOfTau28_hez_final_${power}.ptau"
   if [ -f "${ptau}" ]; then
     echo "[ok] ptau _${power}: $(basename "${ptau}")"
   else

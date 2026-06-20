@@ -16,7 +16,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const DEFAULT_ZKP_DIR = path.join(__dirname, "..", "zkp");
+const DEFAULT_ZKP_DIR = path.join(__dirname, "..", "..", "zk");
 const DEFAULT_MANIFEST_PATH = path.join(DEFAULT_ZKP_DIR, "artifact-manifest.json");
 
 function artifactPathsFor(zkpDir, depth, numCandidates) {

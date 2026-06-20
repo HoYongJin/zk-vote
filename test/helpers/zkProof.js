@@ -17,7 +17,7 @@ const { MerkleTree } = require("fixed-merkle-tree");
 const ZERO_ELEMENT =
     "21663839004416932945382355908790599225266501822907911457504978515578255421292";
 
-const ZKP_DIR = path.join(__dirname, "..", "..", "server", "zkp");
+const ZKP_DIR = path.join(__dirname, "..", "..", "zk");
 
 function buildPaths(depth, candidates) {
     const buildDir = path.join(ZKP_DIR, `build_${depth}_${candidates}`);

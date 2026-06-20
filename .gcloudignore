@@ -9,9 +9,9 @@ coverage/
 cache/
 typechain/
 typechain-types/
-server/zkp/tmp/
-server/zkp/input/
-server/zkp/circomlib/
+zk/tmp/
+zk/input/
+zk/circomlib/
 *.ptau
 zk-vote-key.pem
 

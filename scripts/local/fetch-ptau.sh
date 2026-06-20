@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Downloads a Powers of Tau file into server/zkp/ and verifies its blake2b-512
+# Downloads a Powers of Tau file into zk/ and verifies its blake2b-512
 # checksum against the values published in the snarkjs README (audit M2).
 #
 # Usage: bash scripts/local/fetch-ptau.sh <12|16|20>
@@ -13,7 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
-ZKP_DIR="${PROJECT_ROOT}/server/zkp"
+ZKP_DIR="${PROJECT_ROOT}/zk"
 MIRROR="https://storage.googleapis.com/zkevm/ptau"
 
 POWER="${1:-12}"
