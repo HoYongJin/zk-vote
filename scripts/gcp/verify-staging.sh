@@ -46,12 +46,20 @@ http_code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 echo "== Phase-18 verify against ${BASE_URL}"
 
 # 1) health -----------------------------------------------------------------
+# /readyz is the authoritative readiness gate (it checks Postgres + Redis +
+# artifact store). On Cloud Run the Google Front End intercepts the literal path
+# /healthz and serves its OWN 404 before the request reaches the app, so /healthz
+# is treated as best-effort only (verified live: /readyz 200, /healthz GFE-404).
 echo "[1] health endpoints"
-for ep in /healthz /readyz; do
-  code="$(http_code "${BASE_URL}${ep}")"
-  [[ "${code}" == "200" ]] || fail "${ep} returned ${code} (want 200)"
-  pass "${ep} 200"
-done
+code="$(http_code "${BASE_URL}/readyz")"
+[[ "${code}" == "200" ]] || fail "/readyz returned ${code} (want 200)"
+pass "/readyz 200"
+hz="$(http_code "${BASE_URL}/healthz")"
+if [[ "${hz}" == "200" ]]; then
+  pass "/healthz 200"
+else
+  echo "  warn: /healthz returned ${hz} — Cloud Run's GFE intercepts this path; /readyz is authoritative."
+fi
 
 # 2) proving artifacts served + byte-identical to the committed circuit -------
 echo "[2] GCS proving artifacts (served bytes == committed zk/ bytes, invariant #7)"
