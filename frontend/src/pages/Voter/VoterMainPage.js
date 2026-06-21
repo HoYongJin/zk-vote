@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import { Link, useNavigate } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
-import { auth } from '../../firebase';
+import { auth as firebaseAuth } from '../../firebase';
 import axios from '../../api/axios';
 import {
   calculateSecretCommitment,
@@ -76,7 +76,7 @@ function VoterMainPage() {
      * Handles user logout via Firebase (GCIP).
      */
     const handleLogout = async () => {
-      await signOut(auth);
+      await signOut(firebaseAuth);
       // The App.js AuthHandler catches the auth state change (onAuthStateChanged)
       // and redirects to /login automatically.
     };
