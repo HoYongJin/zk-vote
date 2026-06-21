@@ -57,3 +57,19 @@ GRANT SELECT, INSERT                 ON contract_deployments TO zkvote_app;
 -- `GRANT ... UPDATE` in roles.sql, exactly like the mutable tables above.
 ALTER DEFAULT PRIVILEGES FOR ROLE zkvote_migrator IN SCHEMA public
     GRANT SELECT, INSERT ON TABLES TO zkvote_app;
+
+-- Cloud SQL hardening (NO-OP on local docker Postgres). Verified live on
+-- zkvote-staging: `gcloud sql users create` grants every new user membership in
+-- the `cloudsqlsuperuser` role AND the CREATEDB/CREATEROLE attributes. That
+-- silently defeats AR-M3 — the app inherits CREATE on schema public + role/DB
+-- creation despite the explicit REVOKEs above. Where cloudsqlsuperuser exists,
+-- strip both from the app and migrator roles. Idempotent.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cloudsqlsuperuser') THEN
+        EXECUTE 'REVOKE cloudsqlsuperuser FROM zkvote_app';
+        EXECUTE 'REVOKE cloudsqlsuperuser FROM zkvote_migrator';
+        EXECUTE 'ALTER ROLE zkvote_app NOCREATEDB NOCREATEROLE';
+        EXECUTE 'ALTER ROLE zkvote_migrator NOCREATEDB NOCREATEROLE';
+    END IF;
+END $$;
