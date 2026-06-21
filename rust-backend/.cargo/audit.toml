@@ -1,0 +1,22 @@
+# cargo-audit configuration (read automatically by `cargo audit` run in this dir).
+#
+# The CI "Dependency audits (AR-H8)" job runs `cargo audit` here and blocks on
+# vulnerabilities. The single ignore below is a deliberate, documented risk
+# acceptance — NOT a blanket silence (yanked/unmaintained warnings still surface).
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — rsa "Marvin Attack": a timing sidechannel in RSA
+    # PRIVATE-KEY decryption/signing. Accepted because:
+    #   * No fixed upgrade exists upstream ("No fixed upgrade is available!").
+    #   * `rsa` is a deep, conditional TRANSITIVE dependency — it is not even in
+    #     the default build tree (`cargo tree -i rsa` finds nothing without
+    #     `--target all`); it only appears in Cargo.lock, which is what cargo-audit
+    #     scans.
+    #   * The backend never performs RSA private-key decryption: JWT validation is
+    #     public-key signature verification (not the vulnerable path), the data
+    #     plane is sqlx-postgres, and the relayer/owner keys are secp256k1.
+    # Revisit and remove this ignore when a patched `rsa` ships, or if the
+    # dependency graph ever reaches RSA private-key operations.
+    "RUSTSEC-2023-0071",
+]
