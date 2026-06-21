@@ -42,7 +42,7 @@ REDIS_BACKEND="${REDIS_BACKEND:-memorystore}"
 REDIS_TIER="${REDIS_TIER:-basic}"                 # no HA (smallest tier)
 REDIS_SIZE="${REDIS_SIZE:-1}"                     # 1GB is the floor
 VPC_MIN_INSTANCES="${VPC_MIN_INSTANCES:-2}"       # 2 is the connector floor
-VPC_MAX_INSTANCES="${VPC_MAX_INSTANCES:-2}"       # no scaling headroom (minimal)
+VPC_MAX_INSTANCES="${VPC_MAX_INSTANCES:-3}"       # max MUST be > min; 2/3 is the floor (idle cost == min, so no penalty)
 
 # DRY_RUN=yes/1/true previews the RESOLVED plan with NO GCP call, NO cost, NO auth.
 DRY_RUN="${DRY_RUN:-}"
