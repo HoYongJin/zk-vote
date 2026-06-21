@@ -41,6 +41,10 @@ jobs:
           fi
       - name: Circuit/contract schema gate (audit C1)
         run: bash scripts/ci/check-artifact-schema.sh
+      # test/poseidonCompat.js deliberately requires the frontend's EXACT
+      # poseidon-lite to assert it is bit-identical to circomlibjs (invariant #7),
+      # so the hardhat job needs the frontend deps installed too.
+      - run: npm ci --prefix frontend
       - name: Hardhat + helper tests
         run: npx hardhat test
 
