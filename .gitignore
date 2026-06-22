@@ -48,3 +48,22 @@ ignition/deployments/chain-31337
 
 # Rust build output
 rust-backend/target/
+
+# --- Internal Markdown docs: keep only README files in the tree ---
+# audit.md, CLAUDE.md, AGENT.md, docs/* (runbooks, audits, plans) stay local-only.
+*.md
+!README.md
+docs/
+
+# OS / editor cruft
+.DS_Store
+*.log
+.idea/
+.vscode/
+*.swp
+
+# Env/secret hardening (keep the committed example only)
+.env*
+!.env.example
+*.pem
+!rust-backend/crates/api/testdata/test_only_rsa_key.pem
