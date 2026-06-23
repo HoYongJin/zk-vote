@@ -191,7 +191,6 @@ pub async fn add_admins(
 // ---------------------------------------------------------------------------
 
 const DEPLOYMENT_LOCK_SECONDS: u64 = 900;
-const RELAYER_LOCK_SECONDS: u64 = 900;
 
 #[derive(Serialize)]
 pub struct SetZkDeployResponse {
@@ -446,6 +445,19 @@ fn deployment_chain_config(state: &AppState) -> Result<(ChainConfig, Address), A
         )
     })?;
     let owner = address_for_private_key(owner_private_key).map_err(chain_config_error)?;
+    // AR-M4 / invariant #5, enforced app-side: the cold owner key (configureElection
+    // rights) MUST NOT equal the hot relayer key. A misconfiguration that conflates
+    // them lets a relayer-key leak front-run configureElection and freeze the
+    // election — refuse to deploy rather than silently break the separation.
+    let relayer = address_for_private_key(&relayer_private_key).map_err(chain_config_error)?;
+    if owner == relayer {
+        return Err(coded(
+            503,
+            "CHAIN_CONFIG_INVALID",
+            "OWNER_PRIVATE_KEY and RELAYER_PRIVATE_KEY must be different keys (AR-M4): \
+             the cold owner key must not equal the hot relayer key.",
+        ));
+    }
     Ok((
         ChainConfig {
             rpc_url,
@@ -505,8 +517,8 @@ async fn deploy_with_locked_election(
     let (chain, owner) = deployment_chain_config(state)?;
     let relayer_lease = leases::acquire(
         &state.redis,
-        "chain-relayer:tx".to_string(),
-        RELAYER_LOCK_SECONDS,
+        leases::RELAYER_LEASE_KEY.to_string(),
+        leases::RELAYER_LEASE_SECONDS,
         "RELAYER_BUSY",
         "The relayer is processing another transaction. Retry shortly.",
     )

@@ -9,6 +9,7 @@
 
 use crate::auth::CurrentUser;
 use crate::error::ApiError;
+use crate::leases;
 use crate::state::AppState;
 use crate::tickets::{self, TicketPayload};
 use alloy::primitives::{Address, U256};
@@ -469,30 +470,46 @@ pub async fn submit(
     .await
     .map_err(chain_unavailable)?;
 
-    // Serialize the relay per wallet (AR-M5): concurrent sends from the one
-    // relayer key race on nonces and burn tickets. (Holding the lock through
-    // receipt-wait is acceptable locally; staging splits send/wait.)
-    let relay_result = {
+    // Serialize the relay per wallet (AR-M5). The relayer EOA has one nonce
+    // sequence, so EVERY send from it (deploy + this vote relay) must be
+    // single-writer. The cross-instance Redis lease covers multi-instance; the
+    // in-process mutex covers concurrency within one process. The deploy path
+    // takes the same `chain-relayer:tx` lease, so the two never race the nonce.
+    // (Holding both through receipt-wait is acceptable locally; staging splits
+    // send/wait.)
+    let relayer_lease = leases::acquire(
+        &state.redis,
+        leases::RELAYER_LEASE_KEY.to_string(),
+        leases::RELAYER_LEASE_SECONDS,
+        "RELAYER_BUSY",
+        "The relayer is processing another transaction. Retry shortly.",
+    )
+    .await?;
+    let relay_outcome: Result<Result<String, ChainError>, ApiError> = {
         let _serialized = state.relay_lock.lock().await;
         // Consume the ticket only once everything else has passed; the relay
         // itself is the last fallible step.
-        if tickets::consume(&state.redis, ticket_token)
+        match tickets::consume(&state.redis, ticket_token)
             .await
-            .map_err(map_ticket_error)?
-            .is_none()
+            .map_err(map_ticket_error)
         {
-            return Err(invalid_ticket());
+            Err(err) => Err(err),
+            Ok(None) => Err(invalid_ticket()),
+            Ok(Some(_)) => Ok(submit_tally(
+                &chain,
+                contract_address,
+                args.a,
+                args.b,
+                args.c,
+                args.signals,
+            )
+            .await),
         }
-        submit_tally(
-            &chain,
-            contract_address,
-            args.a,
-            args.b,
-            args.c,
-            args.signals,
-        )
-        .await
     };
+    if let Err(err) = leases::release(&state.redis, &relayer_lease).await {
+        tracing::warn!(error = %err, "failed to release relayer redis lease");
+    }
+    let relay_result = relay_outcome?;
 
     match relay_result {
         Ok(tx_hash) => {
@@ -539,10 +556,7 @@ pub async fn submit(
                     transaction_hash: None,
                 }));
             }
-            match err {
-                ChainError::Reverted(reason) => Err(coded(400, "PROOF_REJECTED", reason)),
-                other => Err(chain_unavailable(other)),
-            }
+            Err(chain_unavailable(err))
         }
     }
 }
@@ -555,6 +569,15 @@ fn chain_unavailable(err: ChainError) -> ApiError {
             "The blockchain RPC is unreachable; please retry.",
         )
     } else {
-        coded(400, "PROOF_REJECTED", err.to_string())
+        // G7: the anonymous /submit caller must never receive raw chain/RPC
+        // error text — ChainError::{Reverted,Transport,Config} can carry node
+        // URLs, provider JSON-RPC internals, or contract revert payloads. Log
+        // the detail server-side; return a stable, generic rejection.
+        tracing::warn!(error = %err, "submit rejected by chain (non-retryable)");
+        coded(
+            400,
+            "PROOF_REJECTED",
+            "The submitted proof was rejected by the verifier contract.",
+        )
     }
 }

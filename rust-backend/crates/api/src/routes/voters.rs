@@ -204,8 +204,13 @@ pub async fn allowlist_voters(
                 return Ok(Err(rejection));
             }
 
+            // `email` is citext (case-insensitive), but the dedup below is a
+            // case-sensitive Rust comparison. Lower-case the stored values so a
+            // mixed-case row already present (e.g. from an import) is recognized
+            // as existing instead of being re-inserted into a citext UNIQUE
+            // violation (500). The upload side is already lower-cased above.
             let existing: Vec<String> = sqlx::query_scalar(
-                "SELECT email::text FROM voters WHERE election_id = $1 AND email = ANY($2)",
+                "SELECT lower(email::text) FROM voters WHERE election_id = $1 AND email = ANY($2)",
             )
             .bind(election_id)
             .bind(&emails)
@@ -338,6 +343,30 @@ pub async fn register_voter(
                     "This email is not on the pre-approved list for this election.",
                 )));
             };
+
+            // G1: a commitment must be unique within an election. Two voters
+            // sharing one commitment produce identical Merkle leaves and one
+            // shared nullifier, so on-chain only ONE can vote — the other is
+            // silently disenfranchised (409 VOTE_ALREADY_CAST, unrecoverable
+            // once registration closes). The advisory lock above serializes this
+            // check; the partial UNIQUE index (migration 0005) is the backstop.
+            let commitment_taken: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM voters \
+                 WHERE election_id = $1 AND user_secret_commitment = $2 AND id <> $3",
+            )
+            .bind(election_id)
+            .bind(&commitment)
+            .bind(voter_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if commitment_taken.is_some() {
+                return Ok(Err(coded(
+                    409,
+                    "COMMITMENT_ALREADY_USED",
+                    "This secret commitment is already registered by another voter for \
+                     this election. Generate a new secret and try again.",
+                )));
+            }
 
             match bound_user {
                 // AR-H6: same user may replace a lost secret's commitment

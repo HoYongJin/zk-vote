@@ -5,6 +5,16 @@
 use crate::error::ApiError;
 use uuid::Uuid;
 
+/// The single cross-instance lease that serializes EVERY transaction signed by
+/// the one hot relayer key — both the admin deploy path and the anonymous vote
+/// relay. The relayer EOA has a single nonce sequence, so all of its sends must
+/// be single-writer across instances (AR-M5); the in-process `relay_lock` mutex
+/// only covers one process. Both paths must acquire THIS key.
+pub const RELAYER_LEASE_KEY: &str = "chain-relayer:tx";
+/// TTL safety net for the relayer lease: long enough to cover one send +
+/// receipt wait, short enough that a crashed holder frees the relayer.
+pub const RELAYER_LEASE_SECONDS: u64 = 900;
+
 pub struct RedisLease {
     key: String,
     token: String,

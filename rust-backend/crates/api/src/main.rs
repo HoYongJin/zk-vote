@@ -1393,6 +1393,42 @@ mod tests {
             "0x1c8 == 456 must be re-bound"
         );
 
+        // G1: a different allowlisted voter must NOT register a commitment that
+        // another voter already holds (identical Merkle leaves share one
+        // nullifier, silently disenfranchising the second voter on-chain). The
+        // p9-x email was allowlisted above; voter_id now holds "456".
+        let p9x_email = format!("p9-x-{voter_id}@example.com");
+        let p9x_token = mint_token(
+            &uuid::Uuid::new_v4().to_string(),
+            &p9x_email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &p9x_token,
+            serde_json::json!({ "name": "Bob", "secretCommitment": "456" }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "duplicate commitment must be rejected: {json}"
+        );
+        assert_eq!(json["error"], "COMMITMENT_ALREADY_USED");
+        // A fresh, unused commitment for that same voter succeeds — the guard is
+        // a uniqueness check, not a blanket block.
+        let (status, _) = post_json(
+            routes::router(state.clone()),
+            &format!("{base}/register"),
+            &p9x_token,
+            serde_json::json!({ "name": "Bob", "secretCommitment": "789" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
         // Not on the allowlist -> 403.
         let stranger_token = mint_token(
             &uuid::Uuid::new_v4().to_string(),

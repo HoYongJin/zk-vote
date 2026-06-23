@@ -18,13 +18,22 @@ struct CachedKeys {
     keyset: Arc<KeySet>,
 }
 
+/// Cache plus the last upstream-fetch *attempt* time. Tracking the attempt
+/// (not just the last success) lets the forced-refresh throttle cover the
+/// empty-cache case — cold start or a persistently-failing JWKS endpoint —
+/// which a per-entry freshness check cannot (there is no entry to time from).
+struct CacheState {
+    keys: Option<CachedKeys>,
+    last_attempt: Option<Instant>,
+}
+
 /// Fetches and caches the IdP's JWKS document. Refreshes after the TTL,
 /// or immediately (once per request) when a token arrives with an unknown
 /// `kid` — the normal shape of a key rotation.
 pub struct JwksCache {
     url: String,
     http: reqwest::Client,
-    cached: RwLock<Option<CachedKeys>>,
+    state: RwLock<CacheState>,
     ttl: Duration,
 }
 
@@ -36,23 +45,26 @@ impl JwksCache {
                 .timeout(FETCH_TIMEOUT)
                 .build()
                 .expect("reqwest client construction cannot fail with static options"),
-            cached: RwLock::new(None),
+            state: RwLock::new(CacheState {
+                keys: None,
+                last_attempt: None,
+            }),
             ttl: DEFAULT_TTL,
         }
     }
 
     pub async fn keyset(&self, force_refresh: bool) -> Result<Arc<KeySet>, AuthError> {
         if !force_refresh {
-            let guard = self.cached.read().await;
-            if let Some(cached) = guard.as_ref() {
+            let guard = self.state.read().await;
+            if let Some(cached) = guard.keys.as_ref() {
                 if cached.fetched_at.elapsed() < self.ttl {
                     return Ok(cached.keyset.clone());
                 }
             }
         }
 
-        let mut guard = self.cached.write().await;
-        if let Some(cached) = guard.as_ref() {
+        let mut guard = self.state.write().await;
+        if let Some(cached) = guard.keys.as_ref() {
             // Non-forced: another task may have refreshed the TTL while this one
             // waited on the lock. Forced (unknown kid): throttle so attacker-
             // chosen kids cannot drive an unbounded refetch — serve the cached
@@ -68,6 +80,22 @@ impl JwksCache {
             }
         }
 
+        // Throttle the upstream fetch ATTEMPT itself, so an empty or stale cache
+        // during a JWKS outage cannot be driven into an unbounded refetch storm
+        // (RUST-AUTH-1) — the empty-cache hole the per-entry check above misses.
+        // The first attempt always proceeds (last_attempt is None on cold start).
+        if let Some(last_attempt) = guard.last_attempt {
+            if last_attempt.elapsed() < MIN_FORCED_REFRESH_INTERVAL {
+                return match guard.keys.as_ref() {
+                    Some(cached) => Ok(cached.keyset.clone()),
+                    None => Err(AuthError::Jwks(
+                        "JWKS endpoint unavailable; refetch throttled".to_string(),
+                    )),
+                };
+            }
+        }
+        guard.last_attempt = Some(Instant::now());
+
         let body = self
             .http
             .get(&self.url)
@@ -81,7 +109,7 @@ impl JwksCache {
             .map_err(|err| AuthError::Jwks(format!("fetch failed: {err}")))?;
 
         let keyset = Arc::new(KeySet::from_jwks_json(&body)?);
-        *guard = Some(CachedKeys {
+        guard.keys = Some(CachedKeys {
             fetched_at: Instant::now(),
             keyset: keyset.clone(),
         });
@@ -125,6 +153,36 @@ mod tests {
             HITS.load(Ordering::SeqCst),
             1,
             "forced refreshes within MIN_FORCED_REFRESH_INTERVAL must reuse the cache"
+        );
+    }
+
+    /// RUST-AUTH-1 (empty-cache hole): when the JWKS upstream is DOWN and the
+    /// cache never populates, a burst of requests must still hit upstream at
+    /// most once per throttle window — not once per request (the pre-fix code
+    /// skipped the throttle entirely while `cached` was None).
+    #[tokio::test]
+    async fn empty_cache_refetch_is_throttled_during_outage() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let app = axum::Router::new().route(
+            "/jwks",
+            axum::routing::get(|| async {
+                HITS.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let cache = JwksCache::new(format!("http://{addr}/jwks"));
+        for _ in 0..10 {
+            // Every call errors (upstream is down); only the first should fetch.
+            assert!(cache.keyset(false).await.is_err());
+        }
+        assert_eq!(
+            HITS.load(Ordering::SeqCst),
+            1,
+            "an unavailable JWKS upstream must be refetched at most once per window"
         );
     }
 }

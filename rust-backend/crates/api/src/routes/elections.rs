@@ -127,7 +127,10 @@ pub async fn finalized(
     let rows = if is_admin {
         ElectionRepo::list_voting_with_counts(&state.pg, now).await?
     } else {
-        ElectionRepo::list_voting_for_user(&state.pg, now, user.id).await?
+        let Some(email) = user.email.clone() else {
+            return Ok(Json(Vec::new()));
+        };
+        ElectionRepo::list_voting_for_voter(&state.pg, now, &email).await?
     };
     Ok(Json(
         rows.into_iter()
@@ -144,7 +147,10 @@ pub async fn completed(
     let rows = if is_admin_or_promote(&state.pg, &user).await? {
         ElectionRepo::list_completed(&state.pg).await?
     } else {
-        ElectionRepo::list_completed_for_user(&state.pg, user.id).await?
+        let Some(email) = user.email.clone() else {
+            return Ok(Json(Vec::new()));
+        };
+        ElectionRepo::list_completed_for_voter(&state.pg, &email).await?
     };
     Ok(Json(rows.into_iter().map(completed_row).collect()))
 }

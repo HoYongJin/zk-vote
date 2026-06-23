@@ -378,16 +378,21 @@ impl ElectionRepo {
             .await?)
     }
 
-    /// Non-admin view: active voting elections where this user completed
-    /// registration, with voter counts.
-    pub async fn list_voting_for_user(
+    /// Non-admin view: active voting elections where this voter completed
+    /// registration, with voter counts. Keyed by the verified e-mail (the
+    /// system's stable identity — the same key the registerable list uses) and
+    /// gated on `user_id IS NOT NULL` (= registered), so a voter still finds
+    /// their active election after a GCIP `user_id` remap during the auth
+    /// provider cutover (review G2). e-mail is UNIQUE per election, so this
+    /// matches exactly the one voter row.
+    pub async fn list_voting_for_voter(
         pool: &PgPool,
         now: OffsetDateTime,
-        user_id: Uuid,
+        email: &str,
     ) -> Result<Vec<ElectionWithCounts>, DbError> {
         let query = format!(
             "SELECT e.*, {COUNT_SUBSELECTS} FROM elections e \
-             JOIN voters v ON v.election_id = e.id AND v.user_id = $2 \
+             JOIN voters v ON v.election_id = e.id AND v.email = $2 AND v.user_id IS NOT NULL \
              WHERE e.merkle_root IS NOT NULL AND e.completed = false \
                AND e.superseded_at IS NULL \
                AND e.voting_start_time IS NOT NULL AND e.voting_start_time < $1 \
@@ -396,24 +401,26 @@ impl ElectionRepo {
         );
         Ok(sqlx::query_as::<_, ElectionWithCounts>(&query)
             .bind(now)
-            .bind(user_id)
+            .bind(email)
             .fetch_all(pool)
             .await?)
     }
 
-    /// Non-admin view: completed elections where this user was registered.
-    pub async fn list_completed_for_user(
+    /// Non-admin view: completed elections where this voter was registered.
+    /// Keyed by e-mail + `user_id IS NOT NULL` for the same reason as
+    /// `list_voting_for_voter` (review G2).
+    pub async fn list_completed_for_voter(
         pool: &PgPool,
-        user_id: Uuid,
+        email: &str,
     ) -> Result<Vec<Election>, DbError> {
         Ok(sqlx::query_as::<_, Election>(
             "SELECT e.* FROM elections e \
-             JOIN voters v ON v.election_id = e.id AND v.user_id = $1 \
+             JOIN voters v ON v.election_id = e.id AND v.email = $1 AND v.user_id IS NOT NULL \
              WHERE e.completed = true \
                AND e.superseded_at IS NULL \
              ORDER BY e.voting_end_time DESC NULLS LAST",
         )
-        .bind(user_id)
+        .bind(email)
         .fetch_all(pool)
         .await?)
     }
