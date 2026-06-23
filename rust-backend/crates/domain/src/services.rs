@@ -155,8 +155,16 @@ pub fn check_allowlist_capacity(
 // Election creation input validation (audit M4)
 // ---------------------------------------------------------------------------
 
-pub const MAX_SUPPORTED_MERKLE_DEPTH: u32 = 5;
-pub const MAX_SUPPORTED_CANDIDATES: usize = 5;
+pub const MAX_SUPPORTED_MERKLE_DEPTH: u32 = 10;
+pub const MAX_SUPPORTED_CANDIDATES: usize = 10;
+
+/// The candidate-vector width every deployed circuit is built at. The padded
+/// grid builds ONE circuit per supported depth at this width (build_<d>_10), so
+/// the API resolves the shape-specific verifier/zkey by this constant — NOT the
+/// election's real candidate count. VotingTally still enforces
+/// `candidateIndex < numCandidates` (VotingTally.sol:180), so the padded slots
+/// (real_count..10) are unusable on-chain. `i32` to match the DB/api num_candidates.
+pub const CIRCUIT_CANDIDATE_WIDTH: i32 = 10;
 
 /// Validates and normalizes admin election-creation input. Returns the
 /// trimmed name and trimmed candidate labels; every rejection is the
@@ -373,6 +381,26 @@ mod tests {
 
     fn now() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap()
+    }
+
+    #[test]
+    fn validate_election_input_supports_depth_and_candidates_up_to_10() {
+        let n = now();
+        let future = n + Duration::days(1);
+        let cands = |k: usize| (0..k).map(|i| format!("c{i}")).collect::<Vec<_>>();
+
+        // The 4 supported padded depths all validate at the full width.
+        for d in [4u32, 6, 8, 10] {
+            assert!(
+                validate_election_input("e", d, &cands(10), future, n).is_ok(),
+                "depth {d} with 10 candidates must pass"
+            );
+        }
+        // Boundaries: depth 11 and 11 candidates are over the new caps.
+        assert!(validate_election_input("e", 11, &cands(3), future, n).is_err());
+        assert!(validate_election_input("e", 4, &cands(11), future, n).is_err());
+        // The circuit width constant is the padded grid width.
+        assert_eq!(CIRCUIT_CANDIDATE_WIDTH, 10);
     }
 
     fn registration_base() -> RegistrationCheck {
@@ -654,7 +682,8 @@ mod tests {
 
         assert!(validate_election_input("  ", 4, &["A".into()], future, now()).is_err());
         assert!(validate_election_input("E", 0, &["A".into()], future, now()).is_err());
-        assert!(validate_election_input("E", 6, &["A".into()], future, now()).is_err());
+        // depth cap is now 10 (padded grid); 11 is over.
+        assert!(validate_election_input("E", 11, &["A".into()], future, now()).is_err());
         assert!(validate_election_input("E", 4, &[], future, now()).is_err());
         // duplicate after trim, case-insensitive (audit M4)
         assert!(validate_election_input(
@@ -665,9 +694,9 @@ mod tests {
             now()
         )
         .is_err());
-        // candidate cap (audit M4)
-        let six: Vec<String> = (0..6).map(|i| format!("c{i}")).collect();
-        assert!(validate_election_input("E", 4, &six, future, now()).is_err());
+        // candidate cap (audit M4): the padded grid raised the cap to 10, so 11 is over.
+        let over_cap: Vec<String> = (0..11).map(|i| format!("c{i}")).collect();
+        assert!(validate_election_input("E", 4, &over_cap, future, now()).is_err());
         // past deadline
         assert!(
             validate_election_input("E", 4, &["A".into()], now() - Duration::hours(1), now())
