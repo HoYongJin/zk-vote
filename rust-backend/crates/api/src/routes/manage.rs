@@ -419,14 +419,29 @@ fn read_contract_bytecode(path: &FsPath) -> Result<Vec<u8>, ApiError> {
             ),
         )
     })?;
-    let bytecode = object_field(&json, "bytecode")
-        .and_then(Value::as_str)
+    // Hardhat artifacts store creation bytecode as a top-level hex string
+    // (`"bytecode": "0x.."`); Foundry's `forge build` nests it as an object
+    // (`"bytecode": {"object": "0x..", ..}`). Accept both so the same reader
+    // works before and after the Hardhat -> Foundry migration.
+    let bytecode_node = object_field(&json, "bytecode").ok_or_else(|| {
+        coded(
+            409,
+            "CONTRACT_ARTIFACT_INVALID",
+            format!(
+                "Contract artifact {} has no bytecode field.",
+                path.display()
+            ),
+        )
+    })?;
+    let bytecode = bytecode_node
+        .as_str()
+        .or_else(|| object_field(bytecode_node, "object").and_then(Value::as_str))
         .ok_or_else(|| {
             coded(
                 409,
                 "CONTRACT_ARTIFACT_INVALID",
                 format!(
-                    "Contract artifact {} has no bytecode field.",
+                    "Contract artifact {} bytecode is neither a hex string nor a {{object}}.",
                     path.display()
                 ),
             )
@@ -1147,6 +1162,48 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn read_contract_bytecode_accepts_hardhat_and_foundry_shapes() {
+        let dir = std::env::temp_dir().join(format!("zkvote-bc-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Hardhat: top-level string bytecode.
+        let hardhat = dir.join("hardhat.json");
+        std::fs::write(&hardhat, r#"{"bytecode":"0x6001"}"#).unwrap();
+        assert_eq!(
+            read_contract_bytecode(hardhat.as_path()).unwrap(),
+            vec![0x60u8, 0x01]
+        );
+
+        // Foundry: nested {object} bytecode (as emitted by `forge build`).
+        let foundry = dir.join("foundry.json");
+        std::fs::write(
+            &foundry,
+            r#"{"bytecode":{"object":"0x6001","sourceMap":"","linkReferences":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_contract_bytecode(foundry.as_path()).unwrap(),
+            vec![0x60u8, 0x01]
+        );
+
+        // Neither a string nor an {object} carrying `object` -> fail closed.
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, r#"{"bytecode":{}}"#).unwrap();
+        let err =
+            read_contract_bytecode(bad.as_path()).expect_err("object-less bytecode must fail");
+        assert!(matches!(
+            err,
+            ApiError::Coded {
+                status: 409,
+                code: "CONTRACT_ARTIFACT_INVALID",
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

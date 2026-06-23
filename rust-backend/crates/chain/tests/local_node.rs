@@ -21,7 +21,13 @@ fn bytecode(artifact_rel_path: &str) -> Vec<u8> {
     );
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing artifact {path}"));
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    let hex = json["bytecode"].as_str().unwrap().trim_start_matches("0x");
+    // Hardhat: `bytecode` is a top-level hex string. Foundry (`forge build`):
+    // `bytecode` is an object with the hex under `.object`. Accept both.
+    let hex = json["bytecode"]
+        .as_str()
+        .or_else(|| json["bytecode"]["object"].as_str())
+        .unwrap()
+        .trim_start_matches("0x");
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
