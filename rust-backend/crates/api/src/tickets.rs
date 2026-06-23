@@ -50,6 +50,31 @@ pub async fn issue(client: &redis::Client, payload: &TicketPayload) -> Result<St
     Ok(token)
 }
 
+/// L-ticket-burn: re-stores an already-consumed ticket under the SAME token so a
+/// voter can retry `/submit` without re-proving, after a genuine never-landed
+/// transport error (nullifier confirmed still unused on-chain). Preserves the
+/// original payload — including `issued_at`, so submission-jitter stays anchored
+/// to first issue. `NX` so it never clobbers a concurrently re-issued ticket.
+pub async fn restore(
+    client: &redis::Client,
+    token: &str,
+    payload: &TicketPayload,
+) -> Result<(), ApiError> {
+    let mut conn = connection(client).await?;
+    let serialized = serde_json::to_string(payload)
+        .map_err(|err| ApiError::Internal(format!("ticket serialization failed: {err}")))?;
+    let _: () = redis::cmd("SET")
+        .arg(key(token))
+        .arg(serialized)
+        .arg("EX")
+        .arg(TICKET_EXPIRY_SECONDS)
+        .arg("NX")
+        .query_async(&mut conn)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(())
+}
+
 /// Non-destructive read (validate-then-consume, audit M1).
 pub async fn read(client: &redis::Client, token: &str) -> Result<Option<TicketPayload>, ApiError> {
     let mut conn = connection(client).await?;

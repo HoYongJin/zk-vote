@@ -318,6 +318,29 @@ async fn finalize_locked(
         let end = chain_try!(onchain.voting_end_time().await);
         (from_unix(start)?, from_unix(end)?, None)
     } else {
+        // L-trunc: the contract stores whole-second timestamps; truncate BEFORE
+        // both the chain call and the DB tuple so the fresh path and the recovery
+        // path (which reads whole seconds back from chain) agree bit-for-bit.
+        let now = truncate_to_seconds(now)?;
+        let vote_end = truncate_to_seconds(vote_end)?;
+        // After truncation a sub-second window collapses to start == end, which
+        // configureElection rejects (require start < end). Fail with a clean 400
+        // here rather than a confusing post-revert 500 for a valid-looking input.
+        if vote_end <= now {
+            JobRepo::set_status(
+                &state.pg,
+                job_id,
+                "failed",
+                None,
+                Some("voting window shorter than one second"),
+            )
+            .await?;
+            return Err(coded(
+                400,
+                "VOTING_WINDOW_TOO_SHORT",
+                "The voting window must be at least one whole second; choose a later vote end time.",
+            ));
+        }
         JobRepo::set_status(&state.pg, job_id, "onchain_sent", None, None).await?;
         let tx_hash = chain_try!(
             configure_election(
@@ -387,6 +410,13 @@ fn from_unix(value: alloy::primitives::U256) -> Result<OffsetDateTime, ApiError>
         .map_err(|_| ApiError::Internal("on-chain timestamp out of range".to_string()))?;
     OffsetDateTime::from_unix_timestamp(secs)
         .map_err(|err| ApiError::Internal(format!("invalid on-chain timestamp: {err}")))
+}
+
+/// L-trunc: drops sub-second precision so the value written to the DB matches the
+/// whole-second value the contract stores (and the recovery path reads back).
+fn truncate_to_seconds(t: OffsetDateTime) -> Result<OffsetDateTime, ApiError> {
+    OffsetDateTime::from_unix_timestamp(t.unix_timestamp())
+        .map_err(|err| ApiError::Internal(format!("timestamp truncation failed: {err}")))
 }
 
 /// Classifies chain failures into the API error vocabulary and records the

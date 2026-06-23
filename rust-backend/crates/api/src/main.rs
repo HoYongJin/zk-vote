@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod leases;
 mod middleware;
+mod ratelimit;
 mod routes;
 mod state;
 mod tickets;
@@ -111,12 +112,19 @@ mod tests {
     fn test_state_with(jwks_url: &str, database_url: &str) -> AppState {
         let jwks_url = jwks_url.to_string();
         let database_url = database_url.to_string();
+        // Point at the repo's compiled contract artifacts so create_election's
+        // L-depth1 shape check (and setZkDeploy bytecode reads) resolve.
+        let artifacts_dir = format!(
+            "{}/../../../artifacts/contracts",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let config = Arc::new(
             AppConfig::from_lookup(move |name| match name {
                 "DATABASE_URL" => Some(database_url.clone()),
                 "REDIS_URL" => Some("redis://localhost:1".to_string()),
                 "SUPABASE_JWKS_URL" => Some(jwks_url.clone()),
                 "SUPABASE_JWT_ISSUER" => Some(auth::token::test_support::TEST_ISSUER.to_string()),
+                "CONTRACT_ARTIFACTS_DIR" => Some(artifacts_dir.clone()),
                 _ => None,
             })
             .unwrap(),
@@ -1195,6 +1203,52 @@ mod tests {
             .unwrap();
     }
 
+    /// L-proof-rl: the atomic limiter caps per key and is isolated across keys.
+    #[tokio::test]
+    #[ignore = "requires Redis (scripts/local/smoke.sh)"]
+    async fn rate_limiter_caps_and_isolates_by_key() {
+        let client = RedisClient::open("redis://localhost:6379").unwrap();
+        let key = format!("test-rl:{}", uuid::Uuid::new_v4());
+        // limit 2: the first two pass, the third is rejected with 429.
+        ratelimit::check_rate(&client, &key, 2, 60).await.unwrap();
+        ratelimit::check_rate(&client, &key, 2, 60).await.unwrap();
+        let err = ratelimit::check_rate(&client, &key, 2, 60)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::ApiError::Coded { status: 429, .. }
+        ));
+        // a different key has its own budget.
+        let other = format!("test-rl:{}", uuid::Uuid::new_v4());
+        ratelimit::check_rate(&client, &other, 2, 60).await.unwrap();
+    }
+
+    /// L-ticket-burn: a consumed ticket can be restored (same payload, issued_at
+    /// preserved) so a transient never-landed relay doesn't burn it.
+    #[tokio::test]
+    #[ignore = "requires Redis (scripts/local/smoke.sh)"]
+    async fn ticket_restore_reinstates_consumed_ticket() {
+        let client = RedisClient::open("redis://localhost:6379").unwrap();
+        let payload = tickets::TicketPayload {
+            election_id: uuid::Uuid::new_v4(),
+            merkle_root: "123".to_string(),
+            issued_at: Some("2026-06-23T00:00:00.000Z".to_string()),
+        };
+        let token = tickets::issue(&client, &payload).await.unwrap();
+        assert!(tickets::consume(&client, &token).await.unwrap().is_some());
+        assert!(tickets::read(&client, &token).await.unwrap().is_none());
+
+        tickets::restore(&client, &token, &payload).await.unwrap();
+        let restored = tickets::read(&client, &token).await.unwrap().unwrap();
+        assert_eq!(restored.merkle_root, "123");
+        assert_eq!(
+            restored.issued_at.as_deref(),
+            Some("2026-06-23T00:00:00.000Z")
+        );
+        let _ = tickets::consume(&client, &token).await;
+    }
+
     /// Admin setup gates: creation validation (M4), invitation upsert
     /// idempotency, deploy guard. Run: `cargo test -p zkvote-api -- --ignored`
     #[tokio::test]
@@ -1231,10 +1285,13 @@ mod tests {
         let future = (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap();
+        // Shape (5, 4) is a committed build (creation allowed) AND no other test
+        // registers a (5,4) artifact, so the setZkDeploy "no artifact" assertion
+        // below stays isolated from the parallel (4,5)-using tests.
         let valid_body = serde_json::json!({
             "name": format!("p8 election {admin_id}"),
-            "merkleTreeDepth": 4,
-            "candidates": [" A ", "B"],
+            "merkleTreeDepth": 5,
+            "candidates": [" A ", "B", "C", "D"],
             "regEndTime": future,
         });
 
@@ -1259,9 +1316,30 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED, "create failed: {json}");
         assert_eq!(json["success"], true);
-        assert_eq!(json["election"]["num_candidates"], 2);
+        assert_eq!(json["election"]["num_candidates"], 4);
         assert_eq!(json["election"]["candidates"][0], "A");
         let election_id = json["election"]["id"].as_str().unwrap().to_string();
+
+        // L-depth1: an in-range but UNBUILT shape (4, 2) is rejected at creation,
+        // not deferred to setZkDeploy.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/elections/set",
+            &admin_token,
+            serde_json::json!({
+                "name": format!("unbuilt {admin_id}"),
+                "merkleTreeDepth": 4,
+                "candidates": ["A", "B"],
+                "regEndTime": future,
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "expected 422: {json}"
+        );
+        assert_eq!(json["error"], "ARTIFACT_SHAPE_UNSUPPORTED");
 
         // Malformed date is rejected.
         let (status, json) = post_json(

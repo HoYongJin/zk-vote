@@ -10,6 +10,7 @@
 use crate::auth::CurrentUser;
 use crate::error::ApiError;
 use crate::leases;
+use crate::ratelimit;
 use crate::state::AppState;
 use crate::tickets::{self, TicketPayload};
 use alloy::primitives::{Address, U256};
@@ -25,6 +26,14 @@ use zkvote_domain::services::{
     check_submission, SubmitCheck, SubmitRejection, PUBLIC_SIGNAL_NULLIFIER_INDEX,
 };
 use zkvote_zkp::merkle::FixedMerkleTree;
+
+/// L-proof-rl: a generous per-voter cap on `/proof` ticket issuance. The window
+/// matches `tickets::TICKET_EXPIRY_SECONDS` (300s) so the budget and the ticket
+/// lifetime stay aligned; 30 per window is far above any human re-proof rate
+/// (ticket expiry, MERKLE_ROOT_OUT_OF_SYNC retry, the ticket-burn restore path)
+/// yet bounds Redis-memory abuse from a registered voter.
+const PROOF_RATE_LIMIT: u64 = 30;
+const PROOF_RATE_WINDOW_SECS: u64 = 300;
 
 fn coded(status: u16, code: &'static str, details: impl Into<String>) -> ApiError {
     ApiError::Coded {
@@ -220,6 +229,18 @@ pub async fn proof(
             "The authenticated user is not registered for this election.",
         )
     })?;
+
+    // L-proof-rl: rate-limit AFTER the registered-voter check (so it never acts
+    // as a registration/timing oracle) and BEFORE the expensive leaf fetch +
+    // Merkle build (so abusive requests shed load early). Fails closed (503) on
+    // a Redis error.
+    ratelimit::check_rate(
+        &state.redis,
+        &format!("proof-rl:{election_id}:{}", user.id),
+        PROOF_RATE_LIMIT,
+        PROOF_RATE_WINDOW_SECS,
+    )
+    .await?;
 
     let leaves: Vec<String> = sqlx::query_scalar(
         "SELECT user_secret_commitment FROM voters \
@@ -485,6 +506,9 @@ pub async fn submit(
         "The relayer is processing another transaction. Retry shortly.",
     )
     .await?;
+    // Keep the consumed payload so a genuinely-never-landed transient failure
+    // can restore the single-use ticket (L-ticket-burn) instead of burning it.
+    let mut consumed_payload: Option<TicketPayload> = None;
     let relay_outcome: Result<Result<String, ChainError>, ApiError> = {
         let _serialized = state.relay_lock.lock().await;
         // Consume the ticket only once everything else has passed; the relay
@@ -495,15 +519,18 @@ pub async fn submit(
         {
             Err(err) => Err(err),
             Ok(None) => Err(invalid_ticket()),
-            Ok(Some(_)) => Ok(submit_tally(
-                &chain,
-                contract_address,
-                args.a,
-                args.b,
-                args.c,
-                args.signals,
-            )
-            .await),
+            Ok(Some(payload)) => {
+                consumed_payload = Some(payload);
+                Ok(submit_tally(
+                    &chain,
+                    contract_address,
+                    args.a,
+                    args.b,
+                    args.c,
+                    args.signals,
+                )
+                .await)
+            }
         }
     };
     if let Err(err) = leases::release(&state.redis, &relayer_lease).await {
@@ -555,6 +582,25 @@ pub async fn submit(
                             .to_string(),
                     transaction_hash: None,
                 }));
+            }
+            // L-ticket-burn: at this point the nullifier is confirmed NOT used
+            // on-chain, so the tx genuinely never landed. For a RETRYABLE
+            // transport error, restore the single-use ticket so the voter can
+            // retry /submit without re-proving — on-chain nullifier uniqueness
+            // makes any redundant later relay revert harmlessly. A non-retryable
+            // Reverted proof is permanently invalid and is NOT restored (else a
+            // known-bad proof could be resubmitted indefinitely, burning gas).
+            if err.is_retryable() {
+                if let Some(payload) = consumed_payload.take() {
+                    if let Err(restore_err) =
+                        tickets::restore(&state.redis, ticket_token, &payload).await
+                    {
+                        tracing::warn!(
+                            error = %restore_err,
+                            "failed to restore ticket after transient relay failure"
+                        );
+                    }
+                }
             }
             Err(chain_unavailable(err))
         }

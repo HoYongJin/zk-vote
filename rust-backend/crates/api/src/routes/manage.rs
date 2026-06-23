@@ -110,6 +110,30 @@ pub async fn create_election(
         validate_election_input(&name, depth, &candidates, registration_end, now)
             .map_err(ApiError::Validation)?;
 
+    // L-depth1: reject a shape with no committed verifier artifact at CREATION
+    // (ground truth = the compiled Groth16Verifier_<depth>_<candidates> artifact),
+    // instead of deferring the failure to setZkDeploy. Keyed off the committed
+    // file, not DB artifact registration, so it does not invert the
+    // register-after-create operational order.
+    let depth_i32 = depth as i32;
+    let candidates_i32 = candidates.len() as i32;
+    let verifier_name = format!("Groth16Verifier_{depth_i32}_{candidates_i32}");
+    let verifier_artifact = contract_artifact_path(
+        &state.config.contract_artifacts_dir,
+        &format!("{verifier_name}.sol"),
+        &verifier_name,
+    );
+    if fs::metadata(&verifier_artifact).is_err() {
+        return Err(coded(
+            422,
+            "ARTIFACT_SHAPE_UNSUPPORTED",
+            format!(
+                "No verifier artifact is built for depth {depth_i32} / {candidates_i32} candidates; \
+                 only the committed build shapes can be deployed."
+            ),
+        ));
+    }
+
     let election = ElectionRepo::create(
         &state.pg,
         &NewElection {

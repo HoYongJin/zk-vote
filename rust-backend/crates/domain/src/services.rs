@@ -4,7 +4,13 @@
 //! the route layer must emit.
 
 use num_bigint::BigUint;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
+
+/// L-clock: tolerance for clock skew between the handler wall clock and whatever
+/// produced `regEndTime`, so a deadline a second or two in the near-now past
+/// isn't spuriously rejected at creation. The strict register/vote-side gates
+/// (`guard_open_registration`) are intentionally NOT loosened.
+const CLOCK_SKEW_GRACE: Duration = Duration::seconds(5);
 
 // ---------------------------------------------------------------------------
 // Field elements (decimal or 0x-hex strings at every API boundary)
@@ -189,7 +195,7 @@ pub fn validate_election_input(
     if keys.len() != normalized.len() {
         return Err("`candidates` must not contain duplicate names.".to_string());
     }
-    if registration_end <= now {
+    if registration_end + CLOCK_SKEW_GRACE <= now {
         return Err(
             "`regEndTime` must be a valid ISO 8601 date string set in the future.".to_string(),
         );
@@ -667,5 +673,23 @@ mod tests {
             validate_election_input("E", 4, &["A".into()], now() - Duration::hours(1), now())
                 .is_err()
         );
+        // L-clock: a deadline a few seconds in the near-now past is tolerated
+        // (clock-skew grace), but clearly-past is still rejected.
+        assert!(validate_election_input(
+            "E",
+            4,
+            &["A".into()],
+            now() - Duration::seconds(3),
+            now()
+        )
+        .is_ok());
+        assert!(validate_election_input(
+            "E",
+            4,
+            &["A".into()],
+            now() - Duration::seconds(10),
+            now()
+        )
+        .is_err());
     }
 }
