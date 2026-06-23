@@ -24,7 +24,7 @@ use zkvote_db::repos::{
     ZkArtifactRepo,
 };
 use zkvote_domain::services::{
-    election_id_to_field, validate_election_input, PUBLIC_SIGNAL_COUNT,
+    election_id_to_field, validate_election_input, CIRCUIT_CANDIDATE_WIDTH, PUBLIC_SIGNAL_COUNT,
     PUBLIC_SIGNAL_ELECTION_ID_INDEX,
 };
 
@@ -111,13 +111,19 @@ pub async fn create_election(
             .map_err(ApiError::Validation)?;
 
     // L-depth1: reject a shape with no committed verifier artifact at CREATION
-    // (ground truth = the compiled Groth16Verifier_<depth>_<candidates> artifact),
+    // (ground truth = the compiled Groth16Verifier_<depth>_<width> artifact),
     // instead of deferring the failure to setZkDeploy. Keyed off the committed
     // file, not DB artifact registration, so it does not invert the
     // register-after-create operational order.
+    //
+    // Padded grid: every election is proved by the width-CIRCUIT_CANDIDATE_WIDTH
+    // circuit for its depth (build_<depth>_10), independent of the real candidate
+    // count — VotingTally enforces `candidateIndex < numCandidates`
+    // (VotingTally.sol:180), so the padded slots are unusable on-chain. This check
+    // therefore also enforces the supported depth buckets {4,6,8,10}: a depth with
+    // no Groth16Verifier_<depth>_10 (e.g. 5/7/9) is rejected here.
     let depth_i32 = depth as i32;
-    let candidates_i32 = candidates.len() as i32;
-    let verifier_name = format!("Groth16Verifier_{depth_i32}_{candidates_i32}");
+    let verifier_name = format!("Groth16Verifier_{depth_i32}_{CIRCUIT_CANDIDATE_WIDTH}");
     let verifier_artifact = contract_artifact_path(
         &state.config.contract_artifacts_dir,
         &format!("{verifier_name}.sol"),
@@ -128,8 +134,8 @@ pub async fn create_election(
             422,
             "ARTIFACT_SHAPE_UNSUPPORTED",
             format!(
-                "No verifier artifact is built for depth {depth_i32} / {candidates_i32} candidates; \
-                 only the committed build shapes can be deployed."
+                "No verifier circuit is built for Merkle depth {depth_i32}; only the committed \
+                 depth buckets (each built at candidate width {CIRCUIT_CANDIDATE_WIDTH}) can be deployed."
             ),
         ));
     }
@@ -691,25 +697,29 @@ pub async fn set_zk_deploy(
     }
     ensure_election_not_superseded(&election)?;
 
+    // Padded grid: the verifier + zkey are resolved by (depth, CIRCUIT_CANDIDATE_WIDTH),
+    // NOT the election's real candidate count. The real count flows only to the
+    // VotingTally constructor below (deploy_with_locked_election), where
+    // VotingTally.sol:180 enforces `candidateIndex < numCandidates`.
     let artifact = ZkArtifactRepo::find_by_shape(
         &state.pg,
         election.merkle_tree_depth,
-        election.num_candidates,
+        CIRCUIT_CANDIDATE_WIDTH,
     )
     .await?;
     let Some(artifact) = artifact else {
         // Missing ZK artifacts block deployment setup.
         return Err(ApiError::Validation(format!(
-            "No registered ZK artifact set for depth {} / {} candidates. \
+            "No registered ZK artifact set for depth {} at candidate width {}. \
              Run the artifact pipeline before contract deployment.",
-            election.merkle_tree_depth, election.num_candidates
+            election.merkle_tree_depth, CIRCUIT_CANDIDATE_WIDTH
         )));
     };
     ensure_deployable_artifact(&artifact)?;
     let (verifier_bytecode, voting_tally_bytecode) = deployment_bytecodes(
         &state.config.contract_artifacts_dir,
         election.merkle_tree_depth,
-        election.num_candidates,
+        CIRCUIT_CANDIDATE_WIDTH,
     )?;
 
     let deploy_lease = leases::acquire(

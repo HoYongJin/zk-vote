@@ -1122,7 +1122,7 @@ mod tests {
             &admin_token,
             serde_json::json!({
                 "circuitId": "votecheck", "version": format!("{version}-bad"),
-                "merkleTreeDepth": 4, "numCandidates": 5,
+                "merkleTreeDepth": 4, "numCandidates": 10,
                 "manifest": { "publicSignalCount": 4 }
             }),
         )
@@ -1137,7 +1137,7 @@ mod tests {
             &admin_token,
             serde_json::json!({
                 "circuitId": "votecheck", "version": version,
-                "merkleTreeDepth": 4, "numCandidates": 5,
+                "merkleTreeDepth": 4, "numCandidates": 10,
                 "wasmUri": "gs://b/VoteCheck.wasm", "zkeyUri": "gs://b/circuit_final.zkey",
                 "manifest": {
                     "wasmSha256": wasm_sha, "zkeySha256": zkey_sha,
@@ -1282,12 +1282,13 @@ mod tests {
         let future = (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap();
-        // Shape (5, 4) is a committed build (creation allowed) AND no other test
-        // registers a (5,4) artifact, so the setZkDeploy "no artifact" assertion
-        // below stays isolated from the parallel (4,5)-using tests.
+        // Depth 6 is a supported padded bucket (Groth16Verifier_6_10 is built) AND
+        // no deploy/E2E test registers a (6, 10) artifact, so the setZkDeploy
+        // "no artifact" assertion below stays isolated. The real candidate count
+        // (4) is independent of the width-10 circuit; VotingTally enforces the bound.
         let valid_body = serde_json::json!({
             "name": format!("p8 election {admin_id}"),
-            "merkleTreeDepth": 5,
+            "merkleTreeDepth": 6,
             "candidates": [" A ", "B", "C", "D"],
             "regEndTime": future,
         });
@@ -1317,15 +1318,17 @@ mod tests {
         assert_eq!(json["election"]["candidates"][0], "A");
         let election_id = json["election"]["id"].as_str().unwrap().to_string();
 
-        // L-depth1: an in-range but UNBUILT shape (4, 2) is rejected at creation,
-        // not deferred to setZkDeploy.
+        // L-depth1: an UNSUPPORTED depth bucket (5 — no Groth16Verifier_5_10 is
+        // built; the supported buckets are {4,6,8,10}) is rejected at CREATION,
+        // not deferred to setZkDeploy. The candidate count is irrelevant (padded
+        // width 10), so this exercises the depth-bucket gate specifically.
         let (status, json) = post_json(
             routes::router(state.clone()),
             "/api/elections/set",
             &admin_token,
             serde_json::json!({
                 "name": format!("unbuilt {admin_id}"),
-                "merkleTreeDepth": 4,
+                "merkleTreeDepth": 5,
                 "candidates": ["A", "B"],
                 "regEndTime": future,
             }),
@@ -1506,14 +1509,14 @@ mod tests {
             "INSERT INTO zk_artifacts \
                  (circuit_id, version, backend, merkle_tree_depth, num_candidates, \
                   wasm_uri, zkey_uri, verification_key_uri, solidity_verifier_uri, sha256, manifest) \
-             VALUES ($1, $2, 'circom', 4, 5, $3, $4, $5, $6, $7, $8) RETURNING id",
+             VALUES ($1, $2, 'circom', 4, 10, $3, $4, $5, $6, $7, $8) RETURNING id",
         )
         .bind("votecheck")
         .bind(format!("route-deploy-{admin_id}"))
         .bind("gs://bucket/circuits/votecheck/v1/VoteCheck.wasm")
         .bind("gs://bucket/circuits/votecheck/v1/circuit_final.zkey")
         .bind("gs://bucket/circuits/votecheck/v1/verification_key.json")
-        .bind("gs://bucket/circuits/votecheck/v1/Groth16Verifier_4_5.sol")
+        .bind("gs://bucket/circuits/votecheck/v1/Groth16Verifier_4_10.sol")
         .bind("0".repeat(64))
         .bind(serde_json::json!({
             "publicSignalCount": 4,
@@ -2072,7 +2075,7 @@ mod tests {
         };
         let deployed = zkvote_chain::deploy_election(
             &chain_config,
-            bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+            bytecode("out/Groth16Verifier_4_10.sol/Groth16Verifier_4_10.json"),
             bytecode("out/VotingTally.sol/VotingTally.json"),
             zkvote_domain::services::election_id_to_field(&election.id)
                 .to_string()
@@ -2332,7 +2335,7 @@ mod tests {
         };
         let deployed = zkvote_chain::deploy_election(
             &chain_config,
-            bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+            bytecode("out/Groth16Verifier_4_10.sol/Groth16Verifier_4_10.json"),
             bytecode("out/VotingTally.sol/VotingTally.json"),
             alloy::primitives::U256::from(123u64),
             alloy::primitives::U256::from(5u64),
