@@ -1,6 +1,9 @@
-//! Chain-layer gates against a local hardhat node.
-//! Start it first: `npx hardhat node` (repo root), then run:
-//! `cargo test -p zkvote-chain -- --ignored`
+//! Chain-layer gates against a local EVM node (anvil).
+//! Start it first: `anvil` (repo root), then run:
+//! `cargo test -p zkvote-chain -- --ignored`.
+//! anvil's defaults match Hardhat's exactly (verified): chainId 31337, port 8545,
+//! mnemonic `test test test test test test test test test test test junk` — so
+//! accounts 0/1 are the RELAYER/OWNER keys below. No extra flags needed.
 
 use alloy::primitives::{Address, U256};
 use zkvote_chain::{
@@ -46,8 +49,8 @@ async fn deploys_and_enforces_owner_separation() {
     // Deploy verifier + VotingTally, signed by the RELAYER, owned by OWNER.
     let deployed = deploy_election(
         &config,
-        bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
-        bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+        bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+        bytecode("out/VotingTally.sol/VotingTally.json"),
         U256::from(123u64),
         U256::from(5u64),
         owner,
@@ -137,8 +140,8 @@ async fn refuses_to_deploy_on_a_chain_id_mismatch() {
 
     let err = deploy_election(
         &config,
-        bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
-        bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+        bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+        bytecode("out/VotingTally.sol/VotingTally.json"),
         U256::from(123u64),
         U256::from(5u64),
         owner,

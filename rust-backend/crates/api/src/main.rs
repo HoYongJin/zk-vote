@@ -115,7 +115,7 @@ mod tests {
         // Point at the repo's compiled contract artifacts so create_election's
         // L-depth1 shape check (and setZkDeploy bytecode reads) resolve.
         let artifacts_dir = format!(
-            "{}/../../../artifacts/contracts",
+            "{}/../../../out",
             env!("CARGO_MANIFEST_DIR")
         );
         let config = Arc::new(
@@ -1439,7 +1439,7 @@ mod tests {
 
         let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
         let contract_artifacts_dir = format!(
-            "{}/../../../artifacts/contracts",
+            "{}/../../../out",
             env!("CARGO_MANIFEST_DIR")
         );
         let jwks_url = spawn_jwks_server().await;
@@ -2073,8 +2073,8 @@ mod tests {
         };
         let deployed = zkvote_chain::deploy_election(
             &chain_config,
-            bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
-            bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+            bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+            bytecode("out/VotingTally.sol/VotingTally.json"),
             zkvote_domain::services::election_id_to_field(&election.id)
                 .to_string()
                 .parse()
@@ -2328,8 +2328,8 @@ mod tests {
         };
         let deployed = zkvote_chain::deploy_election(
             &chain_config,
-            bytecode("artifacts/contracts/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
-            bytecode("artifacts/contracts/VotingTally.sol/VotingTally.json"),
+            bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+            bytecode("out/VotingTally.sol/VotingTally.json"),
             alloy::primitives::U256::from(123u64),
             alloy::primitives::U256::from(5u64),
             OWNER_ADDR.parse().unwrap(),

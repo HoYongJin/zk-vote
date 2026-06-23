@@ -1207,8 +1207,15 @@ mod tests {
     }
 
     #[test]
-    fn deployment_bytecodes_read_current_hardhat_artifacts() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../artifacts/contracts");
+    fn deployment_bytecodes_read_current_foundry_artifacts() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../out");
+        // out/ is the Foundry build output (gitignored, produced by `forge build`).
+        // Skip when absent so a plain `cargo test` on a fresh checkout stays green;
+        // CI runs `forge build` before the Rust suite so this actually exercises.
+        if !base.join("VotingTally.sol/VotingTally.json").exists() {
+            eprintln!("skipping: run `forge build` to produce out/ artifacts");
+            return;
+        }
         let base = base.to_str().unwrap();
 
         let (verifier, tally) = deployment_bytecodes(base, 4, 5).unwrap();

@@ -104,7 +104,7 @@ impl AppConfig {
             artifact_local_dir: get("ARTIFACT_LOCAL_DIR")
                 .unwrap_or_else(|| ".data/zk-artifacts".to_string()),
             contract_artifacts_dir: get("CONTRACT_ARTIFACTS_DIR")
-                .unwrap_or_else(|| "artifacts/contracts".to_string()),
+                .unwrap_or_else(|| "out".to_string()),
             artifact_bucket: get("ARTIFACT_BUCKET")
                 .map(|bucket| bucket.trim().to_string())
                 .filter(|bucket| !bucket.is_empty()),
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(config.bind_addr.to_string(), "127.0.0.1:8080");
         assert_eq!(config.artifact_store, "local");
         assert_eq!(config.artifact_local_dir, ".data/zk-artifacts");
-        assert_eq!(config.contract_artifacts_dir, "artifacts/contracts");
+        assert_eq!(config.contract_artifacts_dir, "out");
         assert_eq!(config.artifact_bucket, None);
         assert_eq!(config.chain_id, 11_155_111);
         assert_eq!(
