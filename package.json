@@ -1,17 +1,23 @@
 {
   "name": "zk-vote",
   "scripts": {
-    "test:logic": "mocha test/deployEnv.js test/zkArtifacts.js test/etlChecksum.js test/poseidonCompat.js test/fieldElement.js test/importUsersToGcip.js"
+    "test:logic": "mocha test/deployEnv.js test/zkArtifacts.js test/etlChecksum.js test/poseidonCompat.js test/fieldElement.js test/importUsersToGcip.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.49.4",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
     "chai": "^4.5.0",
     "circomlib": "2.0.5",
     "circomlibjs": "0.1.7",
     "firebase-admin": "^14.0.0",
     "fixed-merkle-tree": "0.7.3",
     "mocha": "^10.8.2",
-    "pg": "8.16.3"
+    "pg": "8.16.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
