@@ -86,12 +86,13 @@ describe('VotePage', () => {
     proofOk();
     (axios.get as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
-        wasmPath: '/api/zkp-files/build_4_2/x.wasm',
-        zkeyPath: '/api/zkp-files/build_4_2/x.zkey',
+        wasmPath: '/api/zkp-files/build_4_10/x.wasm',
+        zkeyPath: '/api/zkp-files/build_4_10/x.zkey',
         wasmSha256: 'a'.repeat(64),
         zkeySha256: 'b'.repeat(64),
         verificationKeySha256: 'c'.repeat(64),
         publicSignalCount: 4,
+        numOptions: 10,
       },
     });
 
@@ -108,5 +109,35 @@ describe('VotePage', () => {
 
     unmount();
     expect(worker.terminate).toHaveBeenCalled();
+  });
+
+  test('B4: pads the 1-hot vote vector to artifactInfo.numOptions (circuit width)', async () => {
+    proofOk();
+    // Election has 2 display candidates, but the padded circuit width is 10.
+    (axios.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        wasmPath: '/api/zkp-files/build_4_10/x.wasm',
+        zkeyPath: '/api/zkp-files/build_4_10/x.zkey',
+        wasmSha256: 'a'.repeat(64),
+        zkeySha256: 'b'.repeat(64),
+        verificationKeySha256: 'c'.repeat(64),
+        publicSignalCount: 4,
+        numOptions: 10,
+      },
+    });
+
+    renderVotePage();
+    fireEvent.click(screen.getByText('A')); // index 0 of ['A','B']
+    fireEvent.click(screen.getByText('투표 제출하기'));
+
+    await waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const payload = MockWorker.instances[0].postMessage.mock.calls[0][0] as {
+      inputs: { vote: number[] };
+    };
+    // The vote vector is padded to the circuit width (10), NOT the 2 candidates,
+    // with exactly one 1 at the selected index.
+    expect(payload.inputs.vote).toHaveLength(10);
+    expect(payload.inputs.vote.filter((v) => v === 1)).toHaveLength(1);
+    expect(payload.inputs.vote[0]).toBe(1);
   });
 });

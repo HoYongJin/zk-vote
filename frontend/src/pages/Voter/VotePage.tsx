@@ -72,8 +72,28 @@ function VotePage() {
         throw new Error('Failed to retrieve submission ticket. Cannot proceed.');
       }
 
-      // --- 2. Prepare ZK inputs (1-hot vote vector) ---
-      const voteArray: number[] = new Array(election.candidates.length).fill(0);
+      // --- 2. Fetch the proving-artifact manifest FIRST (AR-M6 / G5: fail closed) ---
+      // A missing/unrecorded manifest is FATAL: we never fall back to fetching
+      // unverified proving artifacts, so a tampered or wrong circuit can never be
+      // fed to the prover. Every deployed election has a sha256 manifest (the
+      // setZkDeploy artifact requires one), so this path is always available.
+      // We need it before building the vote vector because it carries the
+      // circuit's vote-vector width (numOptions).
+      let artifactInfo: ArtifactInfo;
+      try {
+        const infoResponse = await axios.get<ArtifactInfo>(`/elections/${electionId}/artifact-info`);
+        artifactInfo = infoResponse.data;
+      } catch (infoError) {
+        throw new Error(`아티팩트 정보를 가져오지 못했습니다: ${apiErrorMessage(infoError)}`);
+      }
+
+      // --- 3. Prepare ZK inputs (1-hot vote vector padded to the circuit width) ---
+      // The padded grid builds ONE circuit per depth at candidate width
+      // artifactInfo.numOptions (10), so the 1-hot vector must be that length —
+      // not the election's display candidate count. The selected index stays
+      // within the real candidate count; VotingTally enforces
+      // candidateIndex < numCandidates on-chain, so the padded slots are unusable.
+      const voteArray: number[] = new Array(artifactInfo.numOptions).fill(0);
       voteArray[selectedCandidateIndex] = 1;
 
       const inputs: ProofInputs = {
@@ -85,19 +105,6 @@ function VotePage() {
         // election_id must be a hex string for the circuit.
         election_id: '0x' + electionId.replace(/-/g, ''),
       };
-
-      // --- 3. Fetch + verify the proving artifacts (AR-M6 / G5: fail closed) ---
-      // A missing/unrecorded manifest is FATAL: we never fall back to fetching
-      // unverified proving artifacts, so a tampered or wrong circuit can never be
-      // fed to the prover. Every deployed election has a sha256 manifest (the
-      // setZkDeploy artifact requires one), so this path is always available.
-      let artifactInfo: ArtifactInfo;
-      try {
-        const infoResponse = await axios.get<ArtifactInfo>(`/elections/${electionId}/artifact-info`);
-        artifactInfo = infoResponse.data;
-      } catch (infoError) {
-        throw new Error(`아티팩트 정보를 가져오지 못했습니다: ${apiErrorMessage(infoError)}`);
-      }
 
       setLoadingMessage('증명 아티팩트 무결성을 검증하는 중...');
       const [wasmData, zkeyData] = await Promise.all([

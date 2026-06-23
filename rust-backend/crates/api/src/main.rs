@@ -1187,6 +1187,9 @@ mod tests {
         assert_eq!(info["wasmSha256"], wasm_sha);
         assert_eq!(info["zkeySha256"], zkey_sha);
         assert_eq!(info["verificationKeySha256"], vk_sha);
+        // Padded grid: the circuit vote-vector width is the registered width (10),
+        // serialized camelCase (per-field rename, not rename_all).
+        assert_eq!(info["numOptions"], 10);
 
         sqlx::query("DELETE FROM elections WHERE id = $1")
             .bind(election.id)

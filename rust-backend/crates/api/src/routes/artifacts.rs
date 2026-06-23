@@ -43,6 +43,13 @@ pub struct ArtifactInfoResponse {
     pub verification_key_sha256: String,
     #[serde(rename = "publicSignalCount")]
     pub public_signal_count: u64,
+    /// The circuit's vote-vector width (numOptions). In the padded grid this is
+    /// CIRCUIT_CANDIDATE_WIDTH (10) for every shape; the frontend pads its 1-hot
+    /// vote vector to this length. The election's real candidate count is separate
+    /// (VotingTally enforces candidateIndex < numCandidates). Explicit serde rename
+    /// because this struct uses per-field renames, not rename_all.
+    #[serde(rename = "numOptions")]
+    pub num_options: i32,
 }
 
 fn object_field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
@@ -213,6 +220,9 @@ fn artifact_info_response(
             &["verification_key", "verificationKey"],
         )?,
         public_signal_count: public_signal_count(&manifest),
+        // Padded grid: the circuit width = the registered artifact's num_candidates
+        // (10), which COALESCE(za.num_candidates, e.num_candidates) already yields.
+        num_options: row.num_candidates,
     })
 }
 

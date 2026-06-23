@@ -35,6 +35,9 @@ export interface ArtifactInfo {
   wasmSha256: string;
   zkeyPath: string;
   zkeySha256: string;
+  /** The circuit's vote-vector width (padded grid: 10). The 1-hot vote vector
+   *  must be exactly this length so witness generation matches the circuit. */
+  numOptions: number;
 }
 
 /** Groth16 proof reshaped for the Solidity verifier (snarkjs order preserved). */
