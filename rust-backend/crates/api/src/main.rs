@@ -114,10 +114,7 @@ mod tests {
         let database_url = database_url.to_string();
         // Point at the repo's compiled contract artifacts so create_election's
         // L-depth1 shape check (and setZkDeploy bytecode reads) resolve.
-        let artifacts_dir = format!(
-            "{}/../../../out",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let artifacts_dir = format!("{}/../../../out", env!("CARGO_MANIFEST_DIR"));
         let config = Arc::new(
             AppConfig::from_lookup(move |name| match name {
                 "DATABASE_URL" => Some(database_url.clone()),
@@ -1420,11 +1417,11 @@ mod tests {
 
     /// Route gate: /setZkDeploy itself must deploy through the
     /// typed chain layer, bind the selected artifact, and persist metadata.
-    /// Requires docker PG+Redis and a local hardhat node:
-    ///   bash scripts/local/smoke.sh && npx hardhat node
+    /// Requires docker PG+Redis and a local anvil node:
+    ///   bash scripts/local/smoke.sh && anvil
     /// Run: `cargo test -p zkvote-api -- --ignored set_zk_deploy_route --test-threads=1`
     #[tokio::test]
-    #[ignore = "requires docker PG+Redis and a local hardhat node"]
+    #[ignore = "requires docker PG+Redis and a local anvil node"]
     async fn set_zk_deploy_route_deploys_and_records_metadata() {
         use auth::token::test_support::*;
         use time::{Duration, OffsetDateTime};
@@ -1438,10 +1435,7 @@ mod tests {
         const OWNER_ADDR: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
         let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
-        let contract_artifacts_dir = format!(
-            "{}/../../../out",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let contract_artifacts_dir = format!("{}/../../../out", env!("CARGO_MANIFEST_DIR"));
         let jwks_url = spawn_jwks_server().await;
         let jwks = jwks_url.clone();
         let db = database_url.to_string();
@@ -1962,10 +1956,10 @@ mod tests {
 
     /// Durable + recoverable finalize against docker PG AND a
     /// local hardhat node. Start both first:
-    ///   bash scripts/local/smoke.sh && npx hardhat node
+    ///   bash scripts/local/smoke.sh && anvil
     /// Run: `cargo test -p zkvote-api -- --ignored finalize`
     #[tokio::test]
-    #[ignore = "requires docker PG and a local hardhat node"]
+    #[ignore = "requires docker PG and a local anvil node"]
     async fn finalize_configures_chain_and_syncs_db_once() {
         use auth::token::test_support::*;
         use time::{Duration, OffsetDateTime};
@@ -1982,7 +1976,12 @@ mod tests {
             let path = format!("{}/../../../{rel}", env!("CARGO_MANIFEST_DIR"));
             let raw = std::fs::read_to_string(&path).unwrap();
             let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            let hex = json["bytecode"].as_str().unwrap().trim_start_matches("0x");
+            // Hardhat: top-level string; Foundry (out/): nested {"object":"0x.."}.
+            let hex = json["bytecode"]
+                .as_str()
+                .or_else(|| json["bytecode"]["object"].as_str())
+                .unwrap()
+                .trim_start_matches("0x");
             (0..hex.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
@@ -2081,10 +2080,10 @@ mod tests {
                 .unwrap(),
             alloy::primitives::U256::from(2u64),
             OWNER_ADDR.parse().unwrap(),
-            31337, // hardhat local node chain id (§0.5 gap #2)
+            31337, // anvil local node chain id (§0.5 gap #2)
         )
         .await
-        .expect("deploy failed — is `npx hardhat node` running?");
+        .expect("deploy failed — is `anvil` running?");
         ElectionRepo::set_contract_address(
             &pool,
             election.id,
@@ -2167,11 +2166,11 @@ mod tests {
 
     /// The full voting pipeline with a
     /// REAL Groth16 proof (committed fixture) against docker PG + docker
-    /// Redis + a local hardhat node:
-    ///   bash scripts/local/smoke.sh && npx hardhat node
+    /// Redis + a local anvil node:
+    ///   bash scripts/local/smoke.sh && anvil
     /// Run: `cargo test -p zkvote-api -- --ignored vote_pipeline`
     #[tokio::test]
-    #[ignore = "requires docker PG+Redis and a local hardhat node"]
+    #[ignore = "requires docker PG+Redis and a local anvil node"]
     async fn vote_pipeline_end_to_end_with_real_proof() {
         use auth::token::test_support::*;
         use time::{Duration, OffsetDateTime};
@@ -2188,7 +2187,12 @@ mod tests {
             let path = format!("{}/../../../{rel}", env!("CARGO_MANIFEST_DIR"));
             let raw = std::fs::read_to_string(&path).unwrap();
             let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            let hex = json["bytecode"].as_str().unwrap().trim_start_matches("0x");
+            // Hardhat: top-level string; Foundry (out/): nested {"object":"0x.."}.
+            let hex = json["bytecode"]
+                .as_str()
+                .or_else(|| json["bytecode"]["object"].as_str())
+                .unwrap()
+                .trim_start_matches("0x");
             (0..hex.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
@@ -2333,10 +2337,10 @@ mod tests {
             alloy::primitives::U256::from(123u64),
             alloy::primitives::U256::from(5u64),
             OWNER_ADDR.parse().unwrap(),
-            31337, // hardhat local node chain id (§0.5 gap #2)
+            31337, // anvil local node chain id (§0.5 gap #2)
         )
         .await
-        .expect("deploy failed — is `npx hardhat node` running?");
+        .expect("deploy failed — is `anvil` running?");
         zkvote_db::repos::ElectionRepo::set_contract_address(
             &pool,
             election_id,

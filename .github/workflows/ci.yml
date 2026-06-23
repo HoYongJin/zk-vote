@@ -12,16 +12,19 @@ permissions:
 
 jobs:
   contracts-and-zk:
-    name: Hardhat + ZK/helper tests
+    name: Foundry + ZK/helper tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive # forge-std (lib/forge-std) is a git submodule
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: |
             package-lock.json
+      - uses: foundry-rs/foundry-toolchain@v1
       - run: npm ci
       - name: JavaScript syntax gate
         run: find scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 node --check
@@ -39,14 +42,19 @@ jobs:
             echo ".gcloudignore must exclude .env — gcloud builds submit ignores .gitignore and would upload secrets to the source bucket." >&2
             exit 1
           fi
+      - name: Solidity format + build + test (Foundry)
+        run: |
+          forge fmt --check
+          forge build
+          forge test
       - name: Circuit/contract schema gate (audit C1)
         run: bash scripts/ci/check-artifact-schema.sh
       # test/poseidonCompat.js deliberately requires the frontend's EXACT
       # poseidon-lite to assert it is bit-identical to circomlibjs (invariant #7),
-      # so the hardhat job needs the frontend deps installed too.
+      # so the logic-test job needs the frontend deps installed too.
       - run: npm ci --prefix frontend
-      - name: Hardhat + helper tests
-        run: npx hardhat test
+      - name: Pure-logic helper tests (mocha)
+        run: npm run test:logic
 
   frontend:
     name: Frontend build

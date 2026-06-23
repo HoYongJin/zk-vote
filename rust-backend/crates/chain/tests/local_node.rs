@@ -38,7 +38,7 @@ fn bytecode(artifact_rel_path: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
-#[ignore = "requires a local hardhat node (npx hardhat node)"]
+#[ignore = "requires a local anvil node (run `anvil`)"]
 async fn deploys_and_enforces_owner_separation() {
     let config = ChainConfig {
         rpc_url: RPC.to_string(),
@@ -54,10 +54,10 @@ async fn deploys_and_enforces_owner_separation() {
         U256::from(123u64),
         U256::from(5u64),
         owner,
-        31337, // hardhat local node chain id (§0.5 gap #2)
+        31337, // anvil local node chain id (§0.5 gap #2)
     )
     .await
-    .expect("deployment failed — is `npx hardhat node` running?");
+    .expect("deployment failed — is `anvil` running?");
     assert!(deployed.deploy_tx_hash.starts_with("0x"));
 
     let election = connect_election(&config, deployed.voting_tally_address).unwrap();
@@ -130,7 +130,7 @@ async fn deploys_and_enforces_owner_separation() {
 // have silently deployed to the wrong chain. The local node reports 31337, so
 // claiming Sepolia (11155111) must fail with a Config error before any deploy.
 #[tokio::test]
-#[ignore = "requires a local hardhat node (npx hardhat node)"]
+#[ignore = "requires a local anvil node (run `anvil`)"]
 async fn refuses_to_deploy_on_a_chain_id_mismatch() {
     let config = ChainConfig {
         rpc_url: RPC.to_string(),
