@@ -29,6 +29,10 @@ test-proof-generator.js
 /cache
 #/artifacts
 
+# Foundry build output
+/out
+/cache_forge
+
 # TypeChain files
 /typechain
 /typechain-types

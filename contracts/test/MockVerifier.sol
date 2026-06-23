@@ -16,12 +16,11 @@ contract MockVerifier {
         result = _result;
     }
 
-    function verifyProof(
-        uint256[2] memory,
-        uint256[2][2] memory,
-        uint256[2] memory,
-        uint256[4] memory
-    ) external view returns (bool) {
+    function verifyProof(uint256[2] memory, uint256[2][2] memory, uint256[2] memory, uint256[4] memory)
+        external
+        view
+        returns (bool)
+    {
         return result;
     }
 }

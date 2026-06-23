@@ -12,7 +12,10 @@ interface IVerifier {
         uint256[2][2] memory b,
         uint256[2] memory c,
         uint256[4] memory input // public signals: [root, vote_index, nullifier_hash, election_id]
-    ) external view returns (bool r);
+    )
+        external
+        view
+        returns (bool r);
 }
 
 /**
@@ -33,13 +36,13 @@ contract VotingTally {
     // --- State Variables ---
 
     address public owner;
-    IVerifier public immutable verifier;        // The verifier contract is immutable for security.
-    uint256 public immutable electionId;        // The unique ID for this election is also immutable.
+    IVerifier public immutable verifier; // The verifier contract is immutable for security.
+    uint256 public immutable electionId; // The unique ID for this election is also immutable.
 
     uint256 public merkleRoot;
     uint256 public votingStartTime;
     uint256 public votingEndTime;
-    uint256 public numCandidates;               // Total number of candidates for this election.
+    uint256 public numCandidates; // Total number of candidates for this election.
     bool public configured;
 
     // Mapping from candidate index to their vote count.
@@ -48,7 +51,6 @@ contract VotingTally {
     // Mapping to store used nullifiers to prevent double-voting.
     mapping(uint256 => bool) public usedNullifiers;
 
-
     // --- Events ---
 
     event VoteCast(uint256 indexed electionId, uint256 indexed candidateIndex);
@@ -56,14 +58,12 @@ contract VotingTally {
     event VotingPeriodSet(uint256 startTime, uint256 endTime);
     event ElectionConfigured(uint256 root, uint256 startTime, uint256 endTime);
 
-
     // --- Modifier ---
 
     modifier onlyOwner() {
         require(msg.sender == owner, "VotingTally: Caller is not the owner");
         _;
     }
-
 
     // --- Constructor ---
 
@@ -87,7 +87,6 @@ contract VotingTally {
         electionId = _electionId;
         numCandidates = _numCandidates;
     }
-
 
     // --- Admin Functions ---
 
@@ -138,7 +137,6 @@ contract VotingTally {
         emit VotingPeriodSet(_startTime, _endTime);
         emit ElectionConfigured(_root, _startTime, _endTime);
     }
-
 
     // --- Vote Submission ---
 

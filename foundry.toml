@@ -1,0 +1,18 @@
+# Foundry config — replaces hardhat.config.js (Solidity toolchain migration).
+# Keeps contracts in their existing contracts/ dir; emits artifacts to out/
+# (the Rust deploy path reads out/<File>.sol/<Contract>.json — see
+# crates/api/src/routes/manage.rs::read_contract_bytecode, dual Hardhat/Foundry shape).
+[profile.default]
+src = "contracts"
+out = "out"
+test = "test"               # forge discovers *.t.sol / *.sol test contracts; the .js files here are ignored
+script = "script"
+libs = ["lib"]
+solc = "0.8.20"             # match hardhat.config.js
+optimizer = false           # hardhat had no optimizer block -> disabled; keep audited-bytecode parity
+evm_version = "paris"       # MATCHES hardhat build-info (evmVersion: paris) — avoids PUSH0, keeps audited-bytecode parity
+# forge test reads the shared real-proof fixture (rust-backend/crates/api/testdata/proof_fixture.json) via vm.readFile.
+fs_permissions = [{ access = "read", path = "./" }]
+
+[fmt]
+line_length = 120
