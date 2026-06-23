@@ -1,20 +1,20 @@
 // poseidon-lite is generated from the circomlib Poseidon constants, so its
 // output is bit-identical to the circomlibjs Poseidon the backend uses for
 // Merkle leaves (cross-checked in test/poseidonCompat.js). circomlibjs itself
-// cannot be bundled by CRA/webpack 5 (it imports Node builtins like `assert`).
+// cannot be bundled in the browser (it imports Node builtins like `assert`).
 import { poseidon1 } from 'poseidon-lite';
 
 const SECRET_KEY_PREFIX = 'zkvote_secret_';
 
-function secretStorageKey(electionId) {
+function secretStorageKey(electionId: string): string {
   return `${SECRET_KEY_PREFIX}${electionId}`;
 }
 
-function bytesToHex(bytes) {
+function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function generateSecret() {
+function generateSecret(): string {
   const bytes = new Uint8Array(31);
   window.crypto.getRandomValues(bytes);
   const secret = BigInt(`0x${bytesToHex(bytes)}`);
@@ -24,7 +24,7 @@ function generateSecret() {
   return secret.toString();
 }
 
-function getStoredVoterSecret(electionId) {
+function getStoredVoterSecret(electionId: string): string | null {
   const secret = window.localStorage.getItem(secretStorageKey(electionId));
   if (!secret || !/^[0-9]+$/.test(secret)) {
     return null;
@@ -32,15 +32,15 @@ function getStoredVoterSecret(electionId) {
   return secret;
 }
 
-function saveVoterSecret(electionId, secret) {
+function saveVoterSecret(electionId: string, secret: string): void {
   window.localStorage.setItem(secretStorageKey(electionId), secret);
 }
 
-function removeVoterSecret(electionId) {
+function removeVoterSecret(electionId: string): void {
   window.localStorage.removeItem(secretStorageKey(electionId));
 }
 
-export function getOrCreateVoterSecret(electionId) {
+export function getOrCreateVoterSecret(electionId: string): string {
   const existing = getStoredVoterSecret(electionId);
   if (existing) {
     return existing;
@@ -51,14 +51,14 @@ export function getOrCreateVoterSecret(electionId) {
   return secret;
 }
 
-export function getVoterSecret(electionId) {
+export function getVoterSecret(electionId: string): string | null {
   return getStoredVoterSecret(electionId);
 }
 
-export function clearVoterSecret(electionId) {
+export function clearVoterSecret(electionId: string): void {
   removeVoterSecret(electionId);
 }
 
-export async function calculateSecretCommitment(secret) {
+export async function calculateSecretCommitment(secret: string): Promise<string> {
   return poseidon1([BigInt(secret)]).toString();
 }

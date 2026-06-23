@@ -1,18 +1,18 @@
 const API_PREFIX = '/api';
 
-function stripTrailingSlash(value) {
+function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
-export function getApiBaseUrl() {
-  const configured = process.env.REACT_APP_API_BASE_URL?.trim();
+export function getApiBaseUrl(): string {
+  const configured = import.meta.env.VITE_API_BASE_URL?.trim();
   if (!configured || configured === '/') {
     return API_PREFIX;
   }
   return stripTrailingSlash(configured);
 }
 
-export function resolveApiPath(path) {
+export function resolveApiPath(path: string): string {
   if (/^https?:\/\//i.test(path)) {
     return path;
   }
@@ -25,7 +25,8 @@ export function resolveApiPath(path) {
   return normalizedPath;
 }
 
-export function resolveArtifactApiPath(path) {
+export function resolveArtifactApiPath(path: string): string {
+  // Runtime guard: `path` originates from an untyped server response.
   if (typeof path !== 'string') {
     throw new Error('Artifact paths must be same-API relative paths.');
   }

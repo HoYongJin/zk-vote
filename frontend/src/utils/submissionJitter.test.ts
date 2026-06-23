@@ -1,3 +1,4 @@
+import { describe, test, expect } from 'vitest';
 import {
   calculateSubmissionJitterMs,
   SUBMISSION_JITTER_MAX_MS,
@@ -40,16 +41,20 @@ describe('submission jitter', () => {
   });
 
   test('clamps invalid random samples instead of returning NaN', () => {
-    expect(calculateSubmissionJitterMs({
-      ticketIssuedAtMs: 1_000,
-      nowMs: 1_000,
-      random: () => Number.NaN,
-    })).toBe(0);
+    expect(
+      calculateSubmissionJitterMs({
+        ticketIssuedAtMs: 1_000,
+        nowMs: 1_000,
+        random: () => Number.NaN,
+      }),
+    ).toBe(0);
 
-    expect(calculateSubmissionJitterMs({
-      ticketIssuedAtMs: 1_000,
-      nowMs: 1_000,
-      random: () => 2,
-    })).toBe(SUBMISSION_JITTER_MAX_MS);
+    expect(
+      calculateSubmissionJitterMs({
+        ticketIssuedAtMs: 1_000,
+        nowMs: 1_000,
+        random: () => 2,
+      }),
+    ).toBe(SUBMISSION_JITTER_MAX_MS);
   });
 });

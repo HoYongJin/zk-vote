@@ -2,7 +2,7 @@ export const SUBMISSION_TICKET_TTL_MS = 300_000;
 export const SUBMISSION_TICKET_SAFETY_BUFFER_MS = 30_000;
 export const SUBMISSION_JITTER_MAX_MS = 10_000;
 
-export function randomFraction() {
+export function randomFraction(): number {
   if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
     const bytes = new Uint32Array(1);
     window.crypto.getRandomValues(bytes);
@@ -11,15 +11,26 @@ export function randomFraction() {
   return Math.random();
 }
 
-export function calculateSubmissionJitterMs({
-  ticketIssuedAtMs,
-  nowMs = Date.now(),
-  random = randomFraction,
-  ttlMs = SUBMISSION_TICKET_TTL_MS,
-  safetyBufferMs = SUBMISSION_TICKET_SAFETY_BUFFER_MS,
-  maxJitterMs = SUBMISSION_JITTER_MAX_MS,
-} = {}) {
-  if (!Number.isFinite(ticketIssuedAtMs)) {
+export interface JitterOptions {
+  ticketIssuedAtMs?: number;
+  nowMs?: number;
+  random?: () => number;
+  ttlMs?: number;
+  safetyBufferMs?: number;
+  maxJitterMs?: number;
+}
+
+export function calculateSubmissionJitterMs(options: JitterOptions = {}): number {
+  const {
+    ticketIssuedAtMs,
+    nowMs = Date.now(),
+    random = randomFraction,
+    ttlMs = SUBMISSION_TICKET_TTL_MS,
+    safetyBufferMs = SUBMISSION_TICKET_SAFETY_BUFFER_MS,
+    maxJitterMs = SUBMISSION_JITTER_MAX_MS,
+  } = options;
+
+  if (ticketIssuedAtMs === undefined || !Number.isFinite(ticketIssuedAtMs)) {
     return 0;
   }
 
@@ -35,7 +46,7 @@ export function calculateSubmissionJitterMs({
   return Math.min(allowedJitterMs, Math.floor(sample * (allowedJitterMs + 1)));
 }
 
-export function delay(ms) {
+export function delay(ms: number): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve();
   }
