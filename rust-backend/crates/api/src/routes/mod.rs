@@ -26,8 +26,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/elections/set", post(manage::create_election))
         .route("/api/management/addAdmins", post(manage::add_admins))
         .route(
+            "/api/admin/zk-artifacts",
+            post(manage::register_zk_artifact),
+        )
+        .route(
             "/api/elections/:election_id/setZkDeploy",
             post(manage::set_zk_deploy),
+        )
+        .route(
+            "/api/elections/:election_id/supersede",
+            post(manage::supersede_election),
         )
         .route(
             "/api/elections/:election_id/voters",

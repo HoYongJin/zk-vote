@@ -916,6 +916,285 @@ mod tests {
         (status, json)
     }
 
+    /// G4: the supersede endpoint is admin-gated, lease-serialized against
+    /// finalize, durably fail-closes the row, and is idempotent.
+    #[tokio::test]
+    #[ignore = "requires docker PG + Redis (scripts/local/smoke.sh)"]
+    async fn supersede_endpoint_guards_and_fails_closed() {
+        use auth::token::test_support::*;
+        use zkvote_db::repos::{ElectionRepo, NewElection};
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let jwks = jwks_url.clone();
+        let db = database_url.to_string();
+        // Live Redis (the lease serialization is load-bearing here).
+        let config = Arc::new(
+            AppConfig::from_lookup(move |name| match name {
+                "DATABASE_URL" => Some(db.clone()),
+                "REDIS_URL" => Some("redis://localhost:6379".to_string()),
+                "SUPABASE_JWKS_URL" => Some(jwks.clone()),
+                "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let auth = config.supabase_jwks_url.clone().map(|url| {
+            Arc::new(AuthContext::new(
+                url,
+                config.supabase_issuer.clone(),
+                config.supabase_audience.clone(),
+            ))
+        });
+        let state = AppState {
+            config: config.clone(),
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open("redis://localhost:6379").unwrap(),
+            auth,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let pool = state.pg.clone();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let voter_token = mint_token(
+            &uuid::Uuid::new_v4().to_string(),
+            "rando@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let election = ElectionRepo::create(
+            &pool,
+            &NewElection {
+                name: format!("supersede election {admin_id}"),
+                merkle_tree_depth: 4,
+                candidates: vec!["A".to_string(), "B".to_string()],
+                registration_end_time: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        let eid = election.id;
+        let path = format!("/api/elections/{eid}/supersede");
+
+        // Non-admin cannot supersede.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &voter_token,
+            serde_json::json!({"reason": "x"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["error"], "ADMIN_PRIVILEGES_REQUIRED");
+
+        // Missing reason -> 400.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "VALIDATION_ERROR");
+
+        // A held finalize lease blocks supersede (no half-state with finalize).
+        let lease = leases::acquire(
+            &state.redis,
+            leases::finalize_lease_key(&eid),
+            leases::FINALIZE_LEASE_SECONDS,
+            "HELD",
+            "held by test",
+        )
+        .await
+        .unwrap();
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({"reason": "blocked"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "FINALIZATION_IN_PROGRESS");
+        leases::release(&state.redis, &lease).await.unwrap();
+
+        // Admin supersede succeeds and durably fail-closes the row.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({"reason": "operator abandon"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "supersede failed: {json}");
+        assert_eq!(json["state"], "failed");
+        let row = ElectionRepo::find(&pool, eid).await.unwrap().unwrap();
+        assert!(row.superseded_at.is_some());
+        assert_eq!(row.state, "failed");
+
+        // Idempotent: a second supersede is a 409.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &path,
+            &admin_token,
+            serde_json::json!({"reason": "again"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ALREADY_SUPERSEDED");
+
+        // Downstream guard fails closed: deploy on a superseded election rejects.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            &format!("/api/elections/{eid}/setZkDeploy"),
+            &admin_token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"], "ELECTION_SUPERSEDED");
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(eid)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// G5: artifact registration writes a sha256-bearing manifest so
+    /// /artifact-info serves a verified (integrity-checked) set, and rejects
+    /// manifests missing the sha256 fields the browser fetch needs.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn zk_artifact_registration_and_verified_artifact_info() {
+        use auth::token::test_support::*;
+        use http_body_util::BodyExt;
+        use zkvote_db::repos::{DeploymentRepo, ElectionRepo, NewElection};
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let wasm_sha = "11".repeat(32);
+        let zkey_sha = "22".repeat(32);
+        let vk_sha = "33".repeat(32);
+        let version = format!("g5-{admin_id}");
+
+        // Manifest missing sha256 -> 400 (fail closed at registration).
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/admin/zk-artifacts",
+            &admin_token,
+            serde_json::json!({
+                "circuitId": "votecheck", "version": format!("{version}-bad"),
+                "merkleTreeDepth": 4, "numCandidates": 5,
+                "manifest": { "publicSignalCount": 4 }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "VALIDATION_ERROR");
+
+        // Valid registration -> 201.
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/admin/zk-artifacts",
+            &admin_token,
+            serde_json::json!({
+                "circuitId": "votecheck", "version": version,
+                "merkleTreeDepth": 4, "numCandidates": 5,
+                "wasmUri": "gs://b/VoteCheck.wasm", "zkeyUri": "gs://b/circuit_final.zkey",
+                "manifest": {
+                    "wasmSha256": wasm_sha, "zkeySha256": zkey_sha,
+                    "verificationKeySha256": vk_sha, "publicSignalCount": 4,
+                    "publicSignals": ["root", "candidateIndex", "nullifierHash", "election_id"]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "register failed: {json}");
+        let artifact_id: uuid::Uuid = json["artifactId"].as_str().unwrap().parse().unwrap();
+
+        // Bind it to a (manually) deployed election so /artifact-info joins it.
+        let election = ElectionRepo::create(
+            &pool,
+            &NewElection {
+                name: format!("g5 election {admin_id}"),
+                merkle_tree_depth: 4,
+                candidates: vec!["A".into(), "B".into(), "C".into(), "D".into(), "E".into()],
+                registration_end_time: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(DeploymentRepo::record_and_bind(
+            &pool,
+            election.id,
+            Some(artifact_id),
+            &format!("0xverifier-{admin_id}"),
+            &format!("0xtally-{admin_id}"),
+            31337,
+            &format!("0xhash-{admin_id}"),
+        )
+        .await
+        .unwrap());
+
+        // /artifact-info returns the verified manifest (NOT a 409).
+        let app = routes::router(state.clone());
+        let req = Request::get(format!("/api/elections/{}/artifact-info", election.id))
+            .header("authorization", format!("Bearer {admin_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(info["wasmSha256"], wasm_sha);
+        assert_eq!(info["zkeySha256"], zkey_sha);
+        assert_eq!(info["verificationKeySha256"], vk_sha);
+
+        sqlx::query("DELETE FROM elections WHERE id = $1")
+            .bind(election.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM zk_artifacts WHERE id = $1")
+            .bind(artifact_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     /// Admin setup gates: creation validation (M4), invitation upsert
     /// idempotency, deploy guard. Run: `cargo test -p zkvote-api -- --ignored`
     #[tokio::test]

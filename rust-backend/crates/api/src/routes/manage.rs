@@ -16,9 +16,12 @@ use std::path::{Path as FsPath, PathBuf};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
-use zkvote_chain::{address_for_private_key, deploy_election, ChainConfig, ChainError};
+use zkvote_chain::{
+    address_for_private_key, deploy_verifier, deploy_voting_tally, ChainConfig, ChainError,
+};
 use zkvote_db::repos::{
-    AdminRepo, DeploymentRepo, Election, ElectionRepo, NewElection, ZkArtifact, ZkArtifactRepo,
+    AdminRepo, DeploymentRepo, Election, ElectionRepo, NewElection, NewZkArtifact, ZkArtifact,
+    ZkArtifactRepo,
 };
 use zkvote_domain::services::{
     election_id_to_field, validate_election_input, PUBLIC_SIGNAL_COUNT,
@@ -515,6 +518,27 @@ async fn deploy_with_locked_election(
     ensure_election_not_superseded(&latest)?;
 
     let (chain, owner) = deployment_chain_config(state)?;
+    let election_u256 = election_uuid_to_u256(election_id)?;
+    let num_candidates = U256::from(latest.num_candidates as u64);
+    // §0.5 gap #2: refuse to deploy unless the live RPC reports this chain id.
+    let expected_chain_id = state.config.chain_id as u64;
+
+    // G3: a prior attempt may have landed the verifier but failed before the
+    // VotingTally. The verifier address is checkpointed to the DB, so a retry
+    // REUSES it instead of deploying (and orphaning) a fresh verifier and
+    // burning another relayer nonce. Parse fail-closed: a corrupt stored value
+    // must surface, not silently trigger a re-deploy.
+    let checkpointed_verifier = match latest.verifier_address.as_deref() {
+        Some(raw) => Some(raw.parse::<Address>().map_err(|err| {
+            coded(
+                500,
+                "VERIFIER_ADDRESS_CORRUPT",
+                format!("Stored verifier_address {raw} is not a valid address: {err}"),
+            )
+        })?),
+        None => None,
+    };
+
     let relayer_lease = leases::acquire(
         &state.redis,
         leases::RELAYER_LEASE_KEY.to_string(),
@@ -524,28 +548,62 @@ async fn deploy_with_locked_election(
     )
     .await?;
 
-    let deployed_result = {
+    // Both on-chain sends (and the verifier checkpoint between them) stay inside
+    // the cross-instance relayer lease AND the in-process relay mutex, so the
+    // relayer nonce is serialized end-to-end (AR-M5). record_and_bind is a
+    // DB-only write and runs after the lease is released.
+    let deploy_outcome: Result<(Address, Address, String), ApiError> = async {
         let _local_relay_guard = state.relay_lock.lock().await;
-        deploy_election(
+
+        let verifier_address = match checkpointed_verifier {
+            Some(addr) => addr,
+            None => {
+                let (addr, _tx) = deploy_verifier(&chain, verifier_bytecode, expected_chain_id)
+                    .await
+                    .map_err(chain_deploy_error)?;
+                // Checkpoint BEFORE the tally deploy so a tally-stage failure
+                // leaves a reusable verifier rather than an orphan.
+                let checkpointed = DeploymentRepo::checkpoint_verifier(
+                    &state.pg,
+                    election_id,
+                    &format!("{addr:#x}"),
+                )
+                .await?;
+                if !checkpointed {
+                    return Err(coded(
+                        409,
+                        "DEPLOYMENT_STATE_CONFLICT",
+                        "Verifier deployed but the election was concurrently superseded or bound; \
+                         the verifier is abandoned in place (AR-M7).",
+                    ));
+                }
+                addr
+            }
+        };
+
+        let (tally_address, tx_hash) = deploy_voting_tally(
             &chain,
-            verifier_bytecode,
             voting_tally_bytecode,
-            election_uuid_to_u256(election_id)?,
-            U256::from(latest.num_candidates as u64),
+            verifier_address,
+            election_u256,
+            num_candidates,
             owner,
-            // §0.5 gap #2: refuse to deploy unless the live RPC reports this chain id.
-            state.config.chain_id as u64,
+            expected_chain_id,
         )
         .await
-    };
+        .map_err(chain_deploy_error)?;
+
+        Ok((verifier_address, tally_address, tx_hash))
+    }
+    .await;
 
     if let Err(err) = leases::release(&state.redis, &relayer_lease).await {
         tracing::warn!(error = %err, "failed to release relayer redis lease");
     }
 
-    let deployed = deployed_result.map_err(chain_deploy_error)?;
-    let verifier_address = format!("{:#x}", deployed.verifier_address);
-    let contract_address = format!("{:#x}", deployed.voting_tally_address);
+    let (verifier_addr, tally_addr, deploy_tx_hash) = deploy_outcome?;
+    let verifier_address = format!("{verifier_addr:#x}");
+    let contract_address = format!("{tally_addr:#x}");
 
     let bound = DeploymentRepo::record_and_bind(
         &state.pg,
@@ -554,7 +612,7 @@ async fn deploy_with_locked_election(
         &verifier_address,
         &contract_address,
         state.config.chain_id,
-        &deployed.deploy_tx_hash,
+        &deploy_tx_hash,
     )
     .await?;
     if !bound {
@@ -570,7 +628,7 @@ async fn deploy_with_locked_election(
         message: "Smart contracts deployed and recorded successfully.".to_string(),
         contract_address,
         verifier_address,
-        deploy_tx_hash: deployed.deploy_tx_hash,
+        deploy_tx_hash,
         artifact_id: artifact.id,
     }))
 }
@@ -638,6 +696,260 @@ pub async fn set_zk_deploy(
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/elections/:election_id/supersede
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SupersedeBody {
+    /// Operator-supplied reason, recorded in the audit log. Required.
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SupersedeResponse {
+    pub success: bool,
+    pub message: String,
+    pub state: String,
+    #[serde(rename = "supersededAt", with = "time::serde::rfc3339")]
+    pub superseded_at: OffsetDateTime,
+}
+
+/// G4 / AR-M7: marks an election superseded so every downstream guard
+/// (register / vote / finalize / deploy) fail-closes against it. The on-chain
+/// contract is deliberately abandoned in place — this endpoint performs NO
+/// on-chain action.
+///
+/// It acquires BOTH the per-election finalize lease and the relayer lease before
+/// the DB write, so a supersede cannot interleave with an in-flight finalize or
+/// deploy/relay and leave a DB-superseded / contract-live half-state (the
+/// finalize path releases its row lock before the on-chain `configureElection`,
+/// and the deploy path shares the relayer lease).
+pub async fn supersede_election(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(election_id): Path<Uuid>,
+    Json(body): Json<SupersedeBody>,
+) -> Result<Json<SupersedeResponse>, ApiError> {
+    let reason = body
+        .reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .ok_or_else(|| {
+            ApiError::Validation("`reason` is required to supersede an election.".to_string())
+        })?;
+
+    let election = ElectionRepo::find(&state.pg, election_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Election with ID {election_id} not found.")))?;
+    if election.superseded_at.is_some() {
+        return Err(coded(
+            409,
+            "ALREADY_SUPERSEDED",
+            "This election is already superseded.",
+        ));
+    }
+
+    // Serialize against finalize (per-election lease) AND the relayer/deploy path
+    // (shared relayer lease) so the DB supersede cannot race a half-applied
+    // on-chain transition.
+    let finalize_lease = leases::acquire(
+        &state.redis,
+        leases::finalize_lease_key(&election_id),
+        leases::FINALIZE_LEASE_SECONDS,
+        "FINALIZATION_IN_PROGRESS",
+        "A finalization is in progress for this election; retry once it settles.",
+    )
+    .await?;
+    let relayer_lease = match leases::acquire(
+        &state.redis,
+        leases::RELAYER_LEASE_KEY.to_string(),
+        leases::RELAYER_LEASE_SECONDS,
+        "RELAYER_BUSY",
+        "The relayer is processing another transaction; retry shortly.",
+    )
+    .await
+    {
+        Ok(lease) => lease,
+        Err(err) => {
+            if let Err(e) = leases::release(&state.redis, &finalize_lease).await {
+                tracing::warn!(error = %e, "failed to release finalize lease after relayer conflict");
+            }
+            return Err(err);
+        }
+    };
+
+    let result = ElectionRepo::supersede(&state.pg, election_id).await;
+
+    if let Err(e) = leases::release(&state.redis, &relayer_lease).await {
+        tracing::warn!(error = %e, "failed to release relayer lease after supersede");
+    }
+    if let Err(e) = leases::release(&state.redis, &finalize_lease).await {
+        tracing::warn!(error = %e, "failed to release finalize lease after supersede");
+    }
+
+    if !result? {
+        return Err(coded(
+            409,
+            "ALREADY_SUPERSEDED",
+            "This election could not be superseded (already superseded or completed).",
+        ));
+    }
+
+    // Durable markers are the `superseded_at` timestamp + `state='failed'` on the
+    // row; the operator reason + admin identity go to structured logs (the GCP
+    // target's Cloud Logging is the audit sink — finalization_jobs cannot hold a
+    // supersede row because its desired_merkle_root carries a field-element CHECK).
+    tracing::warn!(
+        admin_id = %admin.id,
+        election_id = %election_id,
+        reason = %reason,
+        "election superseded (AR-M7: on-chain contract abandoned in place)"
+    );
+
+    let refreshed = ElectionRepo::find(&state.pg, election_id).await?;
+    let superseded_at = refreshed
+        .as_ref()
+        .and_then(|e| e.superseded_at)
+        .unwrap_or_else(OffsetDateTime::now_utc);
+    let state_label = refreshed
+        .map(|e| e.state)
+        .unwrap_or_else(|| "failed".to_string());
+
+    Ok(Json(SupersedeResponse {
+        success: true,
+        message: "Election superseded. The on-chain contract is abandoned in place; \
+                  create a new election to replace it."
+            .to_string(),
+        state: state_label,
+        superseded_at,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/zk-artifacts  (G5: artifact registration)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct RegisterArtifactBody {
+    #[serde(rename = "circuitId")]
+    pub circuit_id: Option<String>,
+    pub version: Option<String>,
+    #[serde(rename = "merkleTreeDepth")]
+    pub merkle_tree_depth: Option<i32>,
+    #[serde(rename = "numCandidates")]
+    pub num_candidates: Option<i32>,
+    #[serde(rename = "wasmUri")]
+    pub wasm_uri: Option<String>,
+    #[serde(rename = "zkeyUri")]
+    pub zkey_uri: Option<String>,
+    #[serde(rename = "verificationKeyUri")]
+    pub verification_key_uri: Option<String>,
+    #[serde(rename = "solidityVerifierUri")]
+    pub solidity_verifier_uri: Option<String>,
+    /// The artifact manifest (the `zkArtifacts.js` shape): MUST carry
+    /// `wasmSha256` / `zkeySha256` / `verificationKeySha256` + `publicSignalCount`.
+    pub manifest: Option<Value>,
+}
+
+#[derive(Serialize)]
+pub struct RegisterArtifactResponse {
+    pub success: bool,
+    pub message: String,
+    #[serde(rename = "artifactId")]
+    pub artifact_id: Uuid,
+}
+
+fn require_field(value: Option<String>, name: &str) -> Result<String, ApiError> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ApiError::Validation(format!("`{name}` is required.")))
+}
+
+/// G5 fail-closed: a 64-char hex sha256 the verified browser fetch checks. A
+/// manifest missing these would make `/artifact-info` 409 and block all voting,
+/// so reject at registration instead.
+fn require_manifest_sha(manifest: &Value, key: &str) -> Result<String, ApiError> {
+    manifest
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            ApiError::Validation(format!(
+                "`manifest.{key}` must be a 64-char hex sha256 (G5: verified artifact fetch)."
+            ))
+        })
+}
+
+/// Registers a sha256-bearing artifact set so deployed elections expose verified
+/// (integrity-checked) proving artifacts to the browser. The sha256 values are
+/// produced by `scripts/zkArtifacts.js` (`artifact-manifest.json`).
+pub async fn register_zk_artifact(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Json(body): Json<RegisterArtifactBody>,
+) -> Result<(StatusCode, Json<RegisterArtifactResponse>), ApiError> {
+    let circuit_id = require_field(body.circuit_id, "circuitId")?;
+    let version = require_field(body.version, "version")?;
+    let merkle_tree_depth = body.merkle_tree_depth.filter(|d| *d > 0).ok_or_else(|| {
+        ApiError::Validation("`merkleTreeDepth` must be a positive integer.".into())
+    })?;
+    let num_candidates = body.num_candidates.filter(|n| *n > 0).ok_or_else(|| {
+        ApiError::Validation("`numCandidates` must be a positive integer.".into())
+    })?;
+    let manifest = body
+        .manifest
+        .ok_or_else(|| ApiError::Validation("`manifest` is required.".into()))?;
+
+    // Fail-closed manifest validation (G5).
+    let zkey_sha = require_manifest_sha(&manifest, "zkeySha256")?;
+    require_manifest_sha(&manifest, "wasmSha256")?;
+    require_manifest_sha(&manifest, "verificationKeySha256")?;
+    if u64_field(&manifest, &["publicSignalCount", "public_signal_count"]).is_none() {
+        return Err(ApiError::Validation(
+            "`manifest.publicSignalCount` is required.".into(),
+        ));
+    }
+
+    let new = NewZkArtifact {
+        circuit_id,
+        version,
+        backend: "circom".to_string(),
+        merkle_tree_depth,
+        num_candidates,
+        wasm_uri: body.wasm_uri,
+        zkey_uri: body.zkey_uri,
+        verification_key_uri: body.verification_key_uri,
+        solidity_verifier_uri: body.solidity_verifier_uri,
+        // Representative digest for the artifact set (the zkey is the binding one).
+        sha256: zkey_sha,
+        manifest,
+    };
+
+    let artifact_id = match ZkArtifactRepo::register(&state.pg, &new).await {
+        Ok(id) => id,
+        Err(err) if err.is_unique_violation() => {
+            return Err(coded(
+                409,
+                "ARTIFACT_ALREADY_REGISTERED",
+                "An artifact with this circuitId/version is already registered.",
+            ))
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    Ok((
+        StatusCode::CREATED,
+        Json(RegisterArtifactResponse {
+            success: true,
+            message: "ZK artifact set registered.".to_string(),
+            artifact_id,
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------

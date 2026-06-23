@@ -183,6 +183,22 @@ impl ElectionRepo {
         .await?;
         Ok(updated.rows_affected() == 1)
     }
+
+    /// G4: marks an election superseded (AR-M7 — the on-chain contract is
+    /// deliberately abandoned in place; this writes only the DB row). Idempotent
+    /// and fail-closed: a no-op (Ok(false)) if already superseded or completed.
+    /// Caller MUST hold the per-election finalize lease + the relayer lease so a
+    /// supersede cannot interleave with an in-flight finalize/relay.
+    pub async fn supersede(pool: &PgPool, id: Uuid) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE elections SET superseded_at = now(), state = 'failed' \
+             WHERE id = $1 AND superseded_at IS NULL AND completed = false",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +493,23 @@ pub struct ZkArtifact {
     pub manifest: serde_json::Value,
 }
 
+/// A new artifact set to register (G5). The `manifest` MUST carry the per-file
+/// sha256 fields the `/artifact-info` reader requires, or the verified browser
+/// fetch fails closed — the registration handler validates this before insert.
+pub struct NewZkArtifact {
+    pub circuit_id: String,
+    pub version: String,
+    pub backend: String,
+    pub merkle_tree_depth: i32,
+    pub num_candidates: i32,
+    pub wasm_uri: Option<String>,
+    pub zkey_uri: Option<String>,
+    pub verification_key_uri: Option<String>,
+    pub solidity_verifier_uri: Option<String>,
+    pub sha256: String,
+    pub manifest: serde_json::Value,
+}
+
 pub struct ZkArtifactRepo;
 
 impl ZkArtifactRepo {
@@ -497,6 +530,31 @@ impl ZkArtifactRepo {
         .bind(merkle_tree_depth)
         .bind(num_candidates)
         .fetch_optional(pool)
+        .await?)
+    }
+
+    /// G5: registers an artifact set (the sha256-bearing manifest the verified
+    /// browser fetch needs). The `(circuit_id, version)` pair is unique, so a
+    /// duplicate registration surfaces as a unique violation.
+    pub async fn register(pool: &PgPool, new: &NewZkArtifact) -> Result<Uuid, DbError> {
+        Ok(sqlx::query_scalar(
+            "INSERT INTO zk_artifacts \
+                 (circuit_id, version, backend, merkle_tree_depth, num_candidates, \
+                  wasm_uri, zkey_uri, verification_key_uri, solidity_verifier_uri, sha256, manifest) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
+        )
+        .bind(&new.circuit_id)
+        .bind(&new.version)
+        .bind(&new.backend)
+        .bind(new.merkle_tree_depth)
+        .bind(new.num_candidates)
+        .bind(&new.wasm_uri)
+        .bind(&new.zkey_uri)
+        .bind(&new.verification_key_uri)
+        .bind(&new.solidity_verifier_uri)
+        .bind(&new.sha256)
+        .bind(&new.manifest)
+        .fetch_one(pool)
         .await?)
     }
 }
@@ -582,6 +640,28 @@ impl DeploymentRepo {
 
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// G3: records the verifier address on the election BEFORE the VotingTally
+    /// is deployed, so a tally-stage failure leaves a reusable verifier instead
+    /// of an orphan. Idempotent — returns Ok(false) (no-op) if a verifier is
+    /// already checkpointed, the contract is already bound, or the election was
+    /// superseded in between.
+    pub async fn checkpoint_verifier(
+        pool: &PgPool,
+        election_id: Uuid,
+        verifier_address: &str,
+    ) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE elections SET verifier_address = $2 \
+             WHERE id = $1 AND verifier_address IS NULL \
+               AND contract_address IS NULL AND superseded_at IS NULL",
+        )
+        .bind(election_id)
+        .bind(verifier_address)
+        .execute(pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
     }
 }
 

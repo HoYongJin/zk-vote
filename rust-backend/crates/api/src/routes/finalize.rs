@@ -27,12 +27,6 @@ use zkvote_domain::services::{check_finalization, FinalizationCheck, Finalizatio
 use zkvote_domain::ElectionState;
 use zkvote_zkp::merkle::FixedMerkleTree;
 
-/// One finalization at a time per election: the on-chain `configureElection`
-/// is owner-key-signed and the snapshot advisory lock is released at its
-/// COMMIT, so without this two concurrent finalizes would race the owner
-/// nonce. The TTL releases a crashed holder; the recovery path is idempotent.
-const FINALIZE_LOCK_SECONDS: u64 = 600;
-
 fn coded(status: u16, code: &'static str, details: impl Into<String>) -> ApiError {
     ApiError::Coded {
         status,
@@ -237,8 +231,8 @@ pub async fn finalize(
 
     let lease = leases::acquire(
         &state.redis,
-        format!("election:{election_id}:finalize"),
-        FINALIZE_LOCK_SECONDS,
+        leases::finalize_lease_key(&election_id),
+        leases::FINALIZE_LEASE_SECONDS,
         "FINALIZATION_IN_PROGRESS",
         "Finalization for this election is already in progress.",
     )

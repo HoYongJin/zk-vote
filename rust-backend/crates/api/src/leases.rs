@@ -1,6 +1,19 @@
-//! Single-writer Redis leases. Acquired with `SET NX EX` (a TTL safety net so
-//! a crashed holder cannot wedge the resource forever) and released with a
+//! Single-writer Redis leases. Acquired with `SET NX EX` and released with a
 //! token-checked Lua CAS so only the holder can clear its own lease.
+//!
+//! IMPORTANT (L-lease-double): the TTL is a **crash safety-net, not a bound on
+//! the critical section**. `SET NX EX` gives mutual exclusion only until the TTL
+//! expires, and there is no fencing token — so if a holder runs past the TTL
+//! (e.g. a `get_receipt()` wait that outlasts it) a second caller can acquire
+//! the lease and a brief two-holder window exists. Whole-section exclusivity
+//! therefore rests on **AR-M5 single-instance + the in-process `relay_lock`
+//! mutex**, with downstream on-chain idempotency as the backstop. That backstop
+//! covers the VOTE path (on-chain nullifier uniqueness makes a redundant relay
+//! revert harmlessly); the DEPLOY path is the residual gap — two sends + receipt
+//! waits with no nullifier-style reconciliation, so a TTL-expiry nonce collision
+//! there can orphan a contract. AR-M5 is NOT enforced in code (the staging
+//! deploy script defaults to max-instances=1 but is overridable); if AR-M5 is
+//! ever relaxed to multi-instance, real fencing tokens become load-bearing here.
 
 use crate::error::ApiError;
 use uuid::Uuid;
@@ -11,9 +24,25 @@ use uuid::Uuid;
 /// be single-writer across instances (AR-M5); the in-process `relay_lock` mutex
 /// only covers one process. Both paths must acquire THIS key.
 pub const RELAYER_LEASE_KEY: &str = "chain-relayer:tx";
-/// TTL safety net for the relayer lease: long enough to cover one send +
-/// receipt wait, short enough that a crashed holder frees the relayer.
+/// TTL crash-backstop for the relayer lease (NOT a critical-section bound — see
+/// the module doc). 900s comfortably covers a single send + receipt wait under
+/// normal RPC; the G3 deploy path holds it across two sends + a DB write.
 pub const RELAYER_LEASE_SECONDS: u64 = 900;
+
+/// TTL crash-backstop for the per-election finalize lease. Raised from 600 to
+/// 1800 (L-finalize-ttl) so the owner-key `configureElection` send + receipt
+/// wait cannot outrun the lease under slow RPC. This lease serializes ONLY
+/// same-election finalizes (its key is per-election, and the pg advisory lock is
+/// per-election); the **cross-election** owner-nonce race is bounded by AR-M5
+/// single-instance, NOT by this lease or the idempotent recovery path (finalize
+/// signs with the OWNER key and never takes `RELAYER_LEASE_KEY`).
+pub const FINALIZE_LEASE_SECONDS: u64 = 1800;
+
+/// Per-election finalize lease key. Also taken by the supersede endpoint (G4) so
+/// a supersede cannot interleave with an in-flight finalize.
+pub fn finalize_lease_key(election_id: &Uuid) -> String {
+    format!("election:{election_id}:finalize")
+}
 
 pub struct RedisLease {
     key: String,

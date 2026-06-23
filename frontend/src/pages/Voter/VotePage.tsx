@@ -11,9 +11,9 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from '../../api/axios';
 import { getVoterSecret, clearVoterSecret } from '../../utils/voterSecret';
 import { fetchVerifiedArtifact } from '../../utils/artifactIntegrity';
-import { getApiBaseUrl, resolveArtifactApiPath } from '../../utils/apiBaseUrl';
+import { resolveArtifactApiPath } from '../../utils/apiBaseUrl';
 import { calculateSubmissionJitterMs, delay } from '../../utils/submissionJitter';
-import { errorData, errorMessage as apiErrorMessage, errorStatus } from '../../utils/errors';
+import { errorData, errorMessage as apiErrorMessage } from '../../utils/errors';
 import type { ArtifactInfo, Election, FormattedProof, ProofResponse } from '../../types/domain';
 import type { ProofInputs, WorkerRequest, WorkerResponse } from '../../workers/proof.types';
 
@@ -80,38 +80,25 @@ function VotePage() {
         election_id: '0x' + electionId.replace(/-/g, ''),
       };
 
-      // --- 3. Fetch + verify the proving artifacts (AR-M6) ---
-      const baseURL = getApiBaseUrl();
-      const { merkle_tree_depth, num_candidates } = election;
-      const buildDir = `build_${merkle_tree_depth}_${num_candidates}`;
-
-      let workerPayload: WorkerRequest;
-      let artifactInfo: ArtifactInfo | null = null;
+      // --- 3. Fetch + verify the proving artifacts (AR-M6 / G5: fail closed) ---
+      // A missing/unrecorded manifest is FATAL: we never fall back to fetching
+      // unverified proving artifacts, so a tampered or wrong circuit can never be
+      // fed to the prover. Every deployed election has a sha256 manifest (the
+      // setZkDeploy artifact requires one), so this path is always available.
+      let artifactInfo: ArtifactInfo;
       try {
         const infoResponse = await axios.get<ArtifactInfo>(`/elections/${electionId}/artifact-info`);
         artifactInfo = infoResponse.data;
       } catch (infoError) {
-        if (errorStatus(infoError) !== 404) {
-          throw new Error(`아티팩트 정보를 가져오지 못했습니다: ${apiErrorMessage(infoError)}`);
-        }
-        // Pre-manifest election: no recorded hashes to verify against.
-        console.warn('[VotePage] No artifact hashes recorded for this election; falling back to UNVERIFIED artifact fetch.');
+        throw new Error(`아티팩트 정보를 가져오지 못했습니다: ${apiErrorMessage(infoError)}`);
       }
 
-      if (artifactInfo) {
-        setLoadingMessage('증명 아티팩트 무결성을 검증하는 중...');
-        const [wasmData, zkeyData] = await Promise.all([
-          fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.wasmPath), artifactInfo.wasmSha256, '증명 회로(wasm)'),
-          fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.zkeyPath), artifactInfo.zkeySha256, '증명 키(zkey)'),
-        ]);
-        workerPayload = { inputs, wasmData, zkeyData };
-      } else {
-        workerPayload = {
-          inputs,
-          wasmPath: `${baseURL}/zkp-files/${buildDir}/VoteCheck_temp_js/VoteCheck_temp.wasm`,
-          zkeyPath: `${baseURL}/zkp-files/${buildDir}/circuit_final.zkey`,
-        };
-      }
+      setLoadingMessage('증명 아티팩트 무결성을 검증하는 중...');
+      const [wasmData, zkeyData] = await Promise.all([
+        fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.wasmPath), artifactInfo.wasmSha256, '증명 회로(wasm)'),
+        fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.zkeyPath), artifactInfo.zkeySha256, '증명 키(zkey)'),
+      ]);
+      const workerPayload: WorkerRequest = { inputs, wasmData, zkeyData };
 
       setLoadingMessage(
         <>

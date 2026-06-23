@@ -197,5 +197,8 @@ template Main(depth, numOptions) {
 // signals become, in snarkjs order, the outputs followed by the public inputs:
 //   [root_out, vote_index, nullifier_hash, election_id]  (nPublic = 4)
 // setUpZk.sh rewrites the (depth, candidates) arguments while preserving this
-// `{public [election_id]}` declaration.
-component main {public [election_id]} = Main(3, 3);
+// `{public [election_id]}` declaration. The literal below is a REAL committed
+// build shape (build_4_5), not a phantom, so a direct `circom` compile of this
+// source produces a deployable verifier; check-artifact-schema.sh enforces that
+// it always maps to an existing build_<depth>_<candidates>/ directory.
+component main {public [election_id]} = Main(4, 5);

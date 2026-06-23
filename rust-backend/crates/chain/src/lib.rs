@@ -152,9 +152,51 @@ async fn verify_chain_id(
     Ok(())
 }
 
-/// Deploys the Groth16 verifier and a `VotingTally` bound to it, signed by
-/// the relayer key, with `owner` as the explicit contract owner (AR-M4).
-/// Verifies the live RPC's chain id == `expected_chain_id` before deploying.
+/// Deploys the Groth16 verifier alone, signed by the relayer key. Verifies the
+/// live RPC's chain id == `expected_chain_id` first (fail before spending gas).
+/// Returns `(verifier_address, tx_hash)`.
+pub async fn deploy_verifier(
+    config: &ChainConfig,
+    verifier_bytecode: Vec<u8>,
+    expected_chain_id: u64,
+) -> Result<(Address, String), ChainError> {
+    let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    // §0.5 gap #2: never deploy to the wrong chain (fail before spending gas).
+    verify_chain_id(&provider, expected_chain_id).await?;
+    deploy_bytecode(&provider, verifier_bytecode).await
+}
+
+/// Deploys a `VotingTally` bound to an already-deployed `verifier_address`,
+/// signed by the relayer key, with `owner` as the explicit contract owner (AR-M4).
+///
+/// Re-verifies the live RPC chain id: the G3 idempotent-deploy path may REUSE a
+/// previously-checkpointed verifier and call this directly (skipping
+/// `deploy_verifier`), so this must independently guard against a wrong-chain
+/// deploy rather than relying on a sibling call having done it.
+pub async fn deploy_voting_tally(
+    config: &ChainConfig,
+    voting_tally_bytecode: Vec<u8>,
+    verifier_address: Address,
+    election_id: U256,
+    num_candidates: U256,
+    owner: Address,
+    expected_chain_id: u64,
+) -> Result<(Address, String), ChainError> {
+    let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    verify_chain_id(&provider, expected_chain_id).await?;
+    let mut creation_code = voting_tally_bytecode;
+    creation_code
+        .extend((verifier_address, election_id, num_candidates, owner).abi_encode_params());
+    deploy_bytecode(&provider, creation_code).await
+}
+
+/// Deploys the Groth16 verifier and a `VotingTally` bound to it (verifier first,
+/// then tally), signed by the relayer key, with `owner` as the explicit contract
+/// owner (AR-M4). Convenience wrapper over `deploy_verifier` + `deploy_voting_tally`.
+///
+/// The API deploy path drives the two halves directly (not this wrapper) so it
+/// can checkpoint the verifier address to the DB between the two txs and reuse it
+/// on retry — see G3. This wrapper is for tests and any single-shot caller.
 pub async fn deploy_election(
     config: &ChainConfig,
     verifier_bytecode: Vec<u8>,
@@ -164,16 +206,18 @@ pub async fn deploy_election(
     owner: Address,
     expected_chain_id: u64,
 ) -> Result<DeployedElection, ChainError> {
-    let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
-    // §0.5 gap #2: never deploy to the wrong chain (fail before spending gas).
-    verify_chain_id(&provider, expected_chain_id).await?;
-
-    let (verifier_address, _) = deploy_bytecode(&provider, verifier_bytecode).await?;
-
-    let mut creation_code = voting_tally_bytecode;
-    creation_code
-        .extend((verifier_address, election_id, num_candidates, owner).abi_encode_params());
-    let (voting_tally_address, deploy_tx_hash) = deploy_bytecode(&provider, creation_code).await?;
+    let (verifier_address, _) =
+        deploy_verifier(config, verifier_bytecode, expected_chain_id).await?;
+    let (voting_tally_address, deploy_tx_hash) = deploy_voting_tally(
+        config,
+        voting_tally_bytecode,
+        verifier_address,
+        election_id,
+        num_candidates,
+        owner,
+        expected_chain_id,
+    )
+    .await?;
 
     Ok(DeployedElection {
         verifier_address,

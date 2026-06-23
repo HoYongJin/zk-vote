@@ -90,6 +90,64 @@ async fn election_repo_persists_lifecycle_state_changes() {
 
 #[tokio::test]
 #[ignore = "requires the docker-compose Postgres"]
+async fn checkpoint_verifier_is_idempotent_and_reusable() {
+    // G3: the verifier address is checkpointed between the two deploy txs so a
+    // tally-stage failure leaves a reusable verifier, not an orphan.
+    let pool = pool().await;
+    let election = create_election(&pool).await;
+
+    // First checkpoint writes the address.
+    assert!(
+        DeploymentRepo::checkpoint_verifier(&pool, election.id, "0xverifier1")
+            .await
+            .unwrap()
+    );
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT verifier_address FROM elections WHERE id = $1")
+            .bind(election.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.as_deref(), Some("0xverifier1"));
+
+    // Second checkpoint is a no-op and must NOT overwrite (retry reuses the first).
+    assert!(
+        !DeploymentRepo::checkpoint_verifier(&pool, election.id, "0xverifier2")
+            .await
+            .unwrap()
+    );
+    let stored2: Option<String> =
+        sqlx::query_scalar("SELECT verifier_address FROM elections WHERE id = $1")
+            .bind(election.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored2.as_deref(), Some("0xverifier1"));
+
+    // record_and_bind succeeds on the checkpointed (still-unbound) row; after it,
+    // checkpoint stays a no-op (contract_address now set).
+    assert!(DeploymentRepo::record_and_bind(
+        &pool,
+        election.id,
+        None,
+        "0xverifier1",
+        "0xtally",
+        31337,
+        "0xhash"
+    )
+    .await
+    .unwrap());
+    assert!(
+        !DeploymentRepo::checkpoint_verifier(&pool, election.id, "0xverifier3")
+            .await
+            .unwrap()
+    );
+
+    drop_election(&pool, election.id).await;
+}
+
+#[tokio::test]
+#[ignore = "requires the docker-compose Postgres"]
 async fn superseded_election_lifecycle_writes_fail_closed() {
     let pool = pool().await;
     let election = create_election(&pool).await;
@@ -113,6 +171,12 @@ async fn superseded_election_lifecycle_writes_fail_closed() {
             .await
             .unwrap(),
         "deployment metadata insert must not win for a superseded row"
+    );
+    assert!(
+        !DeploymentRepo::checkpoint_verifier(&pool, election.id, "0xdef")
+            .await
+            .unwrap(),
+        "verifier checkpoint must not write to a superseded row"
     );
     assert!(
         !ElectionRepo::finalize_sync(&pool, election.id, "42", now, now, now + Duration::hours(1))
