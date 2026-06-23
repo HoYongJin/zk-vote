@@ -22,10 +22,10 @@ infra, the Supabase Auth→GCP Identity Platform swap, and the Supabase→Cloud 
 ETL (see `docs/PROJECT_PLAN.md`). Nothing runs on real GCP infrastructure yet;
 this is local-demo/dev-only.
 
-**Frontend hosting:** the committed frontend CD currently targets legacy AWS
-S3/CloudFront (`frontend/buildspec.yml`, `.github/workflows/deploy-frontend.yml`),
-while the backend moves to GCP. The post-cutover frontend hosting target is an
-open decision (see `docs/TECH_STACK.md` §6).
+**Frontend hosting:** Firebase Hosting (`firebase.json`,
+`.github/workflows/deploy-frontend-firebase.yml`), alongside the GCP backend. The
+legacy AWS S3/CloudFront CD has been removed. The deployed origin must be allowed
+in the Cloud Run `CORS_ALLOWED_ORIGINS`.
 
 ## Important Docs
 

@@ -5,8 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   build: {
-    // Keep CRA's output directory so the existing CD artifact path
-    // (buildspec.yml base-directory: build) keeps working post-migration.
+    // Output to 'build' to match firebase.json hosting.public ('frontend/build').
     outDir: 'build',
     // 'hidden' emits source maps (for CI/error tracking) but adds no
     // sourceMappingURL comment, so browsers don't auto-fetch them; firebase.json

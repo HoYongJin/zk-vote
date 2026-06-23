@@ -1,7 +1,7 @@
 name: Deploy Frontend to Firebase Hosting
 
-# PROJECT_PLAN Phase 16/18: this REPLACES the legacy AWS S3/CloudFront CD
-# (deploy-frontend.yml). It is workflow_dispatch-only until Phase 18 provisions
+# PROJECT_PLAN Phase 16/18: the confirmed frontend CD (Firebase Hosting). It
+# replaced the now-removed legacy AWS S3/CloudFront path. workflow_dispatch-only until Phase 18 provisions
 # the GCP/Firebase project + secrets — running it before then will fail at the
 # auth/deploy step (the zkvote-staging Firebase project does not exist yet).
 #

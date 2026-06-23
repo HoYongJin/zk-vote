@@ -29,7 +29,7 @@ jobs:
         run: find scripts zk -name '*.sh' -print0 | xargs -0 bash -n
       - name: Deploy install policy gate (AR-H8)
         run: |
-          if grep -R -n -E 'npm[[:space:]]+install' .github/workflows frontend/buildspec.yml; then
+          if grep -R -n -E 'npm[[:space:]]+install' .github/workflows; then
             echo "Deploy/build paths must use npm ci against committed lockfiles." >&2
             exit 1
           fi
