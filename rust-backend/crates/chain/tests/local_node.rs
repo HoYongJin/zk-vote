@@ -49,7 +49,7 @@ async fn deploys_and_enforces_owner_separation() {
     // Deploy verifier + VotingTally, signed by the RELAYER, owned by OWNER.
     let deployed = deploy_election(
         &config,
-        bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+        bytecode("out/Groth16Verifier_4_10.sol/Groth16Verifier_4_10.json"),
         bytecode("out/VotingTally.sol/VotingTally.json"),
         U256::from(123u64),
         U256::from(5u64),
@@ -140,7 +140,7 @@ async fn refuses_to_deploy_on_a_chain_id_mismatch() {
 
     let err = deploy_election(
         &config,
-        bytecode("out/Groth16Verifier_4_5.sol/Groth16Verifier_4_5.json"),
+        bytecode("out/Groth16Verifier_4_10.sol/Groth16Verifier_4_10.json"),
         bytecode("out/VotingTally.sol/VotingTally.json"),
         U256::from(123u64),
         U256::from(5u64),

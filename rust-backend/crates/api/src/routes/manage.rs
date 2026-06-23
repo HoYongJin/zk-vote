@@ -1092,7 +1092,7 @@ mod tests {
                 "gs://bucket/circuits/votecheck/v1/verification_key.json".to_string(),
             ),
             solidity_verifier_uri: Some(
-                "gs://bucket/circuits/votecheck/v1/Groth16Verifier_4_5.sol".to_string(),
+                "gs://bucket/circuits/votecheck/v1/Groth16Verifier_4_10.sol".to_string(),
             ),
             sha256: "0".repeat(64),
             manifest,
@@ -1228,7 +1228,7 @@ mod tests {
         }
         let base = base.to_str().unwrap();
 
-        let (verifier, tally) = deployment_bytecodes(base, 4, 5).unwrap();
+        let (verifier, tally) = deployment_bytecodes(base, 4, 10).unwrap();
 
         assert!(!verifier.is_empty());
         assert!(!tally.is_empty());

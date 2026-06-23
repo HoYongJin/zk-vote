@@ -83,7 +83,7 @@ if is_dry_run; then
    project         : ${PROJECT_ID}    region: ${REGION}
    redis backend   : ${REDIS_BACKEND} -> ${redis_plan}
    cloud sql       : ${SQL_INSTANCE} (${SQL_TIER}, ${SQL_STORAGE_TYPE}, ${SQL_STORAGE_SIZE}GB, ZONAL, ${backups_plan})
-   artifact bucket : gs://${BUCKET}  (seeded byte-exact from zk/build_4_5 + zk/build_5_4, sha256-verified)
+   artifact bucket : gs://${BUCKET}  (seeded byte-exact from zk/build_{4,6,8,10}_10, sha256-verified)
    runtime SA      : ${SERVICE_ACCOUNT_EMAIL}  (storage.objectViewer + cloudsql.client + log/metric writer)
 
 Would idempotently ensure, in order:

@@ -3,8 +3,8 @@
 # checksum against the values published in the snarkjs README (audit M2).
 #
 # Usage: bash scripts/local/fetch-ptau.sh <12|16|20>
-#   12 -> Merkle depth <= 5    (build_4_5 / build_5_4)
-#   16 -> Merkle depth <= 10
+#   12 -> Merkle depth <= 5    (padded grid: build_4_10)
+#   16 -> Merkle depth <= 10   (padded grid: build_6_10 / build_8_10 / build_10_10)
 #   20 -> Merkle depth <= 20
 #
 # Fails closed: if the checksum cannot be computed or does not match, the

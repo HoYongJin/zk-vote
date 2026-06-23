@@ -66,10 +66,10 @@ echo "[2] GCS proving artifacts (served bytes == committed zk/ bytes, invariant 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 ARTS=(
-  "build_4_5/circuit_final.zkey"
-  "build_4_5/VoteCheck_temp_js/VoteCheck_temp.wasm"
-  "build_5_4/circuit_final.zkey"
-  "build_5_4/VoteCheck_temp_js/VoteCheck_temp.wasm"
+  "build_4_10/circuit_final.zkey"
+  "build_4_10/VoteCheck_temp_js/VoteCheck_temp.wasm"
+  "build_10_10/circuit_final.zkey"
+  "build_10_10/VoteCheck_temp_js/VoteCheck_temp.wasm"
 )
 for rel in "${ARTS[@]}"; do
   url="${BASE_URL}/api/zkp-files/${rel}"

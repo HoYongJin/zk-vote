@@ -23,7 +23,7 @@ PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 
 PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-staging-26c4d8}}"
 BUCKET="${BUCKET:-${ARTIFACT_BUCKET:-zkvote-staging-artifacts-${PROJECT_ID}}}"
-BUILD_DIRS=("build_4_5" "build_5_4")
+BUILD_DIRS=("build_4_10" "build_6_10" "build_8_10" "build_10_10")
 ARTIFACT_FILES=(
   "circuit_final.zkey"
   "verification_key.json"

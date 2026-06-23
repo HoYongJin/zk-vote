@@ -66,6 +66,29 @@ for verifier in "${verifiers[@]}"; do
   fi
 done
 
+# B6 (padded grid): the supported shapes are EXACTLY the {4,6,8,10} depths at
+# candidate width 10. Fail on any shape outside this set (e.g. a stray build_*_5
+# left from the old per-candidate matrix) and on any missing expected depth, so
+# the grid can never silently drift.
+expected_shapes="4_10 6_10 8_10 10_10"
+found_shapes=""
+for vk in zk/build_*/verification_key.json; do
+  [ -f "$vk" ] || continue
+  s=$(basename "$(dirname "$vk")"); s=${s#build_}
+  found_shapes="${found_shapes} ${s}"
+  case " ${expected_shapes} " in
+    *" ${s} "*) ;;
+    *) echo "FAIL: unexpected build shape build_${s} — the padded grid is only {4,6,8,10} x width 10" >&2; exit 1 ;;
+  esac
+done
+for want in ${expected_shapes}; do
+  case " ${found_shapes} " in
+    *" ${want} "*) ;;
+    *) echo "FAIL: missing expected padded shape build_${want}" >&2; exit 1 ;;
+  esac
+done
+echo "ok: padded grid = {4,6,8,10} x width 10"
+
 # G6: the committed `component main = Main(depth, candidates)` literal must map
 # to a real built shape. setUpZk.sh sed-rewrites this line at build time, but a
 # direct `circom` compile uses the literal — it must be a deployable shape, not a
