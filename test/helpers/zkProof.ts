@@ -1,5 +1,5 @@
 /**
- * @file test/helpers/zkProof.js
+ * @file test/helpers/zkProof.ts
  * @desc Test helpers that build real ZK proof inputs for the VoteCheck circuit,
  * mirroring the production Merkle/leaf/nullifier derivation in the Rust
  * `zkvote-zkp` crate + the VoteCheck circuit (same Poseidon, same ZERO_ELEMENT,
@@ -7,10 +7,15 @@
  * end to end (election binding + path-index booleanity).
  */
 
-const path = require("path");
-const snarkjs = require("snarkjs");
-const { buildPoseidon } = require("circomlibjs");
-const { MerkleTree } = require("fixed-merkle-tree");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import snarkjs from "snarkjs";
+import { buildPoseidon } from "circomlibjs";
+import { MerkleTree } from "fixed-merkle-tree";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Must match the Rust `zkvote-zkp` crate + the circuit exactly so the off-chain tree and the
 // circuit agree on the root.
@@ -19,7 +24,13 @@ const ZERO_ELEMENT =
 
 const ZKP_DIR = path.join(__dirname, "..", "..", "zk");
 
-function buildPaths(depth, candidates) {
+interface BuildPaths {
+    wasm: string;
+    zkey: string;
+    vkey: string;
+}
+
+function buildPaths(depth: number, candidates: number): BuildPaths {
     const buildDir = path.join(ZKP_DIR, `build_${depth}_${candidates}`);
     return {
         wasm: path.join(buildDir, "VoteCheck_temp_js", "VoteCheck_temp.wasm"),
@@ -28,15 +39,15 @@ function buildPaths(depth, candidates) {
     };
 }
 
-let poseidonPromise = null;
-async function getPoseidon() {
+let poseidonPromise: Promise<any> | null = null;
+async function getPoseidon(): Promise<any> {
     if (!poseidonPromise) {
         poseidonPromise = buildPoseidon();
     }
     return poseidonPromise;
 }
 
-async function poseidonHash(values) {
+async function poseidonHash(values: Array<string | bigint | number>): Promise<string> {
     const poseidon = await getPoseidon();
     return poseidon.F.toString(poseidon(values.map((v) => BigInt(v))));
 }
@@ -44,14 +55,17 @@ async function poseidonHash(values) {
 /**
  * Builds the field-element leaf for a secret: H(secret).
  */
-async function leafFor(secret) {
+async function leafFor(secret: string | bigint | number): Promise<string> {
     return poseidonHash([secret]);
 }
 
 /**
  * Builds the nullifier for (secret, electionId): H(secret, electionId).
  */
-async function nullifierFor(secret, electionId) {
+async function nullifierFor(
+    secret: string | bigint | number,
+    electionId: string | bigint | number
+): Promise<string> {
     return poseidonHash([secret, electionId]);
 }
 
@@ -59,14 +73,17 @@ async function nullifierFor(secret, electionId) {
  * Builds a Merkle tree from a list of secrets and returns helpers for proof
  * generation.
  */
-async function buildTree(depth, secrets) {
+async function buildTree(
+    depth: number,
+    secrets: Array<string | bigint | number>
+): Promise<{ tree: any; leaves: string[] }> {
     const poseidon = await getPoseidon();
-    const leaves = [];
+    const leaves: string[] = [];
     for (const s of secrets) {
         leaves.push(await leafFor(s));
     }
     const tree = new MerkleTree(depth, leaves, {
-        hashFunction: (a, b) => poseidon.F.toString(poseidon([a, b])),
+        hashFunction: (a: any, b: any) => poseidon.F.toString(poseidon([a, b])),
         zeroElement: ZERO_ELEMENT,
     });
     return { tree, leaves };
@@ -91,7 +108,15 @@ async function buildCircuitInput({
     voteIndex,
     secrets,
     overrides = {},
-}) {
+}: {
+    depth: number;
+    candidates: number;
+    secret: string | bigint | number;
+    electionId: string | bigint | number;
+    voteIndex: number;
+    secrets?: Array<string | bigint | number>;
+    overrides?: Record<string, any>;
+}): Promise<{ input: Record<string, any>; tree: any; leaves: string[]; proofPath: any }> {
     const allSecrets = secrets || [secret];
     const { tree, leaves } = await buildTree(depth, allSecrets);
 
@@ -109,7 +134,7 @@ async function buildCircuitInput({
         root_in: tree.root.toString(),
         user_secret: BigInt(secret).toString(),
         vote,
-        pathElements: proof.pathElements.map((e) => e.toString()),
+        pathElements: proof.pathElements.map((e: any) => e.toString()),
         pathIndices: proof.pathIndices.slice(),
         election_id: BigInt(electionId).toString(),
         ...overrides,
@@ -122,14 +147,19 @@ async function buildCircuitInput({
  * Generates a full Groth16 proof for the given input and returns the snarkjs
  * proof + publicSignals (verbatim snarkjs order).
  */
-async function fullProve(input, depth, candidates) {
+async function fullProve(input: Record<string, any>, depth: number, candidates: number): Promise<any> {
     const { wasm, zkey } = buildPaths(depth, candidates);
     return snarkjs.groth16.fullProve(input, wasm, zkey);
 }
 
-async function verifyProof(publicSignals, proof, depth, candidates) {
+async function verifyProof(
+    publicSignals: any,
+    proof: any,
+    depth: number,
+    candidates: number
+): Promise<any> {
     const { vkey } = buildPaths(depth, candidates);
-    const vk = require(vkey);
+    const vk = JSON.parse(fs.readFileSync(vkey, "utf8"));
     return snarkjs.groth16.verify(vk, publicSignals, proof);
 }
 
@@ -137,15 +167,15 @@ async function verifyProof(publicSignals, proof, depth, candidates) {
  * Formats a snarkjs proof for the Solidity verifier (a, b, c), matching
  * frontend VotePage.js (note the b-coordinate reversal).
  */
-function formatProofForSolidity(proof) {
+function formatProofForSolidity(proof: any): { a: any; b: any; c: any } {
     return {
         a: proof.pi_a.slice(0, 2),
-        b: proof.pi_b.slice(0, 2).map((row) => row.slice().reverse()),
+        b: proof.pi_b.slice(0, 2).map((row: any) => row.slice().reverse()),
         c: proof.pi_c.slice(0, 2),
     };
 }
 
-module.exports = {
+export {
     ZERO_ELEMENT,
     buildPaths,
     getPoseidon,

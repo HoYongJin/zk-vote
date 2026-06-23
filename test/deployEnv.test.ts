@@ -1,8 +1,8 @@
-const { expect } = require("chai");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { loadDeployEnv } = require("../scripts/deployEnv");
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { loadDeployEnv } from "../scripts/deployEnv";
 
 describe("deploy env loader", function () {
     const trackedKeys = [
@@ -12,8 +12,8 @@ describe("deploy env loader", function () {
         "SUPABASE_SERVICE_ROLE_KEY",
         "SUPABASE_KEY",
     ];
-    let previousEnv;
-    let tempDir;
+    let previousEnv: Record<string, string | undefined>;
+    let tempDir: string;
 
     beforeEach(function () {
         previousEnv = {};
@@ -57,11 +57,11 @@ describe("deploy env loader", function () {
 
         const applied = loadDeployEnv({ rootEnvPath, serverEnvPath });
 
-        expect(process.env.PRIVATE_KEY).to.equal("0xroot");
-        expect(process.env.SEPOLIA_RPC_URL).to.equal("https://root-rpc.example");
-        expect(process.env.SUPABASE_URL).to.equal("https://server.supabase.co");
-        expect(process.env.SUPABASE_SERVICE_ROLE_KEY).to.equal("server-service-role");
-        expect(applied).to.deep.equal({
+        expect(process.env.PRIVATE_KEY).toBe("0xroot");
+        expect(process.env.SEPOLIA_RPC_URL).toBe("https://root-rpc.example");
+        expect(process.env.SUPABASE_URL).toBe("https://server.supabase.co");
+        expect(process.env.SUPABASE_SERVICE_ROLE_KEY).toBe("server-service-role");
+        expect(applied).toEqual({
             SUPABASE_URL: "https://server.supabase.co",
             SUPABASE_SERVICE_ROLE_KEY: "server-service-role",
         });
@@ -83,11 +83,11 @@ describe("deploy env loader", function () {
 
         const applied = loadDeployEnv({ rootEnvPath, serverEnvPath });
 
-        expect(process.env.PRIVATE_KEY).to.equal("0xroot");
-        expect(process.env.SUPABASE_URL).to.equal("https://server.supabase.co");
-        expect(process.env.SUPABASE_SERVICE_ROLE_KEY).to.equal(undefined);
-        expect(process.env.SUPABASE_KEY).to.equal(undefined);
-        expect(applied).to.deep.equal({
+        expect(process.env.PRIVATE_KEY).toBe("0xroot");
+        expect(process.env.SUPABASE_URL).toBe("https://server.supabase.co");
+        expect(process.env.SUPABASE_SERVICE_ROLE_KEY).toBe(undefined);
+        expect(process.env.SUPABASE_KEY).toBe(undefined);
+        expect(applied).toEqual({
             SUPABASE_URL: "https://server.supabase.co",
         });
     });
@@ -107,10 +107,10 @@ describe("deploy env loader", function () {
 
         const applied = loadDeployEnv({ rootEnvPath, serverEnvPath });
 
-        expect(process.env.PRIVATE_KEY).to.equal("0xroot");
-        expect(process.env.SEPOLIA_RPC_URL).to.equal("https://root-rpc.example");
-        expect(process.env.SUPABASE_SERVICE_ROLE_KEY).to.equal("server-service-role");
-        expect(applied).to.deep.equal({
+        expect(process.env.PRIVATE_KEY).toBe("0xroot");
+        expect(process.env.SEPOLIA_RPC_URL).toBe("https://root-rpc.example");
+        expect(process.env.SUPABASE_SERVICE_ROLE_KEY).toBe("server-service-role");
+        expect(applied).toEqual({
             SUPABASE_SERVICE_ROLE_KEY: "server-service-role",
         });
     });

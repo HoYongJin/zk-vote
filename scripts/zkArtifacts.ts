@@ -1,5 +1,5 @@
 /**
- * @file scripts/zkArtifacts.js
+ * @file scripts/zkArtifacts.ts
  * @desc Binds deployed elections to the exact ZK artifacts (zkey/vkey/wasm)
  * they were deployed with (audit M5). Artifacts are keyed on disk only by
  * (depth, candidates); if any artifact is regenerated, the new zkey carries
@@ -12,14 +12,50 @@
  * GCS artifact manifest.
  */
 
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const DEFAULT_ZKP_DIR = path.join(__dirname, "..", "zk");
 const DEFAULT_MANIFEST_PATH = path.join(DEFAULT_ZKP_DIR, "artifact-manifest.json");
 
-function artifactPathsFor(zkpDir, depth, numCandidates) {
+interface ArtifactPaths {
+    zkeyPath: string;
+    verificationKeyPath: string;
+    wasmPath: string;
+}
+
+interface ArtifactHashes {
+    zkeySha256: string;
+    verificationKeySha256: string;
+    wasmSha256: string;
+}
+
+interface ManifestEntry {
+    merkleTreeDepth: number;
+    numCandidates: number;
+    contractAddress: string | null;
+    verifierAddress: string | null;
+    zkeySha256: string;
+    verificationKeySha256: string;
+    wasmSha256: string;
+    recordedAt: string;
+}
+
+type Manifest = Record<string, ManifestEntry>;
+
+interface VerifyResult {
+    ok: boolean;
+    checked: boolean;
+    mismatches?: string[];
+    reason?: string;
+}
+
+function artifactPathsFor(zkpDir: string, depth: number, numCandidates: number): ArtifactPaths {
     const buildDir = path.join(zkpDir, `build_${depth}_${numCandidates}`);
     return {
         zkeyPath: path.join(buildDir, "circuit_final.zkey"),
@@ -28,7 +64,7 @@ function artifactPathsFor(zkpDir, depth, numCandidates) {
     };
 }
 
-function sha256File(filePath) {
+function sha256File(filePath: string): string {
     const hash = crypto.createHash("sha256");
     hash.update(fs.readFileSync(filePath));
     return hash.digest("hex");
@@ -38,7 +74,11 @@ function sha256File(filePath) {
  * Computes sha256 hashes for the three proving-critical artifacts of a
  * (depth, candidates) build. Throws if any artifact file is missing.
  */
-function computeArtifactHashes(depth, numCandidates, { zkpDir = DEFAULT_ZKP_DIR } = {}) {
+function computeArtifactHashes(
+    depth: number,
+    numCandidates: number,
+    { zkpDir = DEFAULT_ZKP_DIR }: { zkpDir?: string } = {}
+): ArtifactHashes {
     const paths = artifactPathsFor(zkpDir, depth, numCandidates);
     const missing = Object.values(paths).filter((p) => !fs.existsSync(p));
     if (missing.length > 0) {
@@ -55,7 +95,7 @@ function computeArtifactHashes(depth, numCandidates, { zkpDir = DEFAULT_ZKP_DIR 
     };
 }
 
-function readManifest(manifestPath = DEFAULT_MANIFEST_PATH) {
+function readManifest(manifestPath: string = DEFAULT_MANIFEST_PATH): Manifest {
     if (!fs.existsSync(manifestPath)) {
         return {};
     }
@@ -67,7 +107,7 @@ function readManifest(manifestPath = DEFAULT_MANIFEST_PATH) {
     return parsed;
 }
 
-function writeManifest(manifest, manifestPath = DEFAULT_MANIFEST_PATH) {
+function writeManifest(manifest: Manifest, manifestPath: string = DEFAULT_MANIFEST_PATH): void {
     const tmpPath = `${manifestPath}.tmp`;
     fs.writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`);
     fs.renameSync(tmpPath, manifestPath);
@@ -78,10 +118,24 @@ function writeManifest(manifest, manifestPath = DEFAULT_MANIFEST_PATH) {
  * scripts/deployAll.js immediately after the contract address is persisted.
  */
 function recordElectionArtifacts(
-    electionId,
-    { merkleTreeDepth, numCandidates, contractAddress = null, verifierAddress = null },
-    { zkpDir = DEFAULT_ZKP_DIR, manifestPath = DEFAULT_MANIFEST_PATH, now = () => new Date().toISOString() } = {}
-) {
+    electionId: string,
+    {
+        merkleTreeDepth,
+        numCandidates,
+        contractAddress = null,
+        verifierAddress = null,
+    }: {
+        merkleTreeDepth: number;
+        numCandidates: number;
+        contractAddress?: string | null;
+        verifierAddress?: string | null;
+    },
+    {
+        zkpDir = DEFAULT_ZKP_DIR,
+        manifestPath = DEFAULT_MANIFEST_PATH,
+        now = () => new Date().toISOString(),
+    }: { zkpDir?: string; manifestPath?: string; now?: () => string } = {}
+): ManifestEntry {
     const hashes = computeArtifactHashes(merkleTreeDepth, numCandidates, { zkpDir });
     const manifest = readManifest(manifestPath);
 
@@ -107,23 +161,26 @@ function recordElectionArtifacts(
  *    (pre-manifest deployment); callers should not block on it.
  */
 function verifyElectionArtifacts(
-    electionId,
-    { zkpDir = DEFAULT_ZKP_DIR, manifestPath = DEFAULT_MANIFEST_PATH } = {}
-) {
+    electionId: string,
+    {
+        zkpDir = DEFAULT_ZKP_DIR,
+        manifestPath = DEFAULT_MANIFEST_PATH,
+    }: { zkpDir?: string; manifestPath?: string } = {}
+): VerifyResult {
     const manifest = readManifest(manifestPath);
     const entry = manifest[electionId];
     if (!entry) {
         return { ok: true, checked: false };
     }
 
-    let current;
+    let current: ArtifactHashes;
     try {
         current = computeArtifactHashes(entry.merkleTreeDepth, entry.numCandidates, { zkpDir });
     } catch (err) {
-        return { ok: false, checked: true, reason: err.message };
+        return { ok: false, checked: true, reason: (err as Error).message };
     }
 
-    const mismatches = ["zkeySha256", "verificationKeySha256", "wasmSha256"]
+    const mismatches = (["zkeySha256", "verificationKeySha256", "wasmSha256"] as const)
         .filter((field) => entry[field] !== current[field]);
 
     if (mismatches.length > 0) {
@@ -138,7 +195,7 @@ function verifyElectionArtifacts(
     return { ok: true, checked: true };
 }
 
-module.exports = {
+export {
     DEFAULT_MANIFEST_PATH,
     DEFAULT_ZKP_DIR,
     computeArtifactHashes,

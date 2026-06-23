@@ -1,20 +1,20 @@
-const { expect } = require("chai");
-const {
+import { describe, it, expect } from "vitest";
+import {
     checksum,
     deriveElectionState,
     isDecimalFieldElementString,
     sourceOrderForTable,
     ELECTION_CHECKSUM_KEYS,
     VOTER_CHECKSUM_KEYS,
-} = require("../scripts/migration/etl-supabase-to-postgres");
+} from "../scripts/migration/etl-supabase-to-postgres";
 
 describe("cutover ETL checksums", function () {
     it("uses deterministic source pagination order for every migrated table", function () {
-        expect(sourceOrderForTable("Elections")).to.equal("id");
-        expect(sourceOrderForTable("Voters")).to.equal("id");
-        expect(sourceOrderForTable("Admins")).to.equal("id");
-        expect(sourceOrderForTable("AdminInvitations")).to.equal("email");
-        expect(() => sourceOrderForTable("UnknownTable")).to.throw(
+        expect(sourceOrderForTable("Elections")).toBe("id");
+        expect(sourceOrderForTable("Voters")).toBe("id");
+        expect(sourceOrderForTable("Admins")).toBe("id");
+        expect(sourceOrderForTable("AdminInvitations")).toBe("email");
+        expect(() => sourceOrderForTable("UnknownTable")).toThrow(
             "No deterministic source order configured"
         );
     });
@@ -43,12 +43,12 @@ describe("cutover ETL checksums", function () {
             registration_end_time: new Date(source[0].registration_end_time),
         }];
 
-        expect(checksum(target, ELECTION_CHECKSUM_KEYS)).to.equal(
+        expect(checksum(target, ELECTION_CHECKSUM_KEYS)).toBe(
             checksum(source, ELECTION_CHECKSUM_KEYS)
         );
 
         const changed = [{ ...source[0], num_candidates: 3 }];
-        expect(checksum(changed, ELECTION_CHECKSUM_KEYS)).to.not.equal(
+        expect(checksum(changed, ELECTION_CHECKSUM_KEYS)).not.toBe(
             checksum(source, ELECTION_CHECKSUM_KEYS)
         );
 
@@ -57,7 +57,7 @@ describe("cutover ETL checksums", function () {
             state: "failed",
             superseded_at: "2026-06-12T12:00:00.000Z",
         }];
-        expect(checksum(superseded, ELECTION_CHECKSUM_KEYS)).to.not.equal(
+        expect(checksum(superseded, ELECTION_CHECKSUM_KEYS)).not.toBe(
             checksum(source, ELECTION_CHECKSUM_KEYS)
         );
     });
@@ -87,7 +87,7 @@ describe("cutover ETL checksums", function () {
             superseded_at: new Date(source[0].superseded_at),
         }];
 
-        expect(checksum(target, ELECTION_CHECKSUM_KEYS)).to.equal(
+        expect(checksum(target, ELECTION_CHECKSUM_KEYS)).toBe(
             checksum(source, ELECTION_CHECKSUM_KEYS)
         );
     });
@@ -103,7 +103,7 @@ describe("cutover ETL checksums", function () {
         }];
         const changed = [{ ...source[0], name: "Different Voter" }];
 
-        expect(checksum(changed, VOTER_CHECKSUM_KEYS)).to.not.equal(
+        expect(checksum(changed, VOTER_CHECKSUM_KEYS)).not.toBe(
             checksum(source, VOTER_CHECKSUM_KEYS)
         );
     });
@@ -113,16 +113,16 @@ describe("cutover ETL checksums", function () {
         const rowA = [{ left: "x|right=y", right: "z" }];
         const rowB = [{ left: "x", right: "y|right=z" }];
 
-        expect(checksum(rowA, keys)).to.not.equal(checksum(rowB, keys));
+        expect(checksum(rowA, keys)).not.toBe(checksum(rowB, keys));
     });
 
     it("requires ETL field elements to match the decimal-only target schema", function () {
-        expect(isDecimalFieldElementString("123")).to.equal(true);
-        expect(isDecimalFieldElementString("0x7b")).to.equal(false);
-        expect(isDecimalFieldElementString("-1")).to.equal(false);
+        expect(isDecimalFieldElementString("123")).toBe(true);
+        expect(isDecimalFieldElementString("0x7b")).toBe(false);
+        expect(isDecimalFieldElementString("-1")).toBe(false);
         expect(isDecimalFieldElementString(
             "21888242871839275222246405745257275088548364400416034343698204186575808495617"
-        )).to.equal(false);
+        )).toBe(false);
     });
 
     it("derives canonical target states from migrated Node fields", function () {
@@ -130,22 +130,22 @@ describe("cutover ETL checksums", function () {
 
         expect(deriveElectionState({
             registration_end_time: "2026-06-13T00:00:00.000Z",
-        }, now)).to.equal("registration_open");
+        }, now)).toBe("registration_open");
         expect(deriveElectionState({
             contract_address: "0xabc",
             registration_end_time: "2026-06-13T00:00:00.000Z",
-        }, now)).to.equal("contract_deployed");
+        }, now)).toBe("contract_deployed");
         expect(deriveElectionState({
             merkle_root: "42",
             voting_start_time: "2026-06-12T11:00:00.000Z",
             voting_end_time: "2026-06-12T13:00:00.000Z",
-        }, now)).to.equal("voting_active");
+        }, now)).toBe("voting_active");
         expect(deriveElectionState({
             completed: true,
-        }, now)).to.equal("completed");
+        }, now)).toBe("completed");
         expect(deriveElectionState({
             superseded_at: "2026-06-12T11:00:00.000Z",
             completed: true,
-        }, now)).to.equal("failed");
+        }, now)).toBe("failed");
     });
 });

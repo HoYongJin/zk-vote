@@ -1,5 +1,5 @@
 /**
- * @file scripts/migration/etl-supabase-to-postgres.js
+ * @file scripts/migration/etl-supabase-to-postgres.ts
  * @desc One-time cutover ETL (PROJECT_PLAN Phase 20, architecture review
  * AR-H3): copies the hosted-Supabase PascalCase tables into the snake_case
  * Cloud SQL schema (docs/DATA_MODEL.md §1 mapping), then verifies row
@@ -18,12 +18,17 @@
  * nothing. Idempotency: rows are upserted by primary key; re-runs converge.
  */
 
-const crypto = require("crypto");
-const { Client } = require("pg");
-const { isFieldElementString } = require("./fieldElement");
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import pg from "pg";
+import { isFieldElementString } from "./fieldElement";
+
+const { Client } = pg;
+
+type Row = Record<string, any>;
 
 const DRY_RUN = process.argv.includes("--dry-run");
-let supabaseClient;
+let supabaseClient: any;
 const ELECTION_BASE_COLUMNS = [
     "id",
     "name",
@@ -57,21 +62,21 @@ const ELECTION_CHECKSUM_KEYS = [
     "completed",
 ];
 const VOTER_CHECKSUM_KEYS = ["id", "election_id", "email", "user_id", "name", "user_secret"];
-const SOURCE_TABLE_ORDER = {
+const SOURCE_TABLE_ORDER: Record<string, string> = {
     Elections: "id",
     Voters: "id",
     Admins: "id",
     AdminInvitations: "email",
 };
 
-function canonicalTimestamp(value) {
+function canonicalTimestamp(value: unknown): string {
     if (value == null || value === "") return "";
     if (value instanceof Date) return value.toISOString();
-    const parsed = new Date(value);
+    const parsed = new Date(value as string | number);
     return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
 }
 
-function canonicalJson(value) {
+function canonicalJson(value: unknown): string {
     if (value == null || value === "") return "";
     if (typeof value === "string") {
         try {
@@ -83,14 +88,14 @@ function canonicalJson(value) {
     return JSON.stringify(value);
 }
 
-function canonicalValue(key, value) {
+function canonicalValue(key: string, value: unknown): string {
     if (key.endsWith("_time") || key.endsWith("_at")) return canonicalTimestamp(value);
     if (key === "candidates") return canonicalJson(value);
     if (typeof value === "boolean") return value ? "true" : "false";
     return value === undefined || value === null ? "" : String(value);
 }
 
-function checksum(rows, keys) {
+function checksum(rows: Row[], keys: string[]): string {
     // Order-independent content hash: hash each row's canonical projection,
     // sort the digests, hash the concatenation.
     const digests = rows
@@ -104,7 +109,7 @@ function checksum(rows, keys) {
     return crypto.createHash("sha256").update(digests.join("\n")).digest("hex");
 }
 
-function normalizeElectionForChecksum(election) {
+function normalizeElectionForChecksum(election: Row): Row {
     return {
         ...election,
         state: election.state || deriveElectionState(election),
@@ -114,12 +119,12 @@ function normalizeElectionForChecksum(election) {
     };
 }
 
-function isDecimalFieldElementString(value) {
+function isDecimalFieldElementString(value: unknown): boolean {
     const normalized = String(value);
     return /^[0-9]+$/.test(normalized) && isFieldElementString(normalized);
 }
 
-function deriveElectionState(election, now = new Date()) {
+function deriveElectionState(election: Row, now: Date = new Date()): string {
     if (election.superseded_at) return "failed";
     if (Boolean(election.completed)) return "completed";
 
@@ -139,14 +144,14 @@ function deriveElectionState(election, now = new Date()) {
     return "draft";
 }
 
-function getSupabase() {
+async function getSupabase(): Promise<any> {
     if (!supabaseClient) {
-        supabaseClient = require("./supabaseClient");
+        supabaseClient = (await import("./supabaseClient")).default;
     }
     return supabaseClient;
 }
 
-function sourceOrderForTable(table) {
+function sourceOrderForTable(table: string): string {
     const orderBy = SOURCE_TABLE_ORDER[table];
     if (!orderBy) {
         throw new Error(`No deterministic source order configured for ${table}`);
@@ -154,12 +159,12 @@ function sourceOrderForTable(table) {
     return orderBy;
 }
 
-async function fetchAll(table, columns) {
+async function fetchAll(table: string, columns: string): Promise<Row[]> {
     const pageSize = 1000;
-    const rows = [];
+    const rows: Row[] = [];
     const orderBy = sourceOrderForTable(table);
     for (let from = 0; ; from += pageSize) {
-        const { data, error } = await getSupabase()
+        const { data, error } = await (await getSupabase())
             .from(table)
             .select(columns)
             .order(orderBy, { ascending: true })
@@ -171,20 +176,20 @@ async function fetchAll(table, columns) {
     return rows;
 }
 
-function isMissingColumnError(err, column) {
+function isMissingColumnError(err: any, column: string): boolean {
     const message = err?.message || "";
     return message.includes(column) || /column|schema cache|PGRST204/i.test(message);
 }
 
-async function fetchElections() {
-    const missingOptional = new Set();
+async function fetchElections(): Promise<Row[]> {
+    const missingOptional = new Set<string>();
     let optional = [...ELECTION_OPTIONAL_COLUMNS];
 
     while (true) {
         try {
             const rows = await fetchAll("Elections", [...ELECTION_BASE_COLUMNS, ...optional].join(", "));
             return rows.map((row) => {
-                const withDefaults = { ...row };
+                const withDefaults: Row = { ...row };
                 for (const column of missingOptional) {
                     withDefaults[column] = null;
                 }
@@ -201,7 +206,7 @@ async function fetchElections() {
     }
 }
 
-async function main() {
+async function main(): Promise<void> {
     const targetUrl = process.env.TARGET_DATABASE_URL;
     if (!targetUrl && !DRY_RUN) {
         throw new Error("TARGET_DATABASE_URL is required (or pass --dry-run).");
@@ -210,7 +215,7 @@ async function main() {
     console.log(`== zk-vote cutover ETL ${DRY_RUN ? "(DRY RUN — no writes)" : ""}`);
 
     // ---- Extract ----------------------------------------------------------
-    const elections = (await fetchElections()).map((election) => ({
+    const elections = (await fetchElections()).map((election): Row => ({
         ...election,
         state: deriveElectionState(election),
     }));
@@ -329,7 +334,13 @@ async function main() {
         }
 
         // ---- Verify before commit (gate: counts + checksums must match) -----
-        const verify = async (table, sql, keys, sourceRows, sourceSum) => {
+        const verify = async (
+            table: string,
+            sql: string,
+            keys: string[],
+            sourceRows: Row[],
+            sourceSum: string
+        ): Promise<boolean> => {
             const { rows } = await target.query(sql);
             const ok = rows.length === sourceRows.length && checksum(rows, keys) === sourceSum;
             console.log(
@@ -386,7 +397,7 @@ async function main() {
     console.log("ETL complete: all row counts and checksums match (AR-H3 gate).");
 }
 
-if (require.main === module) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
     main().then(
         () => process.exit(0),
         (err) => {
@@ -396,7 +407,7 @@ if (require.main === module) {
     );
 }
 
-module.exports = {
+export {
     checksum,
     deriveElectionState,
     isDecimalFieldElementString,

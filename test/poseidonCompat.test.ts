@@ -1,15 +1,18 @@
-const { expect } = require("chai");
-const { buildPoseidon } = require("circomlibjs");
-// Deliberately required from frontend/node_modules: this asserts the EXACT
+import { describe, it, expect, beforeAll } from "vitest";
+import { buildPoseidon } from "circomlibjs";
+// Deliberately imported from frontend/node_modules: this asserts the EXACT
 // implementation the browser bundles produces backend-identical commitments.
 // The H2 model breaks silently if the client commitment H(secret) ever
 // diverges from the circomlibjs Poseidon leaves the server's Merkle tree uses.
-const { poseidon1, poseidon2 } = require("../frontend/node_modules/poseidon-lite");
+// The frontend copy ships a non-module ambient .d.ts; @ts-ignore the untyped
+// relative import (runtime target unchanged — see types/shims.d.ts).
+// @ts-ignore — non-module .d.ts in the frontend's pinned poseidon-lite copy
+import { poseidon1, poseidon2 } from "../frontend/node_modules/poseidon-lite";
 
 describe("poseidon-lite / circomlibjs compatibility (H2 commitment, AR-H7 style vectors)", function () {
-    let poseidon;
+    let poseidon: any;
 
-    before(async function () {
+    beforeAll(async function () {
         poseidon = await buildPoseidon();
     });
 
@@ -25,7 +28,7 @@ describe("poseidon-lite / circomlibjs compatibility (H2 commitment, AR-H7 style 
         for (const secret of SECRET_FIXTURES) {
             const lite = poseidon1([secret]).toString();
             const reference = poseidon.F.toString(poseidon([secret]));
-            expect(lite).to.equal(reference, `mismatch for secret ${secret}`);
+            expect(lite, `mismatch for secret ${secret}`).toBe(reference);
         }
     });
 
@@ -34,7 +37,7 @@ describe("poseidon-lite / circomlibjs compatibility (H2 commitment, AR-H7 style 
         for (const secret of SECRET_FIXTURES) {
             const lite = poseidon2([secret, electionId]).toString();
             const reference = poseidon.F.toString(poseidon([secret, electionId]));
-            expect(lite).to.equal(reference, `mismatch for secret ${secret}`);
+            expect(lite, `mismatch for secret ${secret}`).toBe(reference);
         }
     });
 });

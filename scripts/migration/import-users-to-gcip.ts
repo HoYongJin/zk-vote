@@ -1,5 +1,5 @@
 /**
- * @file scripts/migration/import-users-to-gcip.js
+ * @file scripts/migration/import-users-to-gcip.ts
  * @desc One-time, idempotent migration of Supabase Auth users into GCP Identity
  * Platform (GCIP / Firebase Auth) — PROJECT_PLAN Phase 7.
  *
@@ -50,13 +50,43 @@
  *     node scripts/migration/import-users-to-gcip.js
  */
 
-const { Client } = require("pg");
+import { fileURLToPath } from "node:url";
+import pg from "pg";
+
+const { Client } = pg;
+
+interface SourceUser {
+    id: string;
+    email: string | null;
+    encrypted_password: string | null;
+    email_verified: boolean;
+    providers: string[];
+}
+
+interface ExcludedUser {
+    id: string;
+    email?: string | null;
+    providers: string[];
+}
+
+interface FirebaseRecord {
+    uid: string;
+    email: string | null;
+    emailVerified: boolean;
+    passwordHash: Buffer;
+}
+
+interface ImportResult {
+    success: number;
+    failure: number;
+    errors: Array<{ uid: string | undefined; reason: string | undefined }>;
+}
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const IMPORT_BATCH_SIZE = 1000; // Firebase importUsers hard cap is 1000/call.
 const BCRYPT_PREFIXES = ["$2a$", "$2b$", "$2y$"];
 
-function isUsableBcrypt(hash) {
+function isUsableBcrypt(hash: unknown): boolean {
     return typeof hash === "string" && BCRYPT_PREFIXES.some((p) => hash.startsWith(p));
 }
 
@@ -65,7 +95,7 @@ function isUsableBcrypt(hash) {
  * UUID / email / bcrypt hash / verified timestamp and aggregate auth.identities
  * for the provider partition (a user may have several identities).
  */
-async function loadSourceUsers(sourceUrl) {
+async function loadSourceUsers(sourceUrl: string): Promise<SourceUser[]> {
     const client = new Client({ connectionString: sourceUrl });
     await client.connect();
     try {
@@ -95,10 +125,14 @@ async function loadSourceUsers(sourceUrl) {
  * (excluded). A row is password-importable iff it has a usable bcrypt hash AND
  * a non-empty email (the GCIP import + the email-keyed authority both need it).
  */
-function partition(rows) {
-    const passwordUsers = [];
-    const oauthOnly = [];
-    const skippedNoEmail = [];
+function partition(rows: SourceUser[]): {
+    passwordUsers: SourceUser[];
+    oauthOnly: ExcludedUser[];
+    skippedNoEmail: ExcludedUser[];
+} {
+    const passwordUsers: SourceUser[] = [];
+    const oauthOnly: ExcludedUser[] = [];
+    const skippedNoEmail: ExcludedUser[] = [];
     for (const row of rows) {
         if (!row.email) {
             skippedNoEmail.push({ id: row.id, providers: row.providers });
@@ -113,25 +147,28 @@ function partition(rows) {
     return { passwordUsers, oauthOnly, skippedNoEmail };
 }
 
-function toFirebaseRecord(row) {
+function toFirebaseRecord(row: SourceUser): FirebaseRecord {
     return {
         uid: row.id, // == Supabase UUID -> keeps JWT `sub` a UUID (PROJECT_PLAN §0.3)
         email: row.email,
         emailVerified: row.email_verified === true, // actual status only (invariant #8)
-        passwordHash: Buffer.from(row.encrypted_password, "utf8"), // raw bcrypt bytes
+        passwordHash: Buffer.from(row.encrypted_password as string, "utf8"), // raw bcrypt bytes
     };
 }
 
-function chunk(arr, size) {
-    const out = [];
+function chunk<T>(arr: T[], size: number): T[][] {
+    const out: T[][] = [];
     for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
     return out;
 }
 
-async function importBatches(passwordUsers) {
-    // Lazily require firebase-admin so --dry-run (and `node --check`) need neither
-    // the dependency installed nor credentials present.
-    const admin = require("firebase-admin");
+async function importBatches(passwordUsers: SourceUser[]): Promise<ImportResult> {
+    // Lazily import firebase-admin so --dry-run (and `node --check`) need neither
+    // the dependency installed nor credentials present. Typed `any` to preserve
+    // the original script's exact namespace API surface (admin.apps /
+    // admin.credential / admin.auth()) byte-for-byte — a mechanical migration
+    // must not alter which runtime members are accessed.
+    const admin: any = (await import("firebase-admin")).default;
     const projectId = process.env.GCIP_PROJECT_ID;
     if (!projectId) {
         throw new Error("GCIP_PROJECT_ID is required for a real import.");
@@ -148,11 +185,11 @@ async function importBatches(passwordUsers) {
 
     let success = 0;
     let failure = 0;
-    const errors = [];
+    const errors: Array<{ uid: string | undefined; reason: string | undefined }> = [];
     for (const [batchIndex, batch] of chunk(passwordUsers, IMPORT_BATCH_SIZE).entries()) {
         const records = batch.map(toFirebaseRecord);
         // BCRYPT: GCIP verifies the raw bcrypt hash directly; no rounds/key needed.
-        const result = await auth.importUsers(records, { hash: { algorithm: "BCRYPT" } });
+        const result = await auth.importUsers(records as any, { hash: { algorithm: "BCRYPT" } });
         success += result.successCount;
         failure += result.failureCount;
         for (const err of result.errors || []) {
@@ -166,7 +203,7 @@ async function importBatches(passwordUsers) {
     return { success, failure, errors };
 }
 
-async function main() {
+async function main(): Promise<void> {
     const sourceUrl = process.env.SOURCE_DATABASE_URL;
     if (!sourceUrl) {
         throw new Error(
@@ -228,11 +265,11 @@ async function main() {
     }
 }
 
-if (require.main === module) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
     main().catch((err) => {
         console.error(err.stack || String(err));
         process.exit(1);
     });
 }
 
-module.exports = { partition, isUsableBcrypt, toFirebaseRecord, chunk };
+export { partition, isUsableBcrypt, toFirebaseRecord, chunk };
