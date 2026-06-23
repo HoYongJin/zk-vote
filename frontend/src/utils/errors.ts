@@ -32,3 +32,16 @@ export function errorData(error: unknown): unknown {
 export function errorStatus(error: unknown): number | undefined {
   return isAxiosError(error) ? error.response?.status : undefined;
 }
+
+/**
+ * The backend error CODE — the stable machine-readable `error` field of the
+ * JSON body (e.g. "VOTING_DURATION_EXCEEDS_MAXIMUM"), NOT the human `details`
+ * sentence that `errorMessage` returns. Undefined for non-axios / no-response.
+ */
+export function errorCode(error: unknown): string | undefined {
+  if (isAxiosError(error)) {
+    const data = error.response?.data as ApiErrorBody | undefined;
+    return data?.error;
+  }
+  return undefined;
+}

@@ -11,7 +11,7 @@ import axios from '../../api/axios';
 import Modal from '../../components/Modal';
 import { auth } from '../../firebase';
 import type { Election } from '../../types/domain';
-import { errorData, errorMessage } from '../../utils/errors';
+import { errorCode, errorData, errorMessage } from '../../utils/errors';
 
 const pageStyle: CSSProperties = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '1000px', margin: 'auto' };
 const headerStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap' };
@@ -156,15 +156,42 @@ function AdminMainPage() {
       return;
     }
 
-    setActionLoading((prev) => ({ ...prev, isFinalizing: finalizingVote.id }));
-    try {
-      await axios.post(`/elections/${finalizingVote.id}/finalize`, { voteEndTime: new Date(voteEndTime).toISOString() });
+    const onSuccess = () => {
       alert('등록이 마감되었으며 투표가 시작되었습니다.');
       setIsFinalizeModalOpen(false);
       fetchAllVotes();
+    };
+    const submitFinalize = (confirmExtendedDuration: boolean) =>
+      axios.post(`/elections/${finalizingVote.id}/finalize`, {
+        voteEndTime: new Date(voteEndTime).toISOString(),
+        ...(confirmExtendedDuration ? { confirmExtendedDuration: true } : {}),
+      });
+
+    setActionLoading((prev) => ({ ...prev, isFinalizing: finalizingVote.id }));
+    try {
+      await submitFinalize(false);
+      onSuccess();
     } catch (error) {
-      console.error('등록 마감 실패:', errorData(error));
-      alert(`등록 마감 실패: ${errorMessage(error)}`);
+      // L-fe-confirm (AR-M7): the backend caps the voting window because it is
+      // immutable on-chain, and asks for explicit confirmation to exceed it.
+      // Surface that as a prompt + retry instead of a dead-end error.
+      if (
+        errorCode(error) === 'VOTING_DURATION_EXCEEDS_MAXIMUM' &&
+        window.confirm(
+          '선택한 투표 기간이 최대 허용 기간을 초과합니다. 투표 기간은 온체인에 고정되어 변경할 수 없습니다. 그래도 진행하시겠습니까?',
+        )
+      ) {
+        try {
+          await submitFinalize(true);
+          onSuccess();
+        } catch (retryError) {
+          console.error('등록 마감 실패:', errorData(retryError));
+          alert(`등록 마감 실패: ${errorMessage(retryError)}`);
+        }
+      } else {
+        console.error('등록 마감 실패:', errorData(error));
+        alert(`등록 마감 실패: ${errorMessage(error)}`);
+      }
     } finally {
       setActionLoading((prev) => ({ ...prev, isFinalizing: null }));
     }

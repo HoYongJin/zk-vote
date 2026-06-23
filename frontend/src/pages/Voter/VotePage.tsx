@@ -6,7 +6,7 @@
  *  3. Submit proof + ticket to the anonymous /submit relayer endpoint.
  *  4. On success, mark this election as voted in localStorage (UX-only).
  */
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from '../../api/axios';
 import { getVoterSecret, clearVoterSecret } from '../../utils/voterSecret';
@@ -34,6 +34,12 @@ function VotePage() {
   const [selectedCandidateIndex, setSelectedCandidateIndex] = useState<number | null>(null);
   const [loadingMessage, setLoadingMessage] = useState<ReactNode>('');
   const [errorMessage, setErrorMessage] = useState('');
+
+  // L-fe-worker: track the live proof worker so it is terminated if the user
+  // navigates away mid-proof (the worker is otherwise only torn down by its own
+  // onmessage/onerror, which never fire on unmount — leaking a CPU-heavy worker).
+  const workerRef = useRef<Worker | null>(null);
+  useEffect(() => () => workerRef.current?.terminate(), []);
 
   const handleVote = async () => {
     if (selectedCandidateIndex === null) {
@@ -110,6 +116,7 @@ function VotePage() {
 
       // --- 4. Run the proof worker ---
       const worker = new Worker(new URL('../../workers/proof.worker.ts', import.meta.url), { type: 'module' });
+      workerRef.current = worker;
       worker.postMessage(workerPayload);
 
       // --- 5. Handle worker result ---
