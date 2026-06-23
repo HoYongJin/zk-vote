@@ -1,64 +1,82 @@
 # zk-vote frontend
 
-React (19) single-page app for the zk-vote anonymous voting system. Admins create and
-finalize elections; voters register, generate a zero-knowledge proof **in the browser**,
-and submit it anonymously. Built with Create React App (`react-scripts` 5).
+React 19 single-page app (TypeScript) for the zk-vote anonymous voting system. Admins
+create and finalize elections; voters register, generate a zero-knowledge proof **in the
+browser**, and submit it anonymously. Built with **Vite 7 + TypeScript** (migrated off
+Create React App).
 
 ## Architecture
 
-- **Auth:** Supabase Auth (`@supabase/supabase-js`) for login/session. Role (admin vs voter)
-  is resolved server-side via `GET /api/me` — the frontend does **not** read role tables
-  directly (audit AR-H4).
-- **State:** Redux Toolkit (`store/authSlice.js`).
-- **API client:** `src/api/axios.js`; base URL comes from `src/utils/apiBaseUrl.js` so the
-  target backend (Node today, Rust after cutover) is switchable via env.
-- **Client-held voter secret (audit H2):** `src/utils/voterSecret.js` generates the voter's
-  secret and keeps it in per-election `localStorage`. The server only ever receives the
-  Poseidon commitment `H(secret)` (via `poseidon-lite`) — never the secret itself.
-- **Browser proof generation:** `src/workers/proof.worker.js` runs snarkjs Groth16 proving in
-  a Web Worker, so the secret never leaves the client. Proving artifacts (`.wasm`/`.zkey`)
-  are fetched from the backend and integrity-checked (`src/utils/artifactIntegrity.js`).
-- **Submission jitter (audit AR-M2):** `src/utils/submissionJitter.js` adds TTL-safe timing
+- **Auth:** Firebase Auth / GCP Identity Platform (`firebase` web SDK) for login/session.
+  Role (admin vs voter) is resolved server-side via `GET /api/me` — the frontend does **not**
+  read role tables directly (audit AR-H4). See `src/firebase.ts`, `src/App.tsx`.
+- **State:** Redux Toolkit (`src/store/authSlice.ts`); only a serializable `{ uid, email }`
+  projection of the Firebase user is stored. Typed hooks in `src/store/hooks.ts`.
+- **API client:** `src/api/axios.ts`; base URL from `src/utils/apiBaseUrl.ts`. The interceptor
+  attaches the Firebase ID token, except on requests flagged `{ skipAuth: true }` (the
+  anonymous `/submit` call must carry no JWT).
+- **Client-held voter secret (audit H2):** `src/utils/voterSecret.ts` generates the voter's
+  31-byte secret (`crypto.getRandomValues`) and keeps it in per-election `localStorage`. The
+  server only ever receives the Poseidon commitment `H(secret)` (via `poseidon-lite`) — never
+  the secret itself.
+- **Browser proof generation:** `src/workers/proof.worker.ts` runs snarkjs Groth16 proving in
+  an **ES-module Web Worker**, so the secret never leaves the client. Proving artifacts
+  (`.wasm`/`.zkey`) are fetched and SHA-256 integrity-checked against the deploy manifest before
+  proving (`src/utils/artifactIntegrity.ts`, AR-M6) — the browser refuses to prove on mismatch.
+- **Submission jitter (audit AR-M2):** `src/utils/submissionJitter.ts` adds TTL-safe timing
   jitter to reduce `/proof`→`/submit` timing correlation.
 
 ## Routes
 
 | Path | Guard | Page |
 |---|---|---|
-| `/login` | public | `pages/LoginPage.js` |
-| `/admin` | `AdminRoute` | `pages/Admin/AdminMainPage.js` |
-| `/admin/create` | `AdminRoute` | `pages/Admin/CreateVotePage.js` |
-| `/` (voter home) | `ProtectedRoute` | `pages/Voter/VoterMainPage.js` |
-| `/vote/:electionId` | `ProtectedRoute` | `pages/Voter/VotePage.js` |
+| `/login` | public | `src/pages/LoginPage.tsx` |
+| `/admin` | `AdminRoute` | `src/pages/Admin/AdminMainPage.tsx` |
+| `/admin/create` | `AdminRoute` | `src/pages/Admin/CreateVotePage.tsx` |
+| `/` (voter home) | `ProtectedRoute` | `src/pages/Voter/VoterMainPage.tsx` |
+| `/vote/:id` | `ProtectedRoute` | `src/pages/Voter/VotePage.tsx` |
 
 ## Environment
 
-Create `frontend/.env` (Create React App only exposes `REACT_APP_*` vars):
+Vite inlines **only `VITE_`-prefixed** env (`import.meta.env`) at build time. Copy
+`.env.example` to `.env` and fill in (all values are PUBLIC client config — no secrets):
 
 ```
-REACT_APP_API_BASE_URL=http://localhost:3001    # backend API base (Node today / Rust after cutover)
-REACT_APP_SUPABASE_URL=https://<project>.supabase.co
-REACT_APP_SUPABASE_ANON_KEY=<anon-key>
+VITE_API_BASE_URL=http://localhost:8080/api   # backend API base; defaults to "/api" if unset
+VITE_FIREBASE_API_KEY=<firebase web api key>
+VITE_FIREBASE_AUTH_DOMAIN=<project>.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=<project-id>
 ```
+
+`src/firebase.ts` fails fast (throws) if the Firebase values are missing, so a misconfigured
+build cannot silently ship a broken-auth bundle.
 
 ## Scripts
 
 ```bash
 npm install
-npm start                       # dev server (proxies to REACT_APP_API_BASE_URL)
-npm test -- --watchAll=false    # CI mode (mirrors GitHub Actions)
-npm run build                   # production bundle
+npm run dev         # Vite dev server on :3000 (proxies /api → http://localhost:8080)
+npm run typecheck   # tsc --noEmit for src + vite.config.ts
+npm run lint        # eslint (incl. react-hooks/exhaustive-deps)
+npm test            # vitest run (CI mode; non-watch)
+npm run build       # typecheck + production bundle → build/
+npm run preview     # serve the production build locally
 ```
+
+Requires Node ≥ 20.19 (Vite 7).
 
 ## Hosting
 
-The committed CD (`buildspec.yml`, `.github/workflows/deploy-frontend.yml`) deploys to
-**legacy AWS S3/CloudFront**. The backend is migrating to GCP; the post-cutover frontend
-hosting target is an **open decision** (see `../docs/TECH_STACK.md` §6). Whatever origin is
-chosen must be allowed in the Cloud Run `CORS_ALLOWED_ORIGINS`.
+Primary target is **Firebase Hosting** (`../firebase.json`, deployed by
+`.github/workflows/deploy-frontend-firebase.yml`): SPA fallback to `index.html`, content-hashed
+`/assets/**` cached immutably, `index.html` no-cache, and a security-header/CSP baseline tuned
+for the WASM proving worker + Firebase Auth popups. The legacy AWS S3/CloudFront CD
+(`buildspec.yml`, `deploy-frontend.yml`) is deprecated and `workflow_dispatch`-only. Whichever
+origin is used must be allowed in the Cloud Run `CORS_ALLOWED_ORIGINS`.
 
 ## Notes
 
-- The Merkle-depth selector currently supports depth 2–5 (the provisioned ZK artifacts);
-  larger trees require generating new circuits + ptau (see root `README.md`).
-- `src/setupProxy.js` is dead/commented-out and references an obsolete dev target — ignore it.
+- The Merkle-depth selector supports depth 2–5 (the provisioned ZK artifacts); larger trees
+  require generating new circuits + ptau (see root `README.md`).
+- The main bundle (~1 MB, mostly Firebase) is above Vite's 500 kB warning; snarkjs already
+  lazy-loads in the worker chunk. Code-splitting Firebase is a possible future optimization.

@@ -17,9 +17,21 @@ const firebaseConfig = {
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
 };
 
-// --- debug (mirrors the old supabase.js: confirm config is wired, never log the key) ---
+// Fail fast on a misconfigured build: a bundle built without VITE_FIREBASE_* (e.g.
+// a CD job still injecting the old REACT_APP_* names) would otherwise initialize
+// Firebase with apiKey:undefined and fail opaquely at the first sign-in.
+const missingFirebaseConfig = (['apiKey', 'authDomain', 'projectId'] as const).filter(
+  (key) => !firebaseConfig[key],
+);
+if (missingFirebaseConfig.length > 0) {
+  throw new Error(
+    `Missing Firebase config: ${missingFirebaseConfig.join(', ')}. Set the VITE_FIREBASE_* ` +
+      'build-time env (see frontend/.env.example); a build without them cannot authenticate.',
+  );
+}
+
+// (mirrors the old supabase.js debug: confirm config is wired, never log the key)
 console.log('Firebase projectId:', firebaseConfig.projectId);
-console.log('Is Firebase API key loaded?:', Boolean(firebaseConfig.apiKey));
 
 const app = initializeApp(firebaseConfig);
 

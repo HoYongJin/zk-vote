@@ -8,8 +8,8 @@ name: Deploy Frontend to Firebase Hosting
 # Phase-18 prerequisites (cost-gated):
 #   - GitHub secret FIREBASE_SERVICE_ACCOUNT = the deployer SA JSON (Firebase
 #     Hosting Admin) — gitignored, never committed.
-#   - GitHub secrets REACT_APP_FIREBASE_API_KEY / _AUTH_DOMAIN / _PROJECT_ID and
-#     REACT_APP_API_BASE_URL (the staging Cloud Run URL + /api).
+#   - GitHub secrets VITE_FIREBASE_API_KEY / _AUTH_DOMAIN / _PROJECT_ID and
+#     VITE_API_BASE_URL (the staging Cloud Run URL + /api).
 #   - pin google-github-actions/auth to a commit SHA (supply-chain, AR-H8).
 on:
   workflow_dispatch:
@@ -33,12 +33,14 @@ jobs:
       - run: npm run build --prefix frontend
         env:
           CI: "true"
-          REACT_APP_API_BASE_URL: ${{ secrets.REACT_APP_API_BASE_URL }}
+          # Vite only inlines VITE_*-prefixed env (import.meta.env) at build time;
+          # REACT_APP_* are silently dropped, yielding an undefined-config bundle.
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
           # Firebase web config is PUBLIC (not secret); kept as Actions secrets so
           # the project id is not hard-coded per environment.
-          REACT_APP_FIREBASE_API_KEY: ${{ secrets.REACT_APP_FIREBASE_API_KEY }}
-          REACT_APP_FIREBASE_AUTH_DOMAIN: ${{ secrets.REACT_APP_FIREBASE_AUTH_DOMAIN }}
-          REACT_APP_FIREBASE_PROJECT_ID: ${{ secrets.REACT_APP_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
       - name: Authenticate to GCP (Firebase deployer service account)
         uses: google-github-actions/auth@v2 # TODO Phase 18: pin to a commit SHA
         with:

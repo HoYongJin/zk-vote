@@ -8,7 +8,10 @@ export default defineConfig({
     // Keep CRA's output directory so the existing CD artifact path
     // (buildspec.yml base-directory: build) keeps working post-migration.
     outDir: 'build',
-    sourcemap: true,
+    // 'hidden' emits source maps (for CI/error tracking) but adds no
+    // sourceMappingURL comment, so browsers don't auto-fetch them; firebase.json
+    // also excludes **/*.map from the deployed bundle.
+    sourcemap: 'hidden',
   },
   worker: {
     // The ZK proving worker imports snarkjs as an ES module; emit an ESM worker
