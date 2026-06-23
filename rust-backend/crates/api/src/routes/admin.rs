@@ -8,8 +8,8 @@ pub struct AdminPingResponse {
 }
 
 /// Minimal admin-gated endpoint proving the AdminUser extractor end to end
-/// (Phase 5 gate: admin-only routes reject non-admin users). The Phase 8
-/// admin routes supersede it as the real admin surface.
+/// (admin-only routes reject non-admin users). The admin setup routes are the
+/// real admin surface.
 pub async fn ping(AdminUser(_user): AdminUser) -> Json<AdminPingResponse> {
     Json(AdminPingResponse { status: "ok" })
 }

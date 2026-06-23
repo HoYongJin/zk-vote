@@ -1,4 +1,4 @@
-//! Phase 12: recoverable finalization (port of the post-H4 Node semantics).
+//! Recoverable finalization (post-H4 semantics).
 //!
 //! Order of operations is the safety property:
 //!   1. durably close registration in Postgres (fail-closed across crashes)
@@ -12,6 +12,7 @@
 
 use crate::auth::AdminUser;
 use crate::error::ApiError;
+use crate::leases;
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::Json;
@@ -25,6 +26,12 @@ use zkvote_db::{with_transaction, DbError, Tx};
 use zkvote_domain::services::{check_finalization, FinalizationCheck, FinalizationRejection};
 use zkvote_domain::ElectionState;
 use zkvote_zkp::merkle::FixedMerkleTree;
+
+/// One finalization at a time per election: the on-chain `configureElection`
+/// is owner-key-signed and the snapshot advisory lock is released at its
+/// COMMIT, so without this two concurrent finalizes would race the owner
+/// nonce. The TTL releases a crashed holder; the recovery path is idempotent.
+const FINALIZE_LOCK_SECONDS: u64 = 600;
 
 fn coded(status: u16, code: &'static str, details: impl Into<String>) -> ApiError {
     ApiError::Coded {
@@ -228,6 +235,35 @@ pub async fn finalize(
         relayer_private_key: relayer_key,
     };
 
+    let lease = leases::acquire(
+        &state.redis,
+        format!("election:{election_id}:finalize"),
+        FINALIZE_LOCK_SECONDS,
+        "FINALIZATION_IN_PROGRESS",
+        "Finalization for this election is already in progress.",
+    )
+    .await?;
+
+    let result = finalize_locked(&state, election_id, now, vote_end, &chain, &owner_key).await;
+
+    if let Err(err) = leases::release(&state.redis, &lease).await {
+        tracing::warn!(error = %err, "failed to release finalize redis lease");
+    }
+
+    result
+}
+
+/// The serialized finalization body: durably close registration, build the
+/// root, configure on-chain (with idempotent recovery), revalidate, and sync
+/// the DB exactly once. Runs under the per-election finalize lease.
+async fn finalize_locked(
+    state: &AppState,
+    election_id: Uuid,
+    now: OffsetDateTime,
+    vote_end: OffsetDateTime,
+    chain: &ChainConfig,
+    owner_key: &str,
+) -> Result<Json<FinalizeResponse>, ApiError> {
     // Step 1+2: durably close registration and snapshot, atomically.
     let snapshot: Result<Snapshot, ApiError> = with_transaction(&state.pg, move |tx| {
         Box::pin(async move { close_and_snapshot(tx, election_id, now, vote_end).await })
@@ -235,7 +271,7 @@ pub async fn finalize(
     .await?;
     let snapshot = snapshot?;
 
-    let tree = FixedMerkleTree::build(merkle_depth(&state, election_id).await?, &snapshot.leaves)
+    let tree = FixedMerkleTree::build(merkle_depth(state, election_id).await?, &snapshot.leaves)
         .map_err(|err| ApiError::Internal(format!("Merkle build failed: {err}")))?;
     let root = tree.root();
 
@@ -250,7 +286,7 @@ pub async fn finalize(
         .as_deref()
         .and_then(|addr| addr.parse().ok())
         .ok_or_else(|| coded(400, "STATE_ERROR", "Contract address is missing/invalid."))?;
-    let onchain = connect_election(&chain, contract_address)
+    let onchain = connect_election(chain, contract_address)
         .map_err(|err| ApiError::Internal(format!("chain connect failed: {err}")))?;
 
     let root_u256 = alloy::primitives::U256::from_str_radix(&root, 10)
@@ -260,7 +296,7 @@ pub async fn finalize(
         ($expr:expr) => {
             match $expr {
                 Ok(value) => value,
-                Err(err) => return Err(chain_api_error(&state, job_id, err).await),
+                Err(err) => return Err(chain_api_error(state, job_id, err).await),
             }
         };
     }
@@ -291,8 +327,8 @@ pub async fn finalize(
         JobRepo::set_status(&state.pg, job_id, "onchain_sent", None, None).await?;
         let tx_hash = chain_try!(
             configure_election(
-                &chain,
-                &owner_key,
+                chain,
+                owner_key,
                 contract_address,
                 root_u256,
                 alloy::primitives::U256::from(now.unix_timestamp() as u64),
@@ -359,7 +395,7 @@ fn from_unix(value: alloy::primitives::U256) -> Result<OffsetDateTime, ApiError>
         .map_err(|err| ApiError::Internal(format!("invalid on-chain timestamp: {err}")))
 }
 
-/// Classifies chain failures into the Node error vocabulary and records the
+/// Classifies chain failures into the API error vocabulary and records the
 /// job failure. Reverts are permanent (ON_CHAIN_ERROR); transport errors are
 /// retryable (502).
 async fn chain_api_error(state: &AppState, job_id: Uuid, err: ChainError) -> ApiError {

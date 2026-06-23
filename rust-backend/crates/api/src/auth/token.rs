@@ -2,7 +2,7 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// Claims the API relies on. Supabase access tokens carry the user id in
+/// Claims the API relies on. The IdP's access tokens carry the user id in
 /// `sub` and the e-mail in `email`; verification status appears top-level
 /// and/or in `user_metadata.email_verified`.
 #[derive(Debug, Deserialize)]
@@ -25,10 +25,10 @@ pub struct UserMetadata {
 
 impl Claims {
     /// True only when the token EXPLICITLY marks the e-mail unverified
-    /// (top-level `email_verified` or Supabase `user_metadata.email_verified`).
+    /// (top-level `email_verified` or `user_metadata.email_verified`).
     /// Absent verification is treated as "unknown", not "unverified", so the
     /// check never breaks a correctly-configured project — the operational
-    /// requirement that Supabase e-mail confirmation is enabled is the primary
+    /// requirement that the IdP's e-mail confirmation is enabled is the primary
     /// control (RUST-AUTH-2). An unverified e-mail must not be trusted as the
     /// admin-invitation / voter-allowlist join key.
     pub fn email_explicitly_unverified(&self) -> bool {

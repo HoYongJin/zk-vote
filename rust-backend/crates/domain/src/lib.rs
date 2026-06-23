@@ -2,23 +2,10 @@ pub mod services;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use thiserror::Error;
-use utoipa::ToSchema;
-use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct ElectionId(pub Uuid);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct MerkleRoot(pub String);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct NullifierHash(pub String);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct CandidateIndex(pub u32);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// Lifecycle state persisted in `elections.state`. Written via `Display`; the
+/// column is read back as a plain string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElectionState {
     Draft,
@@ -46,55 +33,5 @@ impl fmt::Display for ElectionState {
             Self::Failed => "failed",
         };
         f.write_str(value)
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum DomainError {
-    #[error("invalid election state transition from {from} to {to}")]
-    InvalidElectionTransition {
-        from: ElectionState,
-        to: ElectionState,
-    },
-}
-
-pub fn validate_transition(from: ElectionState, to: ElectionState) -> Result<(), DomainError> {
-    let ok = matches!(
-        (&from, &to),
-        (ElectionState::Draft, ElectionState::ArtifactsReady)
-            | (
-                ElectionState::ArtifactsReady,
-                ElectionState::ContractDeployed
-            )
-            | (
-                ElectionState::ContractDeployed,
-                ElectionState::RegistrationOpen
-            )
-            | (ElectionState::RegistrationOpen, ElectionState::Finalizing)
-            | (ElectionState::Finalizing, ElectionState::VotingActive)
-            | (ElectionState::VotingActive, ElectionState::VotingEnded)
-            | (ElectionState::VotingEnded, ElectionState::Completed)
-            | (_, ElectionState::Failed)
-    );
-
-    if ok {
-        Ok(())
-    } else {
-        Err(DomainError::InvalidElectionTransition { from, to })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_expected_state_transition() {
-        assert!(validate_transition(ElectionState::Draft, ElectionState::ArtifactsReady).is_ok());
-    }
-
-    #[test]
-    fn rejects_skipped_state_transition() {
-        assert!(validate_transition(ElectionState::Draft, ElectionState::VotingActive).is_err());
     }
 }

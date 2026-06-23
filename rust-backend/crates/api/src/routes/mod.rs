@@ -16,8 +16,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
-        // Authenticated surface. Anonymous-by-design endpoints (the future
-        // /api/elections/:id/submit port) must NOT use the auth extractors.
+        // Authenticated surface. Anonymous-by-design endpoints (submit)
+        // must NOT use the auth extractors.
         .route("/api/me", get(me::me))
         .route("/api/admin/ping", get(admin::ping))
         .route("/api/elections/registerable", get(elections::registerable))

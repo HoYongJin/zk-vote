@@ -1,3 +1,3 @@
 // Registers @testing-library/jest-dom matchers (toBeInTheDocument, etc.) on
-// Vitest's `expect`. Replaces CRA's react-app/jest setup.
+// Vitest's `expect`.
 import '@testing-library/jest-dom/vitest';

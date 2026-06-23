@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod error;
+mod leases;
 mod middleware;
 mod routes;
 mod state;
@@ -415,7 +416,7 @@ mod tests {
         );
 
         // Not allowlisted as admin: authenticated but is_admin = false, and
-        // the admin-only route rejects with 403 (Phase 5 gate).
+        // the admin-only route rejects with 403.
         let (status, json) = get_me(routes::router(state.clone()), Some(&token)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["is_admin"], false);
@@ -565,8 +566,8 @@ mod tests {
         rows.as_array().unwrap().iter().find(|row| row["id"] == id)
     }
 
-    /// Phase 7 gate: the three read-only lists reproduce the Node visibility
-    /// rules and response shapes against seeded DB state.
+    /// The three read-only lists apply the correct visibility rules and
+    /// response shapes against seeded DB state.
     /// Run explicitly: `cargo test -p zkvote-api -- --ignored`
     #[tokio::test]
     #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
@@ -915,7 +916,7 @@ mod tests {
         (status, json)
     }
 
-    /// Phase 8 gates: creation validation (M4), invitation upsert
+    /// Admin setup gates: creation validation (M4), invitation upsert
     /// idempotency, deploy guard. Run: `cargo test -p zkvote-api -- --ignored`
     #[tokio::test]
     #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
@@ -969,7 +970,7 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(json["error"], "ADMIN_PRIVILEGES_REQUIRED");
 
-        // Valid creation: 201 with Node response shape + trimmed candidates.
+        // Valid creation: 201 with the expected response shape + trimmed candidates.
         let (status, json) = post_json(
             routes::router(state.clone()),
             "/api/elections/set",
@@ -983,7 +984,7 @@ mod tests {
         assert_eq!(json["election"]["candidates"][0], "A");
         let election_id = json["election"]["id"].as_str().unwrap().to_string();
 
-        // Malformed date is rejected (Phase 8 gate).
+        // Malformed date is rejected.
         let (status, json) = post_json(
             routes::router(state.clone()),
             "/api/elections/set",
@@ -1010,7 +1011,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        // setZkDeploy: no registered artifact set -> blocked (Phase 8 gate).
+        // setZkDeploy: no registered artifact set -> blocked.
         let (status, json) = post_json(
             routes::router(state.clone()),
             &format!("/api/elections/{election_id}/setZkDeploy"),
@@ -1060,7 +1061,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Phase 8/11 route gate: /setZkDeploy itself must deploy through the
+    /// Route gate: /setZkDeploy itself must deploy through the
     /// typed chain layer, bind the selected artifact, and persist metadata.
     /// Requires docker PG+Redis and a local hardhat node:
     ///   bash scripts/local/smoke.sh && npx hardhat node
@@ -1247,7 +1248,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Phase 9 gates: allowlist capacity + dedup, registration lifecycle
+    /// Voter gates: allowlist capacity + dedup, registration lifecycle
     /// rejections, AR-H6 commitment re-binding.
     /// Run: `cargo test -p zkvote-api -- --ignored`
     #[tokio::test]
@@ -1471,7 +1472,7 @@ mod tests {
         let config = Arc::new(
             AppConfig::from_lookup(move |name| match name {
                 "DATABASE_URL" => Some(db.clone()),
-                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "REDIS_URL" => Some("redis://localhost:6379".to_string()),
                 "SUPABASE_JWKS_URL" => Some(jwks.clone()),
                 "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
                 "SEPOLIA_RPC_URL" => Some("http://127.0.0.1:1".to_string()),
@@ -1566,7 +1567,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Phase 12 gates: durable+recoverable finalize against docker PG AND a
+    /// Durable + recoverable finalize against docker PG AND a
     /// local hardhat node. Start both first:
     ///   bash scripts/local/smoke.sh && npx hardhat node
     /// Run: `cargo test -p zkvote-api -- --ignored finalize`
@@ -1602,7 +1603,7 @@ mod tests {
         let config = Arc::new(
             AppConfig::from_lookup(move |name| match name {
                 "DATABASE_URL" => Some(db.clone()),
-                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "REDIS_URL" => Some("redis://localhost:6379".to_string()),
                 "SUPABASE_JWKS_URL" => Some(jwks.clone()),
                 "SUPABASE_JWT_ISSUER" => Some(TEST_ISSUER.to_string()),
                 "SEPOLIA_RPC_URL" => Some(RPC.to_string()),
@@ -1620,7 +1621,7 @@ mod tests {
         let state = AppState {
             config: config.clone(),
             pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
-            redis: RedisClient::open("redis://localhost:1").unwrap(),
+            redis: RedisClient::open("redis://localhost:6379").unwrap(),
             auth: auth_ctx,
             relay_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
@@ -1771,7 +1772,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Phase 13 / Milestone D gate: the full Rust voting pipeline with a
+    /// The full voting pipeline with a
     /// REAL Groth16 proof (committed fixture) against docker PG + docker
     /// Redis + a local hardhat node:
     ///   bash scripts/local/smoke.sh && npx hardhat node
@@ -2100,7 +2101,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Phase 14 gates: completion lifecycle. Run with docker PG.
+    /// Completion lifecycle gates. Run with docker PG.
     #[tokio::test]
     #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
     async fn completion_rejects_early_and_is_idempotent() {
@@ -2216,7 +2217,7 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(json["error"], "ALREADY_COMPLETED");
 
-        // The completed list (Phase 7 surface) now carries the row.
+        // The completed list now carries the row.
         let (status, rows) = get_json(
             routes::router(state.clone()),
             "/api/elections/completed",

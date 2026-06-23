@@ -1,4 +1,4 @@
-//! Typed chain layer (PROJECT_PLAN Phase 11): verifier + VotingTally
+//! Typed chain layer: verifier + VotingTally
 //! deployment, `configureElection` with preflight, receipt polling, and
 //! failure classification. Keys are passed in as raw hex (sourced from
 //! Secret Manager or local .env by the caller) and never logged.

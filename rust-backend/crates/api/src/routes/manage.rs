@@ -1,9 +1,9 @@
-//! Phase 8 admin setup routes. Validation parity with the Node reference
-//! (`setVote.js` M4 caps, `addAdmins.js` invitation upsert) — see
-//! docs/API_COMPATIBILITY.md.
+//! Admin setup routes: election creation (M4 candidate/timing caps) and
+//! admin-invitation upsert.
 
 use crate::auth::AdminUser;
 use crate::error::ApiError;
+use crate::leases;
 use crate::state::AppState;
 use alloy::primitives::{Address, U256};
 use axum::extract::{Path, State};
@@ -141,9 +141,9 @@ pub struct AddAdminBody {
 pub struct AddAdminResponse {
     pub success: bool,
     pub message: String,
-    /// Always false in the Rust port: there is no Supabase Auth Admin API
-    /// here (AR-L4 decision); invited users are promoted on their first
-    /// authenticated request instead (audit H5).
+    /// Always false: the backend does not call an IdP admin API to look up
+    /// existing users (AR-L4 decision); invited users are promoted on their
+    /// first authenticated request instead (audit H5).
     #[serde(rename = "promotedExistingUser")]
     pub promoted_existing_user: bool,
 }
@@ -205,60 +205,6 @@ pub struct SetZkDeployResponse {
     pub deploy_tx_hash: String,
     #[serde(rename = "artifactId")]
     pub artifact_id: Uuid,
-}
-
-struct RedisLease {
-    key: String,
-    token: String,
-}
-
-async fn acquire_redis_lease(
-    client: &redis::Client,
-    key: String,
-    ttl_seconds: u64,
-    conflict_code: &'static str,
-    conflict_details: &'static str,
-) -> Result<RedisLease, ApiError> {
-    let token = Uuid::new_v4().to_string();
-    let mut conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(ApiError::from)?;
-    let reply: Option<String> = redis::cmd("SET")
-        .arg(&key)
-        .arg(&token)
-        .arg("NX")
-        .arg("EX")
-        .arg(ttl_seconds)
-        .query_async(&mut conn)
-        .await
-        .map_err(ApiError::from)?;
-
-    if reply.as_deref() == Some("OK") {
-        Ok(RedisLease { key, token })
-    } else {
-        Err(coded(409, conflict_code, conflict_details))
-    }
-}
-
-async fn release_redis_lease(client: &redis::Client, lease: &RedisLease) -> Result<(), ApiError> {
-    let mut conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(ApiError::from)?;
-    let _: i32 = redis::Script::new(
-        "if redis.call('GET', KEYS[1]) == ARGV[1] then \
-             return redis.call('DEL', KEYS[1]) \
-         else \
-             return 0 \
-         end",
-    )
-    .key(&lease.key)
-    .arg(&lease.token)
-    .invoke_async(&mut conn)
-    .await
-    .map_err(ApiError::from)?;
-    Ok(())
 }
 
 fn string_is_blank(value: &Option<String>) -> bool {
@@ -557,7 +503,7 @@ async fn deploy_with_locked_election(
     ensure_election_not_superseded(&latest)?;
 
     let (chain, owner) = deployment_chain_config(state)?;
-    let relayer_lease = acquire_redis_lease(
+    let relayer_lease = leases::acquire(
         &state.redis,
         "chain-relayer:tx".to_string(),
         RELAYER_LOCK_SECONDS,
@@ -581,7 +527,7 @@ async fn deploy_with_locked_election(
         .await
     };
 
-    if let Err(err) = release_redis_lease(&state.redis, &relayer_lease).await {
+    if let Err(err) = leases::release(&state.redis, &relayer_lease).await {
         tracing::warn!(error = %err, "failed to release relayer redis lease");
     }
 
@@ -617,7 +563,7 @@ async fn deploy_with_locked_election(
     }))
 }
 
-/// Deployment guard (Phase 8/11): rejects unknown/already deployed elections,
+/// Deployment guard: rejects unknown/already deployed elections,
 /// requires a manifest-bound artifact set, serializes deployment with Redis,
 /// deploys through the typed chain layer, and atomically records DB metadata.
 pub async fn set_zk_deploy(
@@ -643,7 +589,7 @@ pub async fn set_zk_deploy(
     )
     .await?;
     let Some(artifact) = artifact else {
-        // Phase 8 gate: missing ZK artifacts block deployment setup.
+        // Missing ZK artifacts block deployment setup.
         return Err(ApiError::Validation(format!(
             "No registered ZK artifact set for depth {} / {} candidates. \
              Run the artifact pipeline before contract deployment.",
@@ -657,7 +603,7 @@ pub async fn set_zk_deploy(
         election.num_candidates,
     )?;
 
-    let deploy_lease = acquire_redis_lease(
+    let deploy_lease = leases::acquire(
         &state.redis,
         format!("election:{election_id}:deploy"),
         DEPLOYMENT_LOCK_SECONDS,
@@ -675,7 +621,7 @@ pub async fn set_zk_deploy(
     )
     .await;
 
-    if let Err(err) = release_redis_lease(&state.redis, &deploy_lease).await {
+    if let Err(err) = leases::release(&state.redis, &deploy_lease).await {
         tracing::warn!(error = %err, "failed to release deployment redis lease");
     }
 
@@ -683,7 +629,7 @@ pub async fn set_zk_deploy(
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/elections/:election_id/complete  (Phase 14)
+// POST /api/elections/:election_id/complete
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -737,7 +683,7 @@ pub async fn complete_election(
         });
     }
 
-    // Guarded, idempotent (Node parity: `.eq("completed", false)`) and
+    // Guarded, idempotent (only flips `completed` from false) and
     // fail-closed if the election is superseded after the pre-check.
     if !ElectionRepo::mark_completed(&state.pg, election_id).await? {
         return Err(ApiError::Coded {

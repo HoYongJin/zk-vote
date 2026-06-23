@@ -36,7 +36,7 @@ pub fn trace_layer() -> TraceLayer<
 }
 
 /// CORS for the browser frontend: explicit origins from config, the methods
-/// and headers the React app actually uses (JSON bodies + Supabase JWTs).
+/// and headers the React app actually uses (JSON bodies + bearer JWTs).
 pub fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
     let origins: Vec<_> = allowed_origins
         .iter()

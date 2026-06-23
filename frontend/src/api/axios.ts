@@ -55,8 +55,7 @@ instance.interceptors.request.use(
       return config;
     }
 
-    // getIdToken() is async (unlike Supabase's sync access_token). Firebase
-    // auto-refreshes an expired token.
+    // getIdToken() is async; Firebase auto-refreshes an expired token.
     const user = auth.currentUser;
     if (user) {
       const token = await user.getIdToken();

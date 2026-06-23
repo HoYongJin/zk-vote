@@ -3,13 +3,12 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
 
-/// Application error type for every route handler. Serializes to the same
-/// `{ "error": CODE, "details": "..." }` body shape the Node API uses, so
-/// the frontend error handling carries over unchanged during parity work.
+/// Application error type for every route handler. Serializes to the
+/// `{ "error": CODE, "details": "..." }` body shape the frontend expects.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     // Validation/NotFound/Conflict gain production call sites with the
-    // Phase 7+ business routes; their contract is locked by tests below.
+    // business routes; their contract is locked by tests below.
     #[allow(dead_code)]
     #[error("{0}")]
     Validation(String),
@@ -25,7 +24,7 @@ pub enum ApiError {
     #[allow(dead_code)]
     #[error("{0}")]
     Conflict(String),
-    /// Route-specific Node error codes (REGISTRATION_PERIOD_ENDED,
+    /// Route-specific error codes (REGISTRATION_PERIOD_ENDED,
     /// OVER_CAPACITY, ...) that don't warrant their own variant.
     #[error("{details}")]
     Coded {
@@ -51,8 +50,7 @@ impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
-            // Same codes the Node middlewares emit, so frontend handling
-            // carries over unchanged.
+            // The auth-failure codes the frontend matches on.
             Self::MissingAuth => (StatusCode::UNAUTHORIZED, "AUTHENTICATION_REQUIRED"),
             Self::InvalidAuth(_) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN"),
             Self::AdminRequired => (StatusCode::FORBIDDEN, "ADMIN_PRIVILEGES_REQUIRED"),

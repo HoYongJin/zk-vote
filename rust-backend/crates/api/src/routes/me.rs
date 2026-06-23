@@ -13,10 +13,9 @@ pub struct MeResponse {
     pub is_admin: bool,
 }
 
-/// Role endpoint replacing the frontend's direct Supabase `Admins` read
-/// (architecture review AR-H4; consumed by the frontend in Phase 15). Also
-/// the place where a pending admin invitation takes effect on first login
-/// (audit H5 parity).
+/// Role endpoint that serves the frontend's admin-status check server-side
+/// (architecture review AR-H4). Also the place where a pending admin
+/// invitation takes effect on first login (audit H5).
 pub async fn me(
     State(state): State<AppState>,
     user: CurrentUser,

@@ -1,4 +1,4 @@
-//! Single-use submission tickets (Redis), Node-parity semantics.
+//! Single-use submission tickets (Redis).
 //!
 //! Privacy invariant (AR-H5): a ticket binds the ELECTION and MERKLE ROOT
 //! only — never a nullifier. The server must not be able to link the

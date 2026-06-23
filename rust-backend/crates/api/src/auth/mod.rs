@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use token::{validate_token, AuthError};
 use uuid::Uuid;
 
-/// Everything needed to validate Supabase access tokens. Built once at
+/// Everything needed to validate the IdP's OIDC access tokens. Built once at
 /// startup when SUPABASE_JWKS_URL is configured.
 pub struct AuthContext {
     pub jwks: JwksCache,
@@ -28,9 +28,8 @@ impl AuthContext {
     }
 }
 
-/// Authenticated Supabase user (any role). Mirrors the Node `auth`
-/// middleware: 401 AUTHENTICATION_REQUIRED without a bearer token, 401
-/// INVALID_TOKEN when validation fails.
+/// Authenticated user (any role): 401 AUTHENTICATION_REQUIRED without a
+/// bearer token, 401 INVALID_TOKEN when validation fails.
 #[derive(Debug, Clone)]
 pub struct CurrentUser {
     pub id: Uuid,
@@ -116,10 +115,10 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
-/// Admin-authenticated user. Mirrors the Node `authAdmin` middleware,
-/// including H5 invitation consumption: when the user is not yet in
-/// `admins` but holds a pending invitation for their normalized e-mail,
-/// they are promoted (and the invitation marked accepted) on first use.
+/// Admin-authenticated user, including H5 invitation consumption: when the
+/// user is not yet in `admins` but holds a pending invitation for their
+/// normalized e-mail, they are promoted (and the invitation marked accepted)
+/// on first use.
 #[derive(Debug, Clone)]
 pub struct AdminUser(pub CurrentUser);
 

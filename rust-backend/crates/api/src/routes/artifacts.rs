@@ -216,9 +216,8 @@ fn artifact_info_response(
     })
 }
 
-/// Node-compatible artifact manifest endpoint used by the frontend before it
-/// fetches wasm/zkey bytes. Authenticated for parity with the Node route; it
-/// intentionally does not use AdminUser.
+/// Artifact manifest endpoint used by the frontend before it fetches
+/// wasm/zkey bytes. Authenticated, but intentionally does not use AdminUser.
 pub async fn artifact_info(
     State(state): State<AppState>,
     _user: CurrentUser,
@@ -437,9 +436,9 @@ async fn read_local_artifact(state: &AppState, artifact_path: &str) -> Result<Ve
     })
 }
 
-/// Strict local replacement for Node's `/api/zkp-files` static mount. It only
-/// serves the generated proving artifacts the browser needs and refuses every
-/// other file under the artifact root.
+/// Strict static handler for `/api/zkp-files`. It only serves the generated
+/// proving artifacts the browser needs and refuses every other file under the
+/// artifact root.
 pub async fn zkp_file(
     State(state): State<AppState>,
     Path(artifact_path): Path<String>,

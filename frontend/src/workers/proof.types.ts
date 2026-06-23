@@ -12,8 +12,8 @@ export type ProofInputs = {
 
 /**
  * Message posted to the proof worker. Either the integrity-verified in-memory
- * artifacts (wasmData/zkeyData, AR-M6) or the legacy URL fallback for
- * pre-manifest elections must be present for each artifact.
+ * artifacts (wasmData/zkeyData, AR-M6) or the URL fallback for pre-manifest
+ * elections must be present for each artifact.
  */
 export interface WorkerRequest {
   inputs: ProofInputs;

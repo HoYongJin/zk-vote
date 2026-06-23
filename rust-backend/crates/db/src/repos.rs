@@ -1,4 +1,4 @@
-//! Repositories over the Phase 3 schema. Handlers stay thin: they combine
+//! Repositories over the database schema. Handlers stay thin: they combine
 //! these data accessors with the pure rules in `zkvote_domain::services`.
 
 use crate::DbError;
@@ -170,7 +170,7 @@ impl ElectionRepo {
         Ok(updated.rows_affected() == 1)
     }
 
-    /// Guarded: idempotent completion (Node parity: `.eq("completed", false)`)
+    /// Guarded: idempotent completion (only flips `completed` from false)
     /// and fail-closed if the election was superseded between read and write.
     pub async fn mark_completed(pool: &PgPool, id: Uuid) -> Result<bool, DbError> {
         let updated = sqlx::query(
@@ -256,7 +256,7 @@ impl VoterRepo {
         Ok(count as u64)
     }
 
-    /// Race-guarded registration bind (Node parity: `.is('user_id', null)`);
+    /// Race-guarded registration bind (only binds when `user_id` is null);
     /// stores only the commitment H(secret) — never a plaintext secret (H2).
     pub async fn bind_registration(
         pool: &PgPool,
@@ -312,7 +312,7 @@ impl SubmissionRepo {
 }
 
 // ---------------------------------------------------------------------------
-// Read-model rows for the Phase 7 list surfaces
+// Read-model rows for the election list surfaces
 // ---------------------------------------------------------------------------
 
 /// Registerable election as seen by a non-admin voter (allowlist join).
@@ -420,13 +420,13 @@ impl ElectionRepo {
 }
 
 // ---------------------------------------------------------------------------
-// Admin invitations (Phase 8 surface; consumption lives in the auth layer)
+// Admin invitations (consumption lives in the auth layer)
 // ---------------------------------------------------------------------------
 
 pub struct AdminRepo;
 
 impl AdminRepo {
-    /// Idempotent invitation upsert (Node parity: `upsert onConflict email`).
+    /// Idempotent invitation upsert (on conflict by email).
     /// Promotion happens at auth time (AR-L4 decision), not here.
     pub async fn upsert_invitation(pool: &PgPool, email: &str) -> Result<(), DbError> {
         sqlx::query(
@@ -495,7 +495,7 @@ impl ZkArtifactRepo {
 }
 
 // ---------------------------------------------------------------------------
-// Contract deployments (Phase 11 metadata)
+// Contract deployments (deployment metadata)
 // ---------------------------------------------------------------------------
 
 pub struct DeploymentRepo;
@@ -579,7 +579,7 @@ impl DeploymentRepo {
 }
 
 // ---------------------------------------------------------------------------
-// Finalization jobs (Phase 12 retry-safe status trail)
+// Finalization jobs (retry-safe status trail)
 // ---------------------------------------------------------------------------
 
 pub struct JobRepo;

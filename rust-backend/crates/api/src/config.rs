@@ -13,12 +13,13 @@ pub struct AppConfig {
     pub gcs_storage_base_url: String,
     pub gcs_metadata_token_url: String,
     pub cors_allowed_origins: Vec<String>,
-    /// Supabase JWKS endpoint; auth-protected routes require it.
+    /// The IdP's JWKS endpoint (env var `SUPABASE_JWKS_URL`);
+    /// auth-protected routes require it.
     pub supabase_jwks_url: Option<String>,
     /// Expected token issuer. Defaults to `{SUPABASE_URL}/auth/v1` when
     /// SUPABASE_URL is set; None disables the issuer check.
     pub supabase_issuer: Option<String>,
-    /// Expected token audience (Supabase default role audience).
+    /// Expected token audience (the IdP's default role audience).
     pub supabase_audience: String,
     /// Ethereum RPC endpoint (finalize/submit relaying).
     pub rpc_url: Option<String>,

@@ -1,7 +1,6 @@
-//! Fixed-depth Merkle tree matching the semantics of the Node reference
-//! (`fixed-merkle-tree` + circomlibjs Poseidon + the tornado ZERO_ELEMENT):
-//! leaves are left-packed, absent leaves are the per-level zero, and
-//! zero[i+1] = H(zero[i], zero[i]).
+//! Fixed-depth Merkle tree built on `fixed-merkle-tree` semantics
+//! (circomlibjs Poseidon + the tornado ZERO_ELEMENT): leaves are left-packed,
+//! absent leaves are the per-level zero, and zero[i+1] = H(zero[i], zero[i]).
 
 use crate::poseidon::{hash2, HashError};
 

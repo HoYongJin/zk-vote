@@ -1,4 +1,4 @@
-//! Phase 13: the privacy-critical voting path (Milestone D).
+//! The privacy-critical voting path.
 //!
 //! `/proof` (authenticated): Merkle path + a single-use ticket bound to the
 //! election and root only — the server never learns a nullifier here
@@ -455,7 +455,7 @@ pub async fn submit(
         ));
     }
 
-    // Node parity: run the contract's view/static preflight before GETDEL.
+    // Run the contract's view/static preflight before GETDEL.
     // Permanent verifier/contract rejections must not burn the one-use ticket;
     // the actual send path still rechecks after consumption to handle races.
     preflight_submit_tally(

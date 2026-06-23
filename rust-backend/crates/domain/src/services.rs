@@ -1,7 +1,7 @@
-//! Pure domain rules ported from the Node reference implementation
-//! (`server/routes/*.js` + `server/utils/submitValidation.js`). Every rule
-//! takes plain values so it can be unit-tested without a database, and every
-//! rejection carries the Node error code the route layer must emit.
+//! Pure domain rules for registration, election creation, finalization, vote
+//! submission, and completion. Every rule takes plain values so it can be
+//! unit-tested without a database, and every rejection carries the error code
+//! the route layer must emit.
 
 use num_bigint::BigUint;
 use time::OffsetDateTime;
@@ -72,14 +72,14 @@ pub fn parse_base_field_element(value: &str) -> Result<BigUint, FieldElementErro
 }
 
 /// `BigInt("0x" + uuid-without-dashes)` — the election identity inside the
-/// circuit and the `VotingTally` constructor (must match Node's
+/// circuit and the `VotingTally` constructor (must match the frontend's
 /// `electionIdToBigInt`).
 pub fn election_id_to_field(election_uuid: &uuid::Uuid) -> BigUint {
     BigUint::from_bytes_be(election_uuid.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
-// Registration eligibility (Node: register.js + merkle.js + AR-H2 guard)
+// Registration eligibility (AR-H2 guard)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -132,7 +132,7 @@ pub fn capacity(merkle_depth: u32) -> u64 {
     1u64 << merkle_depth.min(63)
 }
 
-/// AR-H2 allowlist guard (Node: registerByAdmin.js): existing + new <= 2^depth.
+/// AR-H2 allowlist guard: existing + new <= 2^depth.
 pub fn check_allowlist_capacity(
     existing: u64,
     new: u64,
@@ -146,7 +146,7 @@ pub fn check_allowlist_capacity(
 }
 
 // ---------------------------------------------------------------------------
-// Election creation input validation (Node: setVote.js, audit M4)
+// Election creation input validation (audit M4)
 // ---------------------------------------------------------------------------
 
 pub const MAX_SUPPORTED_MERKLE_DEPTH: u32 = 5;
@@ -154,7 +154,7 @@ pub const MAX_SUPPORTED_CANDIDATES: usize = 5;
 
 /// Validates and normalizes admin election-creation input. Returns the
 /// trimmed name and trimmed candidate labels; every rejection is the
-/// human-readable `details` string Node pairs with VALIDATION_ERROR.
+/// human-readable `details` string paired with VALIDATION_ERROR.
 pub fn validate_election_input(
     name: &str,
     merkle_tree_depth: u32,
@@ -198,7 +198,7 @@ pub fn validate_election_input(
 }
 
 // ---------------------------------------------------------------------------
-// Finalization eligibility (Node: finalizeVote.js pre-checks)
+// Finalization eligibility pre-checks
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -238,7 +238,7 @@ pub fn check_finalization(check: &FinalizationCheck) -> Result<(), FinalizationR
 }
 
 // ---------------------------------------------------------------------------
-// Vote submission validation (Node: submitValidation.js, post-C1 4-signal)
+// Vote submission validation (post-C1 4-signal)
 // ---------------------------------------------------------------------------
 
 pub const PUBLIC_SIGNAL_ROOT_INDEX: usize = 0;
@@ -324,7 +324,7 @@ pub fn check_submission(check: &SubmitCheck<'_>) -> Result<ValidatedSubmission, 
 }
 
 // ---------------------------------------------------------------------------
-// Completion eligibility (Node: completeVote.js)
+// Completion eligibility
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn submission_accepts_the_post_c1_signal_shape() {
-        // election_id 0x7b == 123 — same derivation as Node's electionIdToBigInt.
+        // election_id 0x7b == 123 — the electionIdToBigInt derivation.
         let (signals, election) = submit_base(vec!["123", "1", "456", "123"]);
         let result = check_submission(&SubmitCheck {
             public_signals: &signals,

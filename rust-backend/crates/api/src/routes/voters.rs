@@ -1,4 +1,4 @@
-//! Phase 9: voter allowlisting and registration, race-safe via a Postgres
+//! Voter allowlisting and registration, race-safe via a Postgres
 //! advisory transaction lock per election. Privacy model (audit H2): the
 //! client generates and keeps the secret; only the Poseidon commitment
 //! H(secret) reaches this API. AR-H6: a registered voter may re-bind a new

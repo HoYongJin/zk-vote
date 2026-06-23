@@ -27,9 +27,9 @@ function AuthHandler({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // 역할 조회는 백엔드의 /api/me가 단일 출처다 (AR-H4: Supabase 테이블
-    // 직접 읽기를 제거해 Cloud SQL 마이그레이션 후에도 게이팅이 유지되고,
-    // H5 초대 승격이 첫 인증 요청에서 즉시 반영된다).
+    // 역할 조회는 백엔드의 /api/me가 단일 출처다 (AR-H4: 클라이언트는 역할
+    // 테이블을 직접 읽지 않으므로 게이팅이 백엔드에 집중되고, H5 초대 승격이
+    // 첫 인증 요청에서 즉시 반영된다).
     const fetchIsAdmin = async (): Promise<boolean> => {
       try {
         const { data } = await axios.get<{ is_admin?: boolean }>('/me');
@@ -53,8 +53,7 @@ function AuthHandler({ children }: { children: ReactNode }) {
     };
 
     // Firebase(GCIP) 인증 상태 리스너. onAuthStateChanged는 최초 로드 시 현재
-    // 사용자(또는 null)로 한 번 발화하고 이후 로그인/로그아웃마다 발화하므로,
-    // Supabase의 onAuthStateChange + getSession 두 경로를 하나로 대체한다.
+    // 사용자(또는 null)로 한 번 발화하고 이후 로그인/로그아웃마다 발화한다.
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         // 직렬화 가능한 투영만 저장한다 (ID 토큰은 요청 시점에 axios

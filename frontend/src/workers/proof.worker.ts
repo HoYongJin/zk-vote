@@ -15,7 +15,7 @@ const ctx = self as unknown as {
 
 ctx.onmessage = async (event) => {
   // Preferred: integrity-verified in-memory artifacts (wasmData/zkeyData,
-  // AR-M6). Legacy fallback: URLs for pre-manifest elections.
+  // AR-M6). Fallback: URLs for pre-manifest elections.
   const { inputs, wasmPath, zkeyPath, wasmData, zkeyData } = event.data;
 
   const wasmInput = wasmData ? { type: 'mem' as const, data: wasmData } : wasmPath;

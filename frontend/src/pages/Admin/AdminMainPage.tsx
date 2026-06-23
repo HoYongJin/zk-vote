@@ -164,13 +164,7 @@ function AdminMainPage() {
       fetchAllVotes();
     } catch (error) {
       console.error('등록 마감 실패:', errorData(error));
-      const data = errorData(error) as { error?: string } | undefined;
-      if (data?.error?.includes('already known')) {
-        alert('트랜잭션이 이미 전송되었습니다. 잠시 후 새로고침 됩니다.');
-        setTimeout(fetchAllVotes, 5000);
-      } else {
-        alert(`등록 마감 실패: ${errorMessage(error)}`);
-      }
+      alert(`등록 마감 실패: ${errorMessage(error)}`);
     } finally {
       setActionLoading((prev) => ({ ...prev, isFinalizing: null }));
     }

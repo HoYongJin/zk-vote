@@ -2,7 +2,7 @@
  * @file frontend/src/pages/LoginPage.tsx
  * @desc Login page. Auth is via GCP Identity Platform (Firebase Auth Web SDK):
  * Email + Password (Sign In / Sign Up with e-mail verification + password
- * reset) and OAuth via Google (PROJECT_PLAN Phase 16).
+ * reset) and OAuth via Google.
  */
 import { useState, type CSSProperties, type FormEvent } from 'react';
 import {

@@ -8,7 +8,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Minimum wall-clock interval between *forced* (unknown-kid) JWKS refetches.
 /// Without this, an attacker minting tokens with random `kid`s (no valid
 /// signature needed — the unknown-kid check precedes verification) drives an
-/// unbounded outbound JWKS fetch per request, amplifying onto the Supabase JWKS
+/// unbounded outbound JWKS fetch per request, amplifying onto the IdP's JWKS
 /// endpoint and serializing the auth path on the write lock (RUST-AUTH-1). A
 /// real key rotation is still picked up within this window.
 const MIN_FORCED_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -18,7 +18,7 @@ struct CachedKeys {
     keyset: Arc<KeySet>,
 }
 
-/// Fetches and caches the Supabase JWKS document. Refreshes after the TTL,
+/// Fetches and caches the IdP's JWKS document. Refreshes after the TTL,
 /// or immediately (once per request) when a token arrives with an unknown
 /// `kid` — the normal shape of a key rotation.
 pub struct JwksCache {

@@ -1,4 +1,4 @@
-//! Phase 11 gates against a local hardhat node.
+//! Chain-layer gates against a local hardhat node.
 //! Start it first: `npx hardhat node` (repo root), then run:
 //! `cargo test -p zkvote-chain -- --ignored`
 

@@ -1,4 +1,4 @@
-//! Phase 6 repository gates against the docker-compose Postgres
+//! Repository gates against the docker-compose Postgres
 //! (scripts/local/smoke.sh + migrate.sh first). Run explicitly:
 //! `cargo test -p zkvote-db -- --ignored`
 

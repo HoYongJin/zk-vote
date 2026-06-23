@@ -1,7 +1,6 @@
 /**
  * @file frontend/src/firebase.ts
- * @desc Firebase Auth (GCP Identity Platform) client init — replaces the legacy
- * Supabase Auth client (PROJECT_PLAN Phase 16).
+ * @desc Firebase Auth (GCP Identity Platform) client init.
  *
  * The Firebase web `apiKey` is PUBLIC client config, not a secret — it only
  * identifies the project to Google's auth endpoints; access is governed by the
@@ -17,9 +16,9 @@ const firebaseConfig = {
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
 };
 
-// Fail fast on a misconfigured build: a bundle built without VITE_FIREBASE_* (e.g.
-// a CD job still injecting the old REACT_APP_* names) would otherwise initialize
-// Firebase with apiKey:undefined and fail opaquely at the first sign-in.
+// Fail fast on a misconfigured build: a bundle built without the VITE_FIREBASE_*
+// env would otherwise initialize Firebase with apiKey:undefined and fail opaquely
+// at the first sign-in.
 const missingFirebaseConfig = (['apiKey', 'authDomain', 'projectId'] as const).filter(
   (key) => !firebaseConfig[key],
 );
@@ -30,7 +29,7 @@ if (missingFirebaseConfig.length > 0) {
   );
 }
 
-// (mirrors the old supabase.js debug: confirm config is wired, never log the key)
+// Confirm config is wired at boot; never log the key itself.
 console.log('Firebase projectId:', firebaseConfig.projectId);
 
 const app = initializeApp(firebaseConfig);

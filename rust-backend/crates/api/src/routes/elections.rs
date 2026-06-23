@@ -1,7 +1,6 @@
-//! Phase 7 read-only parity routes. Response field names and visibility
-//! rules mirror the Node reference exactly (docs/API_COMPATIBILITY.md):
-//! admins see every election in the relevant lifecycle window, voters see
-//! only elections they are allowlisted/registered for.
+//! Read-only election list routes. Visibility rules: admins see every
+//! election in the relevant lifecycle window, voters see only elections they
+//! are allowlisted/registered for.
 
 use crate::auth::{is_admin_or_promote, CurrentUser};
 use crate::error::ApiError;
@@ -21,7 +20,7 @@ pub struct RegisterableRow {
     pub contract_address: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub registration_end_time: OffsetDateTime,
-    /// Present only for non-admin voters (Node parity).
+    /// Present only for non-admin voters.
     #[serde(rename = "isRegistered", skip_serializing_if = "Option::is_none")]
     pub is_registered: Option<bool>,
 }

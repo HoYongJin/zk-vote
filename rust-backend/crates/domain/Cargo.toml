@@ -8,6 +8,5 @@ license.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
-utoipa.workspace = true
 uuid.workspace = true
 num-bigint.workspace = true
