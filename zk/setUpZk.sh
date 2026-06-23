@@ -15,7 +15,8 @@ fi
 # --- NEW: Dynamically determine absolute paths ---
 # Get the absolute path of the directory where this script is located.
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-PROJECT_ROOT=$( cd -- "${SCRIPT_DIR}/../.." &> /dev/null && pwd )
+# zk/ sits directly under the repo root, so the project root is one level up.
+PROJECT_ROOT=$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )
 # Construct the absolute path to the circomlib directory from the script's location.
 CIRCOMLIB_PATH="${SCRIPT_DIR}/../node_modules/circomlib/circuits"
 CIRCOM_BIN="${CIRCOM_BIN:-circom}"
