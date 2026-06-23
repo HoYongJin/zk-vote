@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 
-PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-staging}}"
+PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-staging-26c4d8}}"
 BUCKET="${BUCKET:-${ARTIFACT_BUCKET:-zkvote-staging-artifacts-${PROJECT_ID}}}"
 BUILD_DIRS=("build_4_5" "build_5_4")
 ARTIFACT_FILES=(

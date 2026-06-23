@@ -7,11 +7,11 @@ PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 # PROJECT_PLAN §18: this is a DEDICATED staging project, NOT the shared POC project.
 # The Cloud Run project, the GCIP/Identity-Platform project, the JWT audience
 # (deploy-staging-api.sh sets SUPABASE_JWT_AUDIENCE=<PROJECT_ID>), and the frontend
-# Firebase project (REACT_APP_FIREBASE_PROJECT_ID / .firebaserc) MUST ALL be this
+# Firebase project (VITE_FIREBASE_PROJECT_ID / .firebaserc) MUST ALL be this
 # same id. If they diverge, the backend's audience check rejects 100% of the
 # frontend's GCIP tokens. Override GCP_PROJECT_ID for your real (globally-unique)
 # project id; the default is intentionally not the shared POC project.
-PROJECT_ID="${GCP_PROJECT_ID:-zkvote-staging}"
+PROJECT_ID="${GCP_PROJECT_ID:-zkvote-staging-26c4d8}"
 REGION="${GCP_REGION:-asia-northeast3}"
 BUCKET="${ARTIFACT_BUCKET:-zkvote-staging-artifacts-${PROJECT_ID}}"
 SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"

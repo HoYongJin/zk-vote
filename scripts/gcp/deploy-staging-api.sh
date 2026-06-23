@@ -10,10 +10,10 @@ set -euo pipefail
 # PROJECT_PLAN §18: dedicated staging project (NOT the shared POC project). This
 # id is also the JWT audience (SUPABASE_JWT_AUDIENCE=<PROJECT_ID>, L92 below) and
 # the issuer host segment, so it MUST equal the GCIP project AND the frontend
-# Firebase project (REACT_APP_FIREBASE_PROJECT_ID / .firebaserc). If they diverge,
+# Firebase project (VITE_FIREBASE_PROJECT_ID / .firebaserc). If they diverge,
 # every GCIP token the frontend mints is rejected (wrong audience). Verify equality
 # at the Phase-18 gate (docs/RUNBOOK_PHASE18_STANDUP.md §8).
-PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-staging}}"
+PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-staging-26c4d8}}"
 REGION="${REGION:-${GCP_REGION:-asia-northeast3}}"
 SERVICE="${SERVICE:-zkvote-staging-api}"
 REPO="${REPO:-zkvote-staging}"
