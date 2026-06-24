@@ -22,6 +22,12 @@ interface AuthState {
   isLoggedIn: boolean;
   isAdmin: boolean;
   /**
+   * GOV-1 second tier. True only for a non-revoked superadmin; gates the
+   * high-blast-radius admin controls (add-admin, ZK setup/deploy) in the UI so
+   * an ordinary admin is not shown buttons the backend would 403.
+   */
+  isSuperAdmin: boolean;
+  /**
    * Starts true; becomes false only after BOTH session and admin status are
    * resolved. Prevents protected-route flicker.
    */
@@ -35,6 +41,7 @@ const initialState: AuthState = {
   session: null,
   isLoggedIn: false,
   isAdmin: false,
+  isSuperAdmin: false,
   loading: true,
   postLoginRedirectComplete: false,
 };
@@ -51,9 +58,10 @@ const authSlice = createSlice({
       state.isLoggedIn = true;
     },
 
-    // Sets admin status AND clears `loading` (the auth check is now complete).
-    setAdmin: (state, action: PayloadAction<boolean>) => {
-      state.isAdmin = action.payload;
+    // Sets admin + superadmin status AND clears `loading` (auth check complete).
+    setAdmin: (state, action: PayloadAction<{ isAdmin: boolean; isSuperAdmin: boolean }>) => {
+      state.isAdmin = action.payload.isAdmin;
+      state.isSuperAdmin = action.payload.isSuperAdmin;
       state.loading = false;
     },
 
@@ -67,6 +75,7 @@ const authSlice = createSlice({
       state.session = null;
       state.isLoggedIn = false;
       state.isAdmin = false;
+      state.isSuperAdmin = false;
       state.loading = false;
       state.postLoginRedirectComplete = false;
     },

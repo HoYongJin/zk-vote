@@ -1,7 +1,7 @@
 //! Admin setup routes: election creation (M4 candidate/timing caps) and
 //! admin-invitation upsert.
 
-use crate::auth::AdminUser;
+use crate::auth::{AdminUser, SuperAdminUser};
 use crate::error::ApiError;
 use crate::leases;
 use crate::state::AppState;
@@ -20,8 +20,8 @@ use zkvote_chain::{
     address_for_private_key, deploy_verifier, deploy_voting_tally, ChainConfig, ChainError,
 };
 use zkvote_db::repos::{
-    AdminRepo, DeploymentRepo, Election, ElectionRepo, NewElection, NewZkArtifact, ZkArtifact,
-    ZkArtifactRepo,
+    AdminListRow, AdminRepo, DeploymentRepo, Election, ElectionRepo, NewElection, NewZkArtifact,
+    RevokeOutcome, ZkArtifact, ZkArtifactRepo,
 };
 use zkvote_domain::services::{
     election_id_to_field, validate_election_input, CIRCUIT_CANDIDATE_WIDTH, PUBLIC_SIGNAL_COUNT,
@@ -196,7 +196,7 @@ fn normalize_email(raw: &str) -> Option<String> {
 
 pub async fn add_admins(
     State(state): State<AppState>,
-    AdminUser(_admin): AdminUser,
+    SuperAdminUser(admin): SuperAdminUser,
     Json(body): Json<AddAdminBody>,
 ) -> Result<(StatusCode, Json<AddAdminResponse>), ApiError> {
     let raw = body.email.ok_or_else(|| {
@@ -205,7 +205,8 @@ pub async fn add_admins(
     let email = normalize_email(&raw)
         .ok_or_else(|| ApiError::Validation("Invalid email format provided.".to_string()))?;
 
-    AdminRepo::upsert_invitation(&state.pg, &email).await?;
+    // GOV-1: record who invited this admin (accountability).
+    AdminRepo::upsert_invitation(&state.pg, &email, Some(admin.id)).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -217,6 +218,74 @@ pub async fn add_admins(
             promoted_existing_user: false,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/management/admins  +  POST /api/management/admins/:id/revoke (GOV-1)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct AdminListEntry {
+    pub id: Uuid,
+    pub email: Option<String>,
+    pub is_superadmin: bool,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub revoked_at: Option<OffsetDateTime>,
+    pub invited_by: Option<Uuid>,
+}
+
+/// GOV-1: list all admins (active + revoked) so a superadmin can pick one to
+/// revoke. Superadmin-gated.
+pub async fn list_admins(
+    State(state): State<AppState>,
+    SuperAdminUser(_admin): SuperAdminUser,
+) -> Result<Json<Vec<AdminListEntry>>, ApiError> {
+    let admins = AdminRepo::list(&state.pg)
+        .await?
+        .into_iter()
+        .map(|r: AdminListRow| AdminListEntry {
+            id: r.id,
+            email: r.email,
+            is_superadmin: r.is_superadmin,
+            revoked_at: r.revoked_at,
+            invited_by: r.invited_by,
+        })
+        .collect();
+    Ok(Json(admins))
+}
+
+#[derive(Serialize)]
+pub struct RevokeAdminResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// GOV-1: revoke (soft-delete) an admin. Superadmin-gated. The repo refuses — via
+/// an advisory lock that serializes concurrent revokes — to revoke the last
+/// active superadmin, so the privileged trio can never be locked out by a race.
+pub async fn revoke_admin(
+    State(state): State<AppState>,
+    SuperAdminUser(_admin): SuperAdminUser,
+    Path(target_id): Path<Uuid>,
+) -> Result<Json<RevokeAdminResponse>, ApiError> {
+    match AdminRepo::revoke(&state.pg, target_id).await? {
+        RevokeOutcome::Revoked => Ok(Json(RevokeAdminResponse {
+            success: true,
+            message: format!("Admin {target_id} revoked."),
+        })),
+        RevokeOutcome::AlreadyRevoked => Ok(Json(RevokeAdminResponse {
+            success: true,
+            message: format!("Admin {target_id} was already revoked."),
+        })),
+        RevokeOutcome::NotFound => Err(ApiError::NotFound(format!(
+            "Admin with ID {target_id} not found."
+        ))),
+        RevokeOutcome::LastSuperadmin => Err(ApiError::Coded {
+            status: 409,
+            code: "LAST_SUPERADMIN",
+            details: "Cannot revoke the last active superadmin.".to_string(),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -683,7 +752,7 @@ async fn deploy_with_locked_election(
 /// deploys through the typed chain layer, and atomically records DB metadata.
 pub async fn set_zk_deploy(
     State(state): State<AppState>,
-    AdminUser(_admin): AdminUser,
+    SuperAdminUser(_admin): SuperAdminUser,
     Path(election_id): Path<Uuid>,
 ) -> Result<Json<SetZkDeployResponse>, ApiError> {
     let election = ElectionRepo::find(&state.pg, election_id)
@@ -778,7 +847,7 @@ pub struct SupersedeResponse {
 /// and the deploy path shares the relayer lease).
 pub async fn supersede_election(
     State(state): State<AppState>,
-    AdminUser(admin): AdminUser,
+    SuperAdminUser(admin): SuperAdminUser,
     Path(election_id): Path<Uuid>,
     Json(body): Json<SupersedeBody>,
 ) -> Result<Json<SupersedeResponse>, ApiError> {

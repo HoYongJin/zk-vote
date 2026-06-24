@@ -30,24 +30,24 @@ function AuthHandler({ children }: { children: ReactNode }) {
     // 역할 조회는 백엔드의 /api/me가 단일 출처다 (AR-H4: 클라이언트는 역할
     // 테이블을 직접 읽지 않으므로 게이팅이 백엔드에 집중되고, H5 초대 승격이
     // 첫 인증 요청에서 즉시 반영된다).
-    const fetchIsAdmin = async (): Promise<boolean> => {
+    const fetchRole = async (): Promise<{ isAdmin: boolean; isSuperAdmin: boolean }> => {
       try {
-        const { data } = await axios.get<{ is_admin?: boolean }>('/me');
-        return Boolean(data.is_admin);
+        const { data } = await axios.get<{ is_admin?: boolean; is_superadmin?: boolean }>('/me');
+        return { isAdmin: Boolean(data.is_admin), isSuperAdmin: Boolean(data.is_superadmin) };
       } catch (error) {
         console.error('Failed to resolve role from /api/me:', errorData(error));
-        return false; // fail-closed: 역할 확인 실패 시 관리자 아님으로 처리
+        return { isAdmin: false, isSuperAdmin: false }; // fail-closed
       }
     };
 
     // 관리자인지 확인하고, 로그인 직후라면 적절한 페이지로 리디렉션한다.
     const checkAdminAndRedirect = async (): Promise<void> => {
-      const isAdminUser = await fetchIsAdmin();
-      dispatch(setAdmin(isAdminUser));
+      const { isAdmin, isSuperAdmin } = await fetchRole();
+      dispatch(setAdmin({ isAdmin, isSuperAdmin }));
 
       const { postLoginRedirectComplete } = store.getState().auth;
       if (!postLoginRedirectComplete) {
-        navigate(isAdminUser ? '/admin' : '/');
+        navigate(isAdmin ? '/admin' : '/');
         dispatch(setRedirectComplete(true));
       }
     };

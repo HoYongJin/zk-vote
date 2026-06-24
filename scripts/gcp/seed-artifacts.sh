@@ -28,6 +28,7 @@ ARTIFACT_FILES=(
   "circuit_final.zkey"
   "verification_key.json"
   "VoteCheck_temp_js/VoteCheck_temp.wasm"
+  "ceremony.json"
 )
 
 if [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
@@ -47,6 +48,59 @@ if ! gcloud storage buckets describe "gs://${BUCKET}" --project "${PROJECT_ID}" 
   echo "Refusing to seed: bucket gs://${BUCKET} does not exist (run zkvote-staging-setup.sh first)." >&2
   exit 1
 fi
+
+# --- Trusted-setup provenance gate (ZK-SETUP-1 / AR-H1, invariant #6) ----------
+# Pre-flight over ALL shapes BEFORE any upload (all-or-nothing: never seed a
+# partial/mixed key set). Two stages, fail closed:
+#   1. ceremony.json must declare finalizedWithBeacon: true — a cheap,
+#      forgery-resistant structural pre-filter (check-ceremony-beacon.sh).
+#   2. `snarkjs zkey verify` must accept the zkey against the committed r1cs and
+#      the depth-matched ptau — the AUTHORITATIVE transcript check. The flag in
+#      (1) is hand-editable; only (2) proves the zkey is a real beacon transcript
+#      of the committed circuit, so a forged finalizedWithBeacon cannot pass.
+SNARKJS_BIN="${SNARKJS_BIN:-${PROJECT_ROOT}/node_modules/.bin/snarkjs}"
+PTAU_DIR="${PTAU_DIR:-${PROJECT_ROOT}/zk}"
+
+ptau_for_depth() { # mirror zk/setUpZk.sh ptau selection
+  local depth="$1"
+  if   [[ "${depth}" -le 5  ]]; then echo "powersOfTau28_hez_final_12.ptau"
+  elif [[ "${depth}" -le 10 ]]; then echo "powersOfTau28_hez_final_16.ptau"
+  elif [[ "${depth}" -le 20 ]]; then echo "powersOfTau28_hez_final_20.ptau"
+  else echo ""; fi
+}
+
+if [[ ! -x "${SNARKJS_BIN}" ]]; then
+  echo "ABORT: snarkjs not found at ${SNARKJS_BIN}; cannot verify the zkey transcript (AR-H1). Set SNARKJS_BIN or run 'npm ci'." >&2
+  exit 1
+fi
+
+for dir in "${BUILD_DIRS[@]}"; do
+  src_dir="${PROJECT_ROOT}/zk/${dir}"
+  # Stage 1: structural beacon pre-filter (forgery-resistant, anchored match).
+  bash "${SCRIPT_DIR}/check-ceremony-beacon.sh" "${src_dir}/ceremony.json" >/dev/null
+
+  # Stage 2: authoritative transcript verification against r1cs + depth-matched ptau.
+  depth="${dir#build_}"; depth="${depth%%_*}"   # build_6_10 -> 6
+  ptau_name="$(ptau_for_depth "${depth}")"
+  ptau="${PTAU_DIR}/${ptau_name}"
+  r1cs="${src_dir}/VoteCheck_temp.r1cs"
+  zkey="${src_dir}/circuit_final.zkey"
+  if [[ -z "${ptau_name}" || ! -f "${ptau}" ]]; then
+    echo "ABORT: ptau '${ptau}' for ${dir} (depth ${depth}) not found; cannot run 'snarkjs zkey verify' (AR-H1). Fetch it (scripts/local/fetch-ptau.sh) or set PTAU_DIR." >&2
+    exit 1
+  fi
+  if [[ ! -f "${r1cs}" || ! -f "${zkey}" ]]; then
+    echo "ABORT: ${dir} is missing the r1cs/zkey needed for transcript verification." >&2
+    exit 1
+  fi
+  echo "verifying trusted-setup transcript for ${dir} (depth ${depth}, ${ptau_name})..."
+  if ! "${SNARKJS_BIN}" zkey verify "${r1cs}" "${ptau}" "${zkey}" >/dev/null 2>&1; then
+    echo "ABORT: 'snarkjs zkey verify' FAILED for ${dir} — the zkey is not a valid transcript of the committed circuit + ptau (possible forged finalizedWithBeacon). Refusing to seed (AR-H1)." >&2
+    exit 1
+  fi
+  echo "  ok: ${dir} beacon-finalized + transcript verified"
+done
+echo "Trusted-setup provenance OK for all ${#BUILD_DIRS[@]} shapes (beacon + zkey verify)."
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT

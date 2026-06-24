@@ -547,6 +547,421 @@ mod tests {
             .unwrap();
     }
 
+    /// DB-AUTH-1 regression: under the production two-role posture, the API runs
+    /// as `zkvote_app`, which has SELECT/INSERT/UPDATE on `admins` but NO DELETE
+    /// (db/roles.sql:44). A non-admin with no pending invitation must resolve to
+    /// `Ok(false)` — NOT a permission-denied 500. The old non-invited rollback
+    /// branch issued `DELETE FROM admins`, which the local superuser test pool
+    /// silently permitted. This test drops to a restricted `SET ROLE` pool that
+    /// mirrors the grant matrix exactly, so it fails (Err) on the buggy code and
+    /// passes (Ok(false)) once the DELETE is replaced by a tx rollback.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn non_admin_role_lookup_under_two_role_app_grant_does_not_error() {
+        use sqlx::Executor;
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+
+        // Superuser pool: role setup + teardown (teardown DELETE needs superuser).
+        let admin_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(database_url)
+            .await
+            .expect("connect as superuser");
+
+        // A restricted role mirroring db/roles.sql for exactly the tables this
+        // path touches: admins SELECT/INSERT/UPDATE (NO DELETE) + admin_invitations
+        // UPDATE. Idempotent; created before the restricted pool connects.
+        admin_pool
+            .execute(
+                "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zkvote_app_dbauth1_test') \
+                 THEN CREATE ROLE zkvote_app_dbauth1_test NOLOGIN; END IF; END $$;",
+            )
+            .await
+            .unwrap();
+        for stmt in [
+            "GRANT USAGE ON SCHEMA public TO zkvote_app_dbauth1_test",
+            "GRANT SELECT, INSERT, UPDATE ON admins TO zkvote_app_dbauth1_test",
+            "GRANT SELECT, INSERT, UPDATE ON admin_invitations TO zkvote_app_dbauth1_test",
+        ] {
+            admin_pool.execute(stmt).await.unwrap();
+        }
+
+        // Restricted pool: every connection drops to the app role (no DELETE on admins).
+        let app_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute("SET ROLE zkvote_app_dbauth1_test").await?;
+                    Ok(())
+                })
+            })
+            .connect(database_url)
+            .await
+            .expect("connect as restricted app role");
+
+        let user = auth::CurrentUser {
+            id: uuid::Uuid::new_v4(),
+            email: Some(format!("nobody-{}@example.com", uuid::Uuid::new_v4())),
+        };
+
+        let result = auth::is_admin_or_promote(&app_pool, &user).await;
+        assert!(
+            matches!(result, Ok(false)),
+            "non-admin role lookup under the two-role app grant must be Ok(false), \
+             not a permission-denied error; got {result:?}"
+        );
+
+        // Teardown (no row should persist after the fix; belt-and-suspenders).
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(user.id)
+            .execute(&admin_pool)
+            .await
+            .ok();
+    }
+
+    /// GOV-1: the high-blast-radius trio (addAdmins / supersede / setZkDeploy) is
+    /// gated by `SuperAdminUser`. An ordinary admin gets 403
+    /// SUPERADMIN_PRIVILEGES_REQUIRED on all three; promoting to superadmin lets
+    /// the request pass the RBAC gate (even if the downstream resource is absent).
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn trio_route_requires_superadmin() {
+        use auth::token::test_support::*;
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let admin_id = uuid::Uuid::new_v4();
+        let email = format!("ordinary-{admin_id}@example.com");
+        sqlx::query("INSERT INTO admins (id, email, is_superadmin) VALUES ($1, $2, false)")
+            .bind(admin_id)
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let token = mint_token(
+            &admin_id.to_string(),
+            &email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let invitee = format!("invitee-{}@example.com", uuid::Uuid::new_v4());
+        let missing_election_id = uuid::Uuid::new_v4();
+        let add_admin_body = serde_json::json!({ "email": invitee }).to_string();
+        let supersede_body = serde_json::json!({ "reason": "rbac gate test" }).to_string();
+
+        for (path, body) in [
+            (
+                "/api/management/addAdmins".to_string(),
+                add_admin_body.clone(),
+            ),
+            (
+                format!("/api/elections/{missing_election_id}/setZkDeploy"),
+                String::new(),
+            ),
+            (
+                format!("/api/elections/{missing_election_id}/supersede"),
+                supersede_body.clone(),
+            ),
+        ] {
+            let response = routes::router(state.clone())
+                .oneshot(
+                    Request::post(&path)
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "ordinary admin must be blocked before downstream handling at {path}"
+            );
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["error"], "SUPERADMIN_PRIVILEGES_REQUIRED");
+        }
+
+        // Promote to superadmin -> allowed.
+        sqlx::query("UPDATE admins SET is_superadmin = true WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let response = routes::router(state.clone())
+            .oneshot(
+                Request::post("/api/management/addAdmins")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(add_admin_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        for (path, body) in [
+            (
+                format!("/api/elections/{missing_election_id}/setZkDeploy"),
+                String::new(),
+            ),
+            (
+                format!("/api/elections/{missing_election_id}/supersede"),
+                supersede_body,
+            ),
+        ] {
+            let response = routes::router(state.clone())
+                .oneshot(
+                    Request::post(&path)
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "superadmin must pass the RBAC gate at {path}"
+            );
+        }
+
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1 OR invited_by = $2")
+            .bind(&invitee)
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// GOV-1: revoke is a soft delete (UPDATE revoked_at) — the row persists but
+    /// is_admin_or_promote then reports false; re-revoking is idempotent.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn revoke_soft_deletes_and_blocks_admin() {
+        use zkvote_db::repos::{AdminRepo, RevokeOutcome};
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(database_url)
+            .await
+            .unwrap();
+
+        let id = uuid::Uuid::new_v4();
+        let email = format!("revoke-{id}@example.com");
+        sqlx::query("INSERT INTO admins (id, email, is_superadmin) VALUES ($1, $2, false)")
+            .bind(id)
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let user = auth::CurrentUser {
+            id,
+            email: Some(email.clone()),
+        };
+        assert!(auth::is_admin_or_promote(&pool, &user).await.unwrap());
+
+        assert_eq!(
+            AdminRepo::revoke(&pool, id).await.unwrap(),
+            RevokeOutcome::Revoked
+        );
+        // Soft delete: still-present row, but no longer an admin.
+        assert!(!auth::is_admin_or_promote(&pool, &user).await.unwrap());
+        let revoked_at_set: bool =
+            sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM admins WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(revoked_at_set);
+        assert_eq!(
+            AdminRepo::revoke(&pool, id).await.unwrap(),
+            RevokeOutcome::AlreadyRevoked
+        );
+
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// GOV-1 race guard: a transaction-scoped advisory lock serializes concurrent
+    /// revokes so two simultaneous revokes of the last two superadmins cannot both
+    /// succeed and strand the system with zero superadmins.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn concurrent_revoke_cannot_drain_all_superadmins() {
+        use zkvote_db::repos::{AdminRepo, RevokeOutcome};
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(database_url)
+            .await
+            .unwrap();
+
+        // This test reasons about the GLOBAL active-superadmin count, so it needs a
+        // clean admins table. Tests run serially (--test-threads=1) and each builds
+        // its own fixtures, so clearing pre-existing rows here is safe.
+        sqlx::query("DELETE FROM admin_invitations")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE admins SET invited_by = NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM admins")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let s1 = uuid::Uuid::new_v4();
+        let s2 = uuid::Uuid::new_v4();
+        for id in [s1, s2] {
+            sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let (r1, r2) = tokio::join!(AdminRepo::revoke(&pool, s1), AdminRepo::revoke(&pool, s2));
+        let r1 = r1.unwrap();
+        let r2 = r2.unwrap();
+        let revoked = [r1, r2]
+            .iter()
+            .filter(|o| **o == RevokeOutcome::Revoked)
+            .count();
+        let refused = [r1, r2]
+            .iter()
+            .filter(|o| **o == RevokeOutcome::LastSuperadmin)
+            .count();
+        assert_eq!(
+            revoked, 1,
+            "exactly one revoke must succeed (r1={r1:?}, r2={r2:?})"
+        );
+        assert_eq!(
+            refused, 1,
+            "the other must be refused as the last superadmin"
+        );
+
+        let active_supers: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM admins WHERE is_superadmin AND revoked_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            active_supers, 1,
+            "a superadmin must survive the concurrent revoke"
+        );
+
+        sqlx::query("DELETE FROM admins WHERE id = ANY($1)")
+            .bind(vec![s1, s2])
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// GOV-1: add-admin records `invited_by` (accountability), and re-inviting a
+    /// revoked admin reinstates them on their next sign-in (revoked_at cleared,
+    /// provenance carried through).
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn invited_by_recorded_and_revoked_admin_reinstated_on_reinvite() {
+        use zkvote_db::repos::{AdminRepo, RevokeOutcome};
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(database_url)
+            .await
+            .unwrap();
+
+        let inviter = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
+            .bind(inviter)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let invitee_id = uuid::Uuid::new_v4();
+        let invitee_email = format!("reinstate-{invitee_id}@example.com");
+        AdminRepo::upsert_invitation(&pool, &invitee_email, Some(inviter))
+            .await
+            .unwrap();
+
+        let user = auth::CurrentUser {
+            id: invitee_id,
+            email: Some(invitee_email.clone()),
+        };
+        // First sign-in promotes; invited_by is recorded.
+        assert!(auth::is_admin_or_promote(&pool, &user).await.unwrap());
+        let recorded: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT invited_by FROM admins WHERE id = $1")
+                .bind(invitee_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(recorded, Some(inviter));
+
+        // Revoke, then re-invite -> next sign-in reinstates.
+        assert_eq!(
+            AdminRepo::revoke(&pool, invitee_id).await.unwrap(),
+            RevokeOutcome::Revoked
+        );
+        assert!(!auth::is_admin_or_promote(&pool, &user).await.unwrap());
+        AdminRepo::upsert_invitation(&pool, &invitee_email, Some(inviter))
+            .await
+            .unwrap();
+        assert!(auth::is_admin_or_promote(&pool, &user).await.unwrap());
+        let still_revoked: bool =
+            sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM admins WHERE id = $1")
+                .bind(invitee_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            !still_revoked,
+            "re-invited admin must be reinstated (revoked_at NULL)"
+        );
+        let recorded_email: Option<String> =
+            sqlx::query_scalar("SELECT email::text FROM admins WHERE id = $1")
+                .bind(invitee_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(recorded_email.as_deref(), Some(invitee_email.as_str()));
+
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1 OR invited_by = $2")
+            .bind(&invitee_email)
+            .bind(inviter)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("UPDATE admins SET invited_by = NULL WHERE id = ANY($1)")
+            .bind(vec![invitee_id, inviter])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM admins WHERE id = ANY($1)")
+            .bind(vec![invitee_id, inviter])
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     async fn get_json(
         app: axum::Router,
         path: &str,
@@ -590,7 +1005,7 @@ mod tests {
         let admin_id = uuid::Uuid::new_v4();
         let voter_id = uuid::Uuid::new_v4();
         let voter_email = format!("voter-{voter_id}@example.com");
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -961,7 +1376,7 @@ mod tests {
         let pool = state.pg.clone();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -995,7 +1410,7 @@ mod tests {
         let eid = election.id;
         let path = format!("/api/elections/{eid}/supersede");
 
-        // Non-admin cannot supersede.
+        // Users without the superadmin role cannot supersede.
         let (status, json) = post_json(
             routes::router(state.clone()),
             &path,
@@ -1004,7 +1419,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(json["error"], "ADMIN_PRIVILEGES_REQUIRED");
+        assert_eq!(json["error"], "SUPERADMIN_PRIVILEGES_REQUIRED");
 
         // Missing reason -> 400.
         let (status, json) = post_json(
@@ -1097,7 +1512,7 @@ mod tests {
         let pool = state.pg.clone();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -1262,7 +1677,7 @@ mod tests {
         let pool = state.pg.clone();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -1477,7 +1892,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -1621,7 +2036,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -1890,7 +2305,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -2027,7 +2442,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -2260,7 +2675,7 @@ mod tests {
         .unwrap();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await
@@ -2519,7 +2934,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
 
         let admin_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO admins (id) VALUES ($1)")
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, true)")
             .bind(admin_id)
             .execute(&pool)
             .await

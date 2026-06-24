@@ -25,6 +25,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/elections/completed", get(elections::completed))
         .route("/api/elections/set", post(manage::create_election))
         .route("/api/management/addAdmins", post(manage::add_admins))
+        .route("/api/management/admins", get(manage::list_admins))
+        .route(
+            "/api/management/admins/:id/revoke",
+            post(manage::revoke_admin),
+        )
         .route(
             "/api/admin/zk-artifacts",
             post(manage::register_zk_artifact),

@@ -18,6 +18,8 @@ pub enum ApiError {
     InvalidAuth(String),
     #[error("You do not have the necessary permissions to perform this action.")]
     AdminRequired,
+    #[error("This action requires superadmin privileges.")]
+    SuperAdminRequired,
     #[allow(dead_code)]
     #[error("{0}")]
     NotFound(String),
@@ -54,6 +56,7 @@ impl ApiError {
             Self::MissingAuth => (StatusCode::UNAUTHORIZED, "AUTHENTICATION_REQUIRED"),
             Self::InvalidAuth(_) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN"),
             Self::AdminRequired => (StatusCode::FORBIDDEN, "ADMIN_PRIVILEGES_REQUIRED"),
+            Self::SuperAdminRequired => (StatusCode::FORBIDDEN, "SUPERADMIN_PRIVILEGES_REQUIRED"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
             Self::Coded { status, code, .. } => (

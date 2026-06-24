@@ -10,6 +10,7 @@ import { signOut } from 'firebase/auth';
 import axios from '../../api/axios';
 import Modal from '../../components/Modal';
 import { auth } from '../../firebase';
+import { useAppSelector } from '../../store/hooks';
 import type { Election } from '../../types/domain';
 import { errorCode, errorData, errorMessage } from '../../utils/errors';
 
@@ -41,6 +42,10 @@ type RenderActions = (vote: Election, isLoading: boolean) => ReactNode;
 type RenderDetails = (vote: Election) => ReactNode;
 
 function AdminMainPage() {
+  // GOV-1: only a superadmin may add admins or run ZK setup/deploy. Hide/disable
+  // those controls for ordinary admins so they are not shown buttons that 403.
+  const isSuperAdmin = useAppSelector((state) => state.auth.isSuperAdmin);
+
   const [isLoadingPage, setIsLoadingPage] = useState(true);
 
   const [registerableVotes, setRegisterableVotes] = useState<Election[]>([]);
@@ -284,9 +289,11 @@ function AdminMainPage() {
       <header style={headerStyle}>
         <h1 style={headerTitleStyle}>관리자 대시보드</h1>
         <div style={headerActionsStyle}>
-          <button style={actionLoading.isAddingAdmin ? disabledButtonStyle : buttonStyle} onClick={handleAddAdmin} disabled={actionLoading.isAddingAdmin}>
-            {actionLoading.isAddingAdmin ? '추가 중...' : '관리자 추가'}
-          </button>
+          {isSuperAdmin && (
+            <button style={actionLoading.isAddingAdmin ? disabledButtonStyle : buttonStyle} onClick={handleAddAdmin} disabled={actionLoading.isAddingAdmin}>
+              {actionLoading.isAddingAdmin ? '추가 중...' : '관리자 추가'}
+            </button>
+          )}
           <button style={buttonStyle} onClick={() => navigate('/admin/create')}>투표 생성</button>
           <button style={{ ...buttonStyle, backgroundColor: '#6c757d' }} onClick={handleLogout}>로그아웃</button>
         </div>
@@ -306,13 +313,17 @@ function AdminMainPage() {
             </button>
             {vote.contract_address ? (
               <button style={disabledButtonStyle} disabled>ZK 설정 완료</button>
-            ) : (
+            ) : isSuperAdmin ? (
               <button
                 style={isLoading ? disabledButtonStyle : { ...buttonStyle, backgroundColor: '#ffc107', color: 'black' }}
                 onClick={() => handleSetupAndDeploy(vote.id, vote.name)}
                 disabled={isLoading}
               >
                 {actionLoading.isLoadingScript === vote.id ? '설정/배포 중...' : 'ZK 설정 & 배포'}
+              </button>
+            ) : (
+              <button style={disabledButtonStyle} disabled title="슈퍼관리자만 ZK 설정/배포를 수행할 수 있습니다.">
+                ZK 설정 & 배포 (슈퍼관리자 전용)
               </button>
             )}
           </>

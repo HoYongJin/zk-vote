@@ -448,15 +448,45 @@ impl ElectionRepo {
 
 pub struct AdminRepo;
 
+/// Outcome of a soft-delete revocation (GOV-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    Revoked,
+    NotFound,
+    AlreadyRevoked,
+    /// Refused: revoking would leave zero active superadmins.
+    LastSuperadmin,
+}
+
+/// One row of the admin management list (GOV-1).
+#[derive(Debug, sqlx::FromRow)]
+pub struct AdminListRow {
+    pub id: Uuid,
+    pub email: Option<String>,
+    pub is_superadmin: bool,
+    pub revoked_at: Option<OffsetDateTime>,
+    pub invited_by: Option<Uuid>,
+}
+
 impl AdminRepo {
-    /// Idempotent invitation upsert (on conflict by email).
-    /// Promotion happens at auth time (AR-L4 decision), not here.
-    pub async fn upsert_invitation(pool: &PgPool, email: &str) -> Result<(), DbError> {
+    /// Idempotent invitation upsert recording the inviting admin (GOV-1
+    /// accountability). Re-inviting an existing e-mail makes the invitation
+    /// claimable again (accepted_by/accepted_at reset) — this is how a revoked
+    /// admin is reinstated on their next sign-in. Promotion itself happens at
+    /// auth time (AR-L4), not here.
+    pub async fn upsert_invitation(
+        pool: &PgPool,
+        email: &str,
+        invited_by: Option<Uuid>,
+    ) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO admin_invitations (email) VALUES ($1) \
-             ON CONFLICT (email) DO NOTHING",
+            "INSERT INTO admin_invitations (email, invited_by) VALUES ($1, $2) \
+             ON CONFLICT (email) DO UPDATE SET \
+                 accepted_by = NULL, accepted_at = NULL, \
+                 invited_by = EXCLUDED.invited_by, updated_at = now()",
         )
         .bind(email)
+        .bind(invited_by)
         .execute(pool)
         .await?;
         Ok(())
@@ -470,6 +500,65 @@ impl AdminRepo {
         .fetch_optional(pool)
         .await?;
         Ok(found.is_some())
+    }
+
+    /// All admins (active and revoked) for the GOV-1 management view.
+    pub async fn list(pool: &PgPool) -> Result<Vec<AdminListRow>, DbError> {
+        let rows = sqlx::query_as::<_, AdminListRow>(
+            "SELECT id, email::text AS email, is_superadmin, revoked_at, invited_by \
+             FROM admins ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Soft-delete (revoke) an admin (GOV-1). Race-safe: a transaction-scoped
+    /// advisory lock serializes concurrent revokes so the last-superadmin guard
+    /// cannot be bypassed by two simultaneous revokes of different superadmins.
+    /// Revocation is an UPDATE (revoked_at), never a DELETE — `admins` stays
+    /// append-only and no DELETE grant is needed.
+    pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<RevokeOutcome, DbError> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('admin_revoke'))")
+            .execute(&mut *tx)
+            .await?;
+
+        let row: Option<(bool, bool)> = sqlx::query_as(
+            "SELECT is_superadmin, (revoked_at IS NOT NULL) FROM admins WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some((is_superadmin, is_revoked)) = row else {
+            tx.rollback().await?;
+            return Ok(RevokeOutcome::NotFound);
+        };
+        if is_revoked {
+            tx.rollback().await?;
+            return Ok(RevokeOutcome::AlreadyRevoked);
+        }
+        if is_superadmin {
+            let other_superadmins: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM admins \
+                 WHERE is_superadmin AND revoked_at IS NULL AND id <> $1",
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if other_superadmins == 0 {
+                tx.rollback().await?;
+                return Ok(RevokeOutcome::LastSuperadmin);
+            }
+        }
+
+        sqlx::query("UPDATE admins SET revoked_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(RevokeOutcome::Revoked)
     }
 }
 
