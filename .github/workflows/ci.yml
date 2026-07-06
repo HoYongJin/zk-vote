@@ -48,7 +48,7 @@ jobs:
           forge build
           forge test
       - name: Circuit/contract schema gate (audit C1)
-        run: bash scripts/ci/check-artifact-schema.sh
+        run: bash scripts/verify/check-artifact-schema.sh
       # test/poseidonCompat.test.ts deliberately imports the frontend's EXACT
       # poseidon-lite to assert it is bit-identical to circomlibjs (invariant #7),
       # so the logic-test job needs the frontend deps installed too.

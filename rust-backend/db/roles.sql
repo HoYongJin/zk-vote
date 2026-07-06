@@ -16,10 +16,12 @@
 
 \set ON_ERROR_STOP on
 \if :{?migrator_password}
-SELECT set_config('zkvote.migrator_password', :'migrator_password', false);
+SELECT set_config('zkvote.migrator_password', :'migrator_password', false) AS ignored
+\gset
 \endif
 \if :{?app_password}
-SELECT set_config('zkvote.app_password', :'app_password', false);
+SELECT set_config('zkvote.app_password', :'app_password', false) AS ignored
+\gset
 \endif
 
 DO $$

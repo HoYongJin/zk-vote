@@ -132,13 +132,14 @@ async fn deploy_bytecode(
     Ok((address, format!("{:#x}", receipt.transaction_hash)))
 }
 
-/// PROJECT_PLAN §0.5 gap #2: assert the live RPC actually serves the chain we
-/// intend to deploy to. `config.chain_id` / `CHAIN_ID` is metadata only; without
-/// this check a mis-set RPC_URL would silently deploy the verifier + VotingTally
-/// to whatever chain the URL serves (e.g. mainnet instead of Sepolia).
+/// Asserts the live RPC actually serves the chain we intend to use. `CHAIN_ID`
+/// is metadata only unless every read/write path checks it before touching a
+/// contract address; otherwise a mis-set RPC_URL can silently target the wrong
+/// chain.
 async fn verify_chain_id(
     provider: &(impl Provider + Clone),
     expected: u64,
+    action: &str,
 ) -> Result<(), ChainError> {
     let actual = provider
         .get_chain_id()
@@ -146,7 +147,7 @@ async fn verify_chain_id(
         .map_err(|err| ChainError::Transport(err.to_string()))?;
     if actual != expected {
         return Err(ChainError::Config(format!(
-            "RPC chain id {actual} does not match expected CHAIN_ID {expected}; refusing to deploy to the wrong chain"
+            "RPC chain id {actual} does not match expected CHAIN_ID {expected}; refusing to {action} on the wrong chain"
         )));
     }
     Ok(())
@@ -161,8 +162,7 @@ pub async fn deploy_verifier(
     expected_chain_id: u64,
 ) -> Result<(Address, String), ChainError> {
     let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
-    // §0.5 gap #2: never deploy to the wrong chain (fail before spending gas).
-    verify_chain_id(&provider, expected_chain_id).await?;
+    verify_chain_id(&provider, expected_chain_id, "deploy verifier").await?;
     deploy_bytecode(&provider, verifier_bytecode).await
 }
 
@@ -183,7 +183,7 @@ pub async fn deploy_voting_tally(
     expected_chain_id: u64,
 ) -> Result<(Address, String), ChainError> {
     let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
-    verify_chain_id(&provider, expected_chain_id).await?;
+    verify_chain_id(&provider, expected_chain_id, "deploy VotingTally").await?;
     let mut creation_code = voting_tally_bytecode;
     creation_code
         .extend((verifier_address, election_id, num_candidates, owner).abi_encode_params());
@@ -228,20 +228,12 @@ pub async fn deploy_election(
 
 /// Calls `configureElection` with a preflight `eth_call` first, so permanent
 /// failures (wrong owner, already configured) are classified as `Reverted`
-/// before any gas is spent. Signed by `owner_private_key` (AR-M4).
-///
-/// FOLLOW-UP (§0.5 chain-id guard): unlike `deploy_election`, this path does NOT
-/// re-verify `eth_chainId`. It targets a `voting_tally_address` that a prior
-/// `deploy_election` already created on the chain-id-verified chain, so the
-/// normal flow is safe. The residual gap is operator-only: if `RPC_URL` is
-/// switched to a different chain *between* deploy and finalize, the preflight
-/// `eth_call` to the (now codeless) address returns empty/Ok for a no-return
-/// function rather than reverting, so a wrong-chain owner-signed tx could be
-/// sent. Impact is negligible on a testnet (a no-op against a codeless address),
-/// but adding `verify_chain_id` here + in `submit_tally` would make it fail
-/// closed with a crisp Config error. Tracked, not blocking v1.
+/// before any gas is spent. Signed by `owner_private_key` (AR-M4). Verifies the
+/// live chain id before both the preflight and send so an RPC_URL drift fails
+/// closed before a wrong-chain owner-signed transaction can be sent.
 pub async fn configure_election(
     config: &ChainConfig,
+    expected_chain_id: u64,
     owner_private_key: &str,
     voting_tally_address: Address,
     merkle_root: U256,
@@ -249,6 +241,7 @@ pub async fn configure_election(
     voting_end: U256,
 ) -> Result<String, ChainError> {
     let provider = provider_with(&config.rpc_url, owner_private_key)?;
+    verify_chain_id(&provider, expected_chain_id, "configure election").await?;
     let contract = VotingTally::new(voting_tally_address, provider);
 
     let call = contract.configureElection(merkle_root, voting_start, voting_end);
@@ -273,12 +266,16 @@ pub struct ElectionOnChain<P: Provider + Clone> {
     contract: VotingTally::VotingTallyInstance<P>,
 }
 
-/// Connects a read-side instance using the relayer credentials.
-pub fn connect_election(
+/// Connects a read-side instance using the relayer credentials after verifying
+/// the live chain id. Reads drive finalize recovery and submit preflight, so
+/// they must fail closed on RPC_URL drift just like transaction sends.
+pub async fn connect_election(
     config: &ChainConfig,
+    expected_chain_id: u64,
     voting_tally_address: Address,
 ) -> Result<ElectionOnChain<impl Provider + Clone>, ChainError> {
     let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    verify_chain_id(&provider, expected_chain_id, "read election state").await?;
     Ok(ElectionOnChain {
         contract: VotingTally::new(voting_tally_address, provider),
     })
@@ -332,6 +329,7 @@ impl<P: Provider + Clone> ElectionOnChain<P> {
 /// spent or the single-use ticket is consumed.
 pub async fn submit_tally(
     config: &ChainConfig,
+    expected_chain_id: u64,
     voting_tally_address: Address,
     a: [U256; 2],
     b: [[U256; 2]; 2],
@@ -339,6 +337,7 @@ pub async fn submit_tally(
     public_inputs: [U256; 4],
 ) -> Result<String, ChainError> {
     let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    verify_chain_id(&provider, expected_chain_id, "submit tally").await?;
     let contract = VotingTally::new(voting_tally_address, provider);
 
     let call = contract.submitTally(a, b, c, public_inputs);
@@ -361,6 +360,7 @@ pub async fn submit_tally(
 /// single-use ticket is consumed.
 pub async fn preflight_submit_tally(
     config: &ChainConfig,
+    expected_chain_id: u64,
     voting_tally_address: Address,
     a: [U256; 2],
     b: [[U256; 2]; 2],
@@ -368,6 +368,7 @@ pub async fn preflight_submit_tally(
     public_inputs: [U256; 4],
 ) -> Result<(), ChainError> {
     let provider = provider_with(&config.rpc_url, &config.relayer_private_key)?;
+    verify_chain_id(&provider, expected_chain_id, "preflight submit tally").await?;
     let contract = VotingTally::new(voting_tally_address, provider);
     contract
         .submitTally(a, b, c, public_inputs)

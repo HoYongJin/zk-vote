@@ -8,3 +8,5 @@
 !artifacts/
 !artifacts/contracts/
 !artifacts/contracts/**
+!out/
+!out/**

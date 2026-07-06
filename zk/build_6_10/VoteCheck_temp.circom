@@ -198,7 +198,8 @@ template Main(depth, numOptions) {
 //   [root_out, vote_index, nullifier_hash, election_id]  (nPublic = 4)
 // setUpZk.sh rewrites the (depth, candidates) arguments while preserving this
 // `{public [election_id]}` declaration. The literal below is a REAL committed
-// build shape (build_4_5), not a phantom, so a direct `circom` compile of this
-// source produces a deployable verifier; check-artifact-schema.sh enforces that
-// it always maps to an existing build_<depth>_<candidates>/ directory.
+// build shape (build_4_10 — candidate width 10, the padded grid), not a phantom,
+// so a direct `circom` compile of this source produces a deployable verifier;
+// check-artifact-schema.sh enforces that it always maps to an existing
+// build_<depth>_<candidates>/ directory.
 component main {public [election_id]} = Main(6, 10);

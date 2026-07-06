@@ -17,7 +17,7 @@ RUN apt-get update \
 USER zkvote
 WORKDIR /app
 COPY --from=builder /build/rust-backend/target/release/zkvote-api /usr/local/bin/zkvote-api
-COPY artifacts/contracts /app/artifacts/contracts
+COPY out /app/artifacts/contracts
 ENV RUST_LOG=info
 ENV CONTRACT_ARTIFACTS_DIR=/app/artifacts/contracts
 EXPOSE 8080

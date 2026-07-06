@@ -54,13 +54,15 @@ async fn deploys_and_enforces_owner_separation() {
         U256::from(123u64),
         U256::from(5u64),
         owner,
-        31337, // anvil local node chain id (§0.5 gap #2)
+        31337, // anvil local node chain id
     )
     .await
     .expect("deployment failed — is `anvil` running?");
     assert!(deployed.deploy_tx_hash.starts_with("0x"));
 
-    let election = connect_election(&config, deployed.voting_tally_address).unwrap();
+    let election = connect_election(&config, 31337, deployed.voting_tally_address)
+        .await
+        .unwrap();
     assert_eq!(
         election.owner().await.unwrap(),
         owner,
@@ -76,6 +78,7 @@ async fn deploys_and_enforces_owner_separation() {
     // Gate (AR-M4): the hot relayer key cannot call configureElection.
     let relayer_attempt = configure_election(
         &config,
+        31337,
         RELAYER_KEY,
         deployed.voting_tally_address,
         U256::from(42u64),
@@ -97,6 +100,7 @@ async fn deploys_and_enforces_owner_separation() {
     // The owner key configures successfully.
     let tx_hash = configure_election(
         &config,
+        31337,
         OWNER_KEY,
         deployed.voting_tally_address,
         U256::from(42u64),
@@ -113,6 +117,7 @@ async fn deploys_and_enforces_owner_separation() {
     // root is unchanged.
     let duplicate = configure_election(
         &config,
+        31337,
         OWNER_KEY,
         deployed.voting_tally_address,
         U256::from(43u64),
@@ -125,10 +130,8 @@ async fn deploys_and_enforces_owner_separation() {
     assert_eq!(election.merkle_root().await.unwrap(), U256::from(42u64));
 }
 
-// PROJECT_PLAN §0.5 gap #2: deploy_election must refuse when the live RPC's
-// chain id != the expected CHAIN_ID. Before this guard a mis-set RPC_URL would
-// have silently deployed to the wrong chain. The local node reports 31337, so
-// claiming Sepolia (11155111) must fail with a Config error before any deploy.
+// Chain-id guard regression test: the local node reports 31337, so claiming
+// Sepolia (11155111) must fail with a Config error before any deploy.
 #[tokio::test]
 #[ignore = "requires a local anvil node (run `anvil`)"]
 async fn refuses_to_deploy_on_a_chain_id_mismatch() {

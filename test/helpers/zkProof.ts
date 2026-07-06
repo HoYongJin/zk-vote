@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import snarkjs from "snarkjs";
+import * as snarkjs from "snarkjs";
 import { buildPoseidon } from "circomlibjs";
 import { MerkleTree } from "fixed-merkle-tree";
 

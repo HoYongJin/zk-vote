@@ -3,9 +3,14 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:artifacts": "bash scripts/verify/check-artifact-schema.sh",
+    "verify:staging": "bash scripts/verify/verify-staging.sh",
+    "verify:staging:e2e": "node --import tsx scripts/verify/e2e-staging.ts",
+    "verify:staging:browser": "node --import tsx scripts/verify/browser-smoke-staging.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@supabase/supabase-js": "^2.49.4",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",

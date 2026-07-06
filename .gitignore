@@ -73,5 +73,6 @@ docs/
 *.pem
 !rust-backend/crates/api/testdata/test_only_rsa_key.pem
 
-# Intermediate pre-contribution zkey (only circuit_final.zkey is committed)
+# Intermediate pre-finalization zkeys (only circuit_final.zkey is committed)
 zk/build_*/circuit_0000.zkey
+zk/build_*/circuit_0001.zkey

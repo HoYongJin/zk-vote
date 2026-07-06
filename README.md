@@ -15,12 +15,11 @@ React frontend
     -> Solidity VotingTally + Groth16 verifier
 ```
 
-The Rust backend implements the full route surface (16 routes) with a Phase
-5–13 integration-test suite, verified green locally (db repos + the real-proof
-vote pipeline E2E). The remaining work is the **cloud rollout** — GCP staging
-infra, the Supabase Auth→GCP Identity Platform swap, and the Supabase→Cloud SQL
-ETL (see `docs/PROJECT_PLAN.md`). Nothing runs on real GCP infrastructure yet;
-this is local-demo/dev-only.
+The Rust backend implements the current route surface (22 routes, including the
+anonymous vote path and GOV-1 admin-governance routes). Phase 5–13 integration
+tests were verified green locally in the prior hardening pass (db repos + the
+real-proof vote pipeline E2E). Staging has since been stood up on GCP; production
+and cutover still need the gates in `docs/PRODUCTION_READINESS.md`.
 
 **Frontend hosting:** Firebase Hosting (`firebase.json`,
 `.github/workflows/deploy-frontend-firebase.yml`), alongside the GCP backend. The
@@ -29,10 +28,11 @@ in the Cloud Run `CORS_ALLOWED_ORIGINS`.
 
 ## Important Docs
 
-- `AGENT.md`: repository map and working rules for agents.
-- `docs/PROJECT_PLAN.md`: end-to-end migration and production-readiness plan.
-- `docs/API_COMPATIBILITY.md`: current Node API behavior to preserve during Rust
-  migration.
+- `AGENTS.md`: repository map and working rules for agents.
+- `Architecture.md`: high-level source-backed architecture map.
+- `docs/E2E_FLOW.md`: current code-backed voting flow and route map.
+- `docs/RUNBOOK_PHASE18_STANDUP.md`: cost-gated GCP staging standup.
+- `docs/PRODUCTION_READINESS.md`: production readiness plan after staging/cutover.
 
 ## Local Infrastructure
 
@@ -72,7 +72,7 @@ CIRCOM_BIN=/path/to/circom bash scripts/local/check-toolchain.sh
   per environment with checksum verification (audit M2):
 
 ```bash
-bash scripts/local/fetch-ptau.sh 12   # Merkle depth <= 5 (build_4_5/build_5_4)
+bash scripts/local/fetch-ptau.sh 12   # Merkle depth <= 5
 bash scripts/local/fetch-ptau.sh 16   # depth <= 10
 bash scripts/local/fetch-ptau.sh 20   # depth <= 20
 ```
@@ -85,25 +85,36 @@ hash published in the snarkjs README; it fails closed on any mismatch.
 
 ## Environment Files
 
-- Root `.env` (see `.env.example`): the Rust backend + Hardhat
+- Root `.env` (see `.env.example`): the Rust backend, Foundry/local chain tooling,
+  and GCP deploy scripts
   (`DATABASE_URL`, `REDIS_URL`, `SUPABASE_JWKS_URL`, `SEPOLIA_RPC_URL`,
-  `PRIVATE_KEY`/`RELAYER_PRIVATE_KEY`, `ETHERSCAN_API_KEY`).
+  `RELAYER_PRIVATE_KEY`, `OWNER_PRIVATE_KEY`).
 - `scripts/migration/.env` (gitignored): Supabase service-role creds for the
   deploy/ETL tooling only (the legacy `server/.env` was removed in Phase 6.5).
 
 ## Verification
 
-Node and scripts:
+TypeScript and scripts:
 
 ```bash
-find scripts test -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
+npm run typecheck && npm test
 find scripts zk -name '*.sh' -print0 | xargs -0 -n1 bash -n
 ```
 
-Contracts and helper tests:
+Script roles:
+
+```text
+scripts/iac/        scripted GCP/GitHub infrastructure setup
+scripts/cicd/       repeatable deploy and CI/CD support
+scripts/verify/     read-only verification gates and E2E smoke checks
+scripts/migration/  cutover-only Supabase -> GCP migration tools
+scripts/local/      local developer bootstrap
+```
+
+Contracts:
 
 ```bash
-npx hardhat test --no-compile
+forge fmt --check && forge build && forge test
 ```
 
 Rust:

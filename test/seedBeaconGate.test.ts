@@ -1,7 +1,7 @@
 /**
  * @file test/seedBeaconGate.test.ts
  * @desc No-gcloud behavioral test for the ZK-SETUP-1 trusted-setup seed gate.
- * `scripts/gcp/check-ceremony-beacon.sh` is the forgery-resistant structural
+ * `scripts/verify/check-ceremony-beacon.sh` is the forgery-resistant structural
  * pre-filter that `seed-artifacts.sh` runs (paired with `snarkjs zkey verify`)
  * before uploading any zkey to the billable prod bucket. This proves it fails
  * closed on a non-beacon / forged / missing manifest and only passes a genuine
@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.join(__dirname, "..", "scripts", "gcp", "check-ceremony-beacon.sh");
+const SCRIPT = path.join(__dirname, "..", "scripts", "verify", "check-ceremony-beacon.sh");
 
 function runGate(content: string | null): number {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ceremony-"));

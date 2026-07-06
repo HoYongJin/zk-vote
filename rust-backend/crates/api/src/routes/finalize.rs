@@ -280,7 +280,9 @@ async fn finalize_locked(
         .as_deref()
         .and_then(|addr| addr.parse().ok())
         .ok_or_else(|| coded(400, "STATE_ERROR", "Contract address is missing/invalid."))?;
-    let onchain = connect_election(chain, contract_address)
+    let expected_chain_id = state.config.chain_id as u64;
+    let onchain = connect_election(chain, expected_chain_id, contract_address)
+        .await
         .map_err(|err| ApiError::Internal(format!("chain connect failed: {err}")))?;
 
     let root_u256 = alloy::primitives::U256::from_str_radix(&root, 10)
@@ -345,6 +347,7 @@ async fn finalize_locked(
         let tx_hash = chain_try!(
             configure_election(
                 chain,
+                expected_chain_id,
                 owner_key,
                 contract_address,
                 root_u256,

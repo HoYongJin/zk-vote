@@ -634,7 +634,7 @@ async fn deploy_with_locked_election(
     let (chain, owner) = deployment_chain_config(state)?;
     let election_u256 = election_uuid_to_u256(election_id)?;
     let num_candidates = U256::from(latest.num_candidates as u64);
-    // §0.5 gap #2: refuse to deploy unless the live RPC reports this chain id.
+    // CHAIN-ID: refuse to deploy unless the live RPC reports this chain id.
     let expected_chain_id = state.config.chain_id as u64;
 
     // G3: a prior attempt may have landed the verifier but failed before the

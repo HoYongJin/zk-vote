@@ -3,19 +3,19 @@ name: Deploy Frontend to Firebase Hosting
 # PROJECT_PLAN Phase 16/18: the confirmed frontend CD (Firebase Hosting). It
 # replaced the now-removed legacy AWS S3/CloudFront path. workflow_dispatch-only until Phase 18 provisions
 # the GCP/Firebase project + secrets — running it before then will fail at the
-# auth/deploy step (Firebase Hosting must be enabled on zkvote-staging-26c4d8 first).
+# auth/deploy step (Firebase Hosting must be enabled on the staging Firebase project first).
 #
 # Phase-18 prerequisites (cost-gated):
-#   - GitHub secret FIREBASE_SERVICE_ACCOUNT = the deployer SA JSON (Firebase
-#     Hosting Admin) — gitignored, never committed.
-#   - GitHub secrets VITE_FIREBASE_API_KEY / _AUTH_DOMAIN / _PROJECT_ID and
-#     VITE_API_BASE_URL (the staging Cloud Run URL + /api).
+#   - GCP Workload Identity Federation from scripts/iac/setup-github-wif.sh.
+#   - GitHub environment secrets synced by scripts/cicd/sync-github-frontend-env.ts:
+#     VITE_FIREBASE_API_KEY / _AUTH_DOMAIN / _PROJECT_ID and VITE_API_BASE_URL.
 #   - pin google-github-actions/auth to a commit SHA (supply-chain, AR-H8).
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build-and-deploy:
@@ -44,7 +44,8 @@ jobs:
       - name: Authenticate to GCP (Firebase deployer service account)
         uses: google-github-actions/auth@v2 # TODO Phase 18: pin to a commit SHA
         with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          workload_identity_provider: projects/1063460548473/locations/global/workloadIdentityPools/zkvote-github/providers/github
+          service_account: zkvote-staging-firebase-admin@zkvote-staging-hhyyj.iam.gserviceaccount.com
       - name: Deploy to Firebase Hosting
         # npx fetches firebase-tools transiently (no global add) — AR-H8 stays green.
-        run: npx --yes firebase-tools@13 deploy --only hosting --project zkvote-staging-26c4d8 --non-interactive
+        run: npx --yes firebase-tools@13 deploy --only hosting --project zkvote-staging-hhyyj --non-interactive

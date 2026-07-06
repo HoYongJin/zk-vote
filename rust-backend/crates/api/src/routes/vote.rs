@@ -463,7 +463,9 @@ pub async fn submit(
     };
 
     let nullifier = args.signals[PUBLIC_SIGNAL_NULLIFIER_INDEX];
-    let onchain = connect_election(&chain, contract_address)
+    let expected_chain_id = state.config.chain_id as u64;
+    let onchain = connect_election(&chain, expected_chain_id, contract_address)
+        .await
         .map_err(|err| ApiError::Internal(format!("chain connect failed: {err}")))?;
     if onchain
         .nullifier_used(nullifier)
@@ -482,6 +484,7 @@ pub async fn submit(
     // the actual send path still rechecks after consumption to handle races.
     preflight_submit_tally(
         &chain,
+        expected_chain_id,
         contract_address,
         args.a,
         args.b,
@@ -523,6 +526,7 @@ pub async fn submit(
                 consumed_payload = Some(payload);
                 Ok(submit_tally(
                     &chain,
+                    expected_chain_id,
                     contract_address,
                     args.a,
                     args.b,

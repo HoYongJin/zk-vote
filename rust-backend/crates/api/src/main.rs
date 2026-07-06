@@ -1986,7 +1986,8 @@ mod tests {
             relayer_private_key: RELAYER_KEY.to_string(),
         };
         let onchain =
-            zkvote_chain::connect_election(&chain_config, contract_address.parse().unwrap())
+            zkvote_chain::connect_election(&chain_config, 31337, contract_address.parse().unwrap())
+                .await
                 .unwrap();
         assert_eq!(
             onchain.owner().await.unwrap(),
@@ -2376,7 +2377,7 @@ mod tests {
     }
 
     /// Durable + recoverable finalize against docker PG AND a
-    /// local hardhat node. Start both first:
+    /// local anvil node. Start both first:
     ///   bash scripts/local/smoke.sh && anvil
     /// Run: `cargo test -p zkvote-api -- --ignored finalize`
     #[tokio::test]
@@ -2422,6 +2423,7 @@ mod tests {
                 "SEPOLIA_RPC_URL" => Some(RPC.to_string()),
                 "PRIVATE_KEY" => Some(RELAYER_KEY.to_string()),
                 "OWNER_PRIVATE_KEY" => Some(OWNER_KEY.to_string()),
+                "CHAIN_ID" => Some("31337".to_string()),
                 _ => None,
             })
             .unwrap(),
@@ -2501,7 +2503,7 @@ mod tests {
                 .unwrap(),
             alloy::primitives::U256::from(2u64),
             OWNER_ADDR.parse().unwrap(),
-            31337, // anvil local node chain id (§0.5 gap #2)
+            31337, // anvil local node chain id
         )
         .await
         .expect("deploy failed — is `anvil` running?");
@@ -2547,7 +2549,9 @@ mod tests {
                 .unwrap();
         assert_eq!(db_root.as_deref(), Some(root.as_str()));
         let onchain =
-            zkvote_chain::connect_election(&chain_config, deployed.voting_tally_address).unwrap();
+            zkvote_chain::connect_election(&chain_config, 31337, deployed.voting_tally_address)
+                .await
+                .unwrap();
         assert_eq!(
             onchain.merkle_root().await.unwrap().to_string(),
             root,
@@ -2637,6 +2641,7 @@ mod tests {
                 "SEPOLIA_RPC_URL" => Some(RPC.to_string()),
                 "PRIVATE_KEY" => Some(RELAYER_KEY.to_string()),
                 "OWNER_PRIVATE_KEY" => Some(OWNER_KEY.to_string()),
+                "CHAIN_ID" => Some("31337".to_string()),
                 _ => None,
             })
             .unwrap(),
@@ -2758,7 +2763,7 @@ mod tests {
             alloy::primitives::U256::from(123u64),
             alloy::primitives::U256::from(5u64),
             OWNER_ADDR.parse().unwrap(),
-            31337, // anvil local node chain id (§0.5 gap #2)
+            31337, // anvil local node chain id
         )
         .await
         .expect("deploy failed — is `anvil` running?");
@@ -2827,7 +2832,9 @@ mod tests {
         assert!(json["transactionHash"].as_str().unwrap().starts_with("0x"));
 
         let onchain =
-            zkvote_chain::connect_election(&chain_config, deployed.voting_tally_address).unwrap();
+            zkvote_chain::connect_election(&chain_config, 31337, deployed.voting_tally_address)
+                .await
+                .unwrap();
         assert_eq!(
             onchain
                 .vote_count(alloy::primitives::U256::ZERO)
