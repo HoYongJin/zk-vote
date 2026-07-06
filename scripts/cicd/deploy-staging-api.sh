@@ -8,8 +8,8 @@
 set -euo pipefail
 
 # PROJECT_PLAN §18: dedicated staging project (NOT the shared POC project). This
-# id is also the JWT audience (SUPABASE_JWT_AUDIENCE=<PROJECT_ID>, L92 below) and
-# the issuer host segment, so it MUST equal the GCIP project AND the frontend
+# id is also the JWT audience (JWT_AUDIENCE=<PROJECT_ID>) and the issuer host
+# segment, so it MUST equal the GCIP project AND the frontend
 # Firebase project (VITE_FIREBASE_PROJECT_ID / .firebaserc). If they diverge,
 # every GCIP token the frontend mints is rejected (wrong audience). Verify equality
 # at the Phase-18 gate (docs/RUNBOOK_PHASE18_STANDUP.md §8).
@@ -120,10 +120,10 @@ deploy_args=(
   # perform; dropped to avoid a false sense of assurance. The beacon ceremony
   # gate lives in the artifact pipeline, not the API runtime.
   # GCIP (PROJECT_PLAN §0 / Phase 18): set the JWT issuer + audience EXPLICITLY so
-  # the backend validates Google `securetoken` JWTs. WITHOUT these two, config.rs
-  # derives the issuer from SUPABASE_URL (`{SUPABASE_URL}/auth/v1`) and rejects
-  # 100% of GCIP tokens. The audience is the BARE GCIP/Firebase project id.
-  --set-env-vars "^|^ARTIFACT_STORE=gcs|CHAIN_ID=11155111|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}|SUPABASE_JWT_ISSUER=https://securetoken.google.com/${PROJECT_ID}|SUPABASE_JWT_AUDIENCE=${PROJECT_ID}"
+  # the backend validates Google `securetoken` JWTs. The audience is the BARE
+  # GCIP/Firebase project id. SUPABASE_* aliases are temporarily set to the same
+  # values for rollback compatibility with older API images.
+  --set-env-vars "^|^ARTIFACT_STORE=gcs|CHAIN_ID=11155111|CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}|JWT_ISSUER=https://securetoken.google.com/${PROJECT_ID}|JWT_AUDIENCE=${PROJECT_ID}|SUPABASE_JWT_ISSUER=https://securetoken.google.com/${PROJECT_ID}|SUPABASE_JWT_AUDIENCE=${PROJECT_ID}"
 )
 
 # Attach the VPC connector ONLY for Memorystore (private IP). For external Redis
@@ -141,7 +141,9 @@ secret_bindings=(
   # VALUE must be the GCIP JWK endpoint
   # (https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com),
   # NOT the /robot/v1/metadata/x509/ PEM endpoint and NOT a Supabase JWKS URL.
-  "SUPABASE_JWKS_URL=zkvote-staging-supabase-jwks-url:latest"
+  "AUTH_JWKS_URL=zkvote-staging-auth-jwks-url:latest"
+  # Deprecated alias kept only for rollback compatibility.
+  "SUPABASE_JWKS_URL=zkvote-staging-auth-jwks-url:latest"
   "SEPOLIA_RPC_URL=zkvote-staging-sepolia-rpc-url:latest"
   "RELAYER_PRIVATE_KEY=${RELAYER_PRIVATE_KEY_SECRET}:latest"
   "ARTIFACT_BUCKET=zkvote-staging-artifact-bucket:latest"

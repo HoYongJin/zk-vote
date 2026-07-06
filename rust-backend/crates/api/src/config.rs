@@ -13,14 +13,14 @@ pub struct AppConfig {
     pub gcs_storage_base_url: String,
     pub gcs_metadata_token_url: String,
     pub cors_allowed_origins: Vec<String>,
-    /// The IdP's JWKS endpoint (env var `SUPABASE_JWKS_URL`);
-    /// auth-protected routes require it.
-    pub supabase_jwks_url: Option<String>,
-    /// Expected token issuer. Defaults to `{SUPABASE_URL}/auth/v1` when
-    /// SUPABASE_URL is set; None disables the issuer check.
-    pub supabase_issuer: Option<String>,
+    /// The IdP's JWKS endpoint. Prefer `AUTH_JWKS_URL`; `SUPABASE_JWKS_URL`
+    /// remains a deprecated alias for the old Supabase-auth naming.
+    pub auth_jwks_url: Option<String>,
+    /// Expected token issuer. Prefer `JWT_ISSUER`; legacy Supabase aliases are
+    /// accepted only for migration/rollback compatibility.
+    pub jwt_issuer: Option<String>,
     /// Expected token audience (the IdP's default role audience).
-    pub supabase_audience: String,
+    pub jwt_audience: String,
     /// Ethereum RPC endpoint (finalize/submit relaying).
     pub rpc_url: Option<String>,
     /// Hot relayer key — deploys and relays, holds no owner rights (AR-M4).
@@ -74,9 +74,11 @@ impl AppConfig {
             .filter(|origin| !origin.is_empty())
             .collect();
 
-        let supabase_issuer = get("SUPABASE_JWT_ISSUER").or_else(|| {
-            get("SUPABASE_URL").map(|url| format!("{}/auth/v1", url.trim_end_matches('/')))
-        });
+        let jwt_issuer = get("JWT_ISSUER")
+            .or_else(|| get("SUPABASE_JWT_ISSUER"))
+            .or_else(|| {
+                get("SUPABASE_URL").map(|url| format!("{}/auth/v1", url.trim_end_matches('/')))
+            });
 
         let artifact_store = get("ARTIFACT_STORE")
             .map(|value| value.trim().to_string())
@@ -115,9 +117,10 @@ impl AppConfig {
                     .to_string()
             }),
             cors_allowed_origins,
-            supabase_jwks_url: get("SUPABASE_JWKS_URL"),
-            supabase_issuer,
-            supabase_audience: get("SUPABASE_JWT_AUDIENCE")
+            auth_jwks_url: get("AUTH_JWKS_URL").or_else(|| get("SUPABASE_JWKS_URL")),
+            jwt_issuer,
+            jwt_audience: get("JWT_AUDIENCE")
+                .or_else(|| get("SUPABASE_JWT_AUDIENCE"))
                 .unwrap_or_else(|| "authenticated".to_string()),
             rpc_url: get("SEPOLIA_RPC_URL").or_else(|| get("RPC_URL")),
             relayer_private_key: get("RELAYER_PRIVATE_KEY").or_else(|| get("PRIVATE_KEY")),
@@ -208,6 +211,51 @@ mod tests {
         );
         assert_eq!(config.gcs_storage_base_url, "http://127.0.0.1:9000");
         assert_eq!(config.gcs_metadata_token_url, "http://127.0.0.1:9000/token");
+    }
+
+    #[test]
+    fn auth_env_names_prefer_neutral_names_over_legacy_supabase_aliases() {
+        let config = AppConfig::from_lookup(|name| match name {
+            "AUTH_JWKS_URL" => Some("https://idp.example/jwks".to_string()),
+            "JWT_ISSUER" => Some("https://idp.example/issuer".to_string()),
+            "JWT_AUDIENCE" => Some("zkvote-staging".to_string()),
+            "SUPABASE_JWKS_URL" => Some("https://legacy.example/jwks".to_string()),
+            "SUPABASE_JWT_ISSUER" => Some("https://legacy.example/issuer".to_string()),
+            "SUPABASE_JWT_AUDIENCE" => Some("legacy-audience".to_string()),
+            other => base(other),
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.auth_jwks_url.as_deref(),
+            Some("https://idp.example/jwks")
+        );
+        assert_eq!(
+            config.jwt_issuer.as_deref(),
+            Some("https://idp.example/issuer")
+        );
+        assert_eq!(config.jwt_audience, "zkvote-staging");
+    }
+
+    #[test]
+    fn legacy_supabase_auth_env_names_remain_supported_as_aliases() {
+        let config = AppConfig::from_lookup(|name| match name {
+            "SUPABASE_JWKS_URL" => Some("https://legacy.example/jwks".to_string()),
+            "SUPABASE_JWT_ISSUER" => Some("https://legacy.example/issuer".to_string()),
+            "SUPABASE_JWT_AUDIENCE" => Some("legacy-audience".to_string()),
+            other => base(other),
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.auth_jwks_url.as_deref(),
+            Some("https://legacy.example/jwks")
+        );
+        assert_eq!(
+            config.jwt_issuer.as_deref(),
+            Some("https://legacy.example/issuer")
+        );
+        assert_eq!(config.jwt_audience, "legacy-audience");
     }
 
     #[test]

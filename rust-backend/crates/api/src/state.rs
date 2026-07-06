@@ -9,7 +9,7 @@ pub struct AppState {
     pub config: Arc<AppConfig>,
     pub pg: PgPool,
     pub redis: RedisClient,
-    /// None when SUPABASE_JWKS_URL is not configured; authenticated routes
+    /// None when AUTH_JWKS_URL is not configured; authenticated routes
     /// then fail with a typed SERVER_ERROR instead of panicking.
     pub auth: Option<Arc<AuthContext>>,
     /// Serializes relayer transaction sends (AR-M5): one hot wallet means

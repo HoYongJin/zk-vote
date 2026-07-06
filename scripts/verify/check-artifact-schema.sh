@@ -49,8 +49,8 @@ done
 # (build_*/ also holds temp circoms / wasm dirs).
 for vk in zk/build_*/verification_key.json; do
   [ -f "$vk" ] || continue
-  shape=$(basename "$(dirname "$vk")")   # build_4_5
-  shape=${shape#build_}                  # 4_5
+  shape=$(basename "$(dirname "$vk")")   # build_4_10
+  shape=${shape#build_}                  # 4_10
   if [ ! -f "contracts/Groth16Verifier_${shape}.sol" ]; then
     echo "FAIL: zk/build_${shape}/ has no matching contracts/Groth16Verifier_${shape}.sol (G6 parity)" >&2
     exit 1
@@ -58,8 +58,8 @@ for vk in zk/build_*/verification_key.json; do
   echo "ok: build_${shape} <-> Groth16Verifier_${shape}.sol"
 done
 for verifier in "${verifiers[@]}"; do
-  shape=$(basename "$verifier" .sol)     # Groth16Verifier_4_5
-  shape=${shape#Groth16Verifier_}        # 4_5
+  shape=$(basename "$verifier" .sol)     # Groth16Verifier_4_10
+  shape=${shape#Groth16Verifier_}        # 4_10
   if [ ! -f "zk/build_${shape}/verification_key.json" ]; then
     echo "FAIL: contracts/Groth16Verifier_${shape}.sol has no matching zk/build_${shape}/ (G6 parity)" >&2
     exit 1

@@ -11,7 +11,7 @@ use token::{validate_token, AuthError};
 use uuid::Uuid;
 
 /// Everything needed to validate the IdP's OIDC access tokens. Built once at
-/// startup when SUPABASE_JWKS_URL is configured.
+/// startup when AUTH_JWKS_URL is configured.
 pub struct AuthContext {
     pub jwks: JwksCache,
     pub issuer: Option<String>,

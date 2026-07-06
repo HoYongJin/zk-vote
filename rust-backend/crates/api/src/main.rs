@@ -29,16 +29,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis = RedisClient::open(config.redis_url.as_str())?;
     let bind_addr = config.bind_addr;
 
-    let auth = config.supabase_jwks_url.clone().map(|jwks_url| {
+    let auth = config.auth_jwks_url.clone().map(|jwks_url| {
         Arc::new(AuthContext::new(
             jwks_url,
-            config.supabase_issuer.clone(),
-            config.supabase_audience.clone(),
+            config.jwt_issuer.clone(),
+            config.jwt_audience.clone(),
         ))
     });
     if auth.is_none() {
         tracing::warn!(
-            "SUPABASE_JWKS_URL is not set; authenticated routes will return SERVER_ERROR"
+            "AUTH_JWKS_URL is not set; authenticated routes will return SERVER_ERROR"
         );
     }
 
@@ -126,11 +126,11 @@ mod tests {
             })
             .unwrap(),
         );
-        let auth = config.supabase_jwks_url.clone().map(|url| {
+        let auth = config.auth_jwks_url.clone().map(|url| {
             Arc::new(AuthContext::new(
                 url,
-                config.supabase_issuer.clone(),
-                config.supabase_audience.clone(),
+                config.jwt_issuer.clone(),
+                config.jwt_audience.clone(),
             ))
         });
         AppState {
@@ -1359,11 +1359,11 @@ mod tests {
             })
             .unwrap(),
         );
-        let auth = config.supabase_jwks_url.clone().map(|url| {
+        let auth = config.auth_jwks_url.clone().map(|url| {
             Arc::new(AuthContext::new(
                 url,
-                config.supabase_issuer.clone(),
-                config.supabase_audience.clone(),
+                config.jwt_issuer.clone(),
+                config.jwt_audience.clone(),
             ))
         });
         let state = AppState {
@@ -1878,8 +1878,8 @@ mod tests {
         );
         let auth_ctx = Some(Arc::new(AuthContext::new(
             jwks_url,
-            config.supabase_issuer.clone(),
-            config.supabase_audience.clone(),
+            config.jwt_issuer.clone(),
+            config.jwt_audience.clone(),
         )));
         let state = AppState {
             config: config.clone(),
@@ -2297,8 +2297,8 @@ mod tests {
             redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
             auth: Some(Arc::new(AuthContext::new(
                 jwks_url,
-                config.supabase_issuer.clone(),
-                config.supabase_audience.clone(),
+                config.jwt_issuer.clone(),
+                config.jwt_audience.clone(),
             ))),
             relay_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
@@ -2430,8 +2430,8 @@ mod tests {
         );
         let auth_ctx = Some(Arc::new(AuthContext::new(
             jwks_url,
-            config.supabase_issuer.clone(),
-            config.supabase_audience.clone(),
+            config.jwt_issuer.clone(),
+            config.jwt_audience.clone(),
         )));
         let state = AppState {
             config: config.clone(),
@@ -2648,8 +2648,8 @@ mod tests {
         );
         let auth_ctx = Some(Arc::new(AuthContext::new(
             jwks_url,
-            config.supabase_issuer.clone(),
-            config.supabase_audience.clone(),
+            config.jwt_issuer.clone(),
+            config.jwt_audience.clone(),
         )));
         let state = AppState {
             config: config.clone(),

@@ -6,7 +6,7 @@ PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 
 # PROJECT_PLAN §18: this is a DEDICATED staging project, NOT the shared POC project.
 # The Cloud Run project, the GCIP/Identity-Platform project, the JWT audience
-# (deploy-staging-api.sh sets SUPABASE_JWT_AUDIENCE=<PROJECT_ID>), and the frontend
+# (deploy-staging-api.sh sets JWT_AUDIENCE=<PROJECT_ID>), and the frontend
 # Firebase project (VITE_FIREBASE_PROJECT_ID / .firebaserc) MUST ALL be this
 # same id. If they diverge, the backend's audience check rejects 100% of the
 # frontend's GCIP tokens. Override GCP_PROJECT_ID for your real (globally-unique)
@@ -92,7 +92,7 @@ Would idempotently ensure, in order:
    3. runtime service account + least-privilege IAM
    4. Cloud SQL + database '${SQL_DATABASE}' + app/migrator users (URL-safe passwords)
    5. ${redis_step}
-   6. secrets w/ per-secret IAM: database-url, redis-url, supabase-jwks-url (fixed GCIP endpoint),
+   6. secrets w/ per-secret IAM: database-url, redis-url, auth-jwks-url (fixed GCIP endpoint),
       sepolia-rpc-url, relayer/owner private keys, artifact-bucket
 
 Re-run withOUT DRY_RUN — with CONFIRM_COSTS=yes and an authenticated CORRECT account — to apply.
@@ -362,6 +362,8 @@ secrets=(
   zkvote-staging-database-url
   zkvote-staging-redis-url
   zkvote-staging-supabase-url
+  zkvote-staging-auth-jwks-url
+  # Deprecated rollback-compatibility alias for older API images.
   zkvote-staging-supabase-jwks-url
   zkvote-staging-sepolia-rpc-url
   zkvote-staging-relayer-private-key
@@ -409,17 +411,17 @@ add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 
 # The GCIP JWKS endpoint is a FIXED public constant (PROJECT_PLAN §18 + §8), not a
 # per-deploy secret value. Write it UNCONDITIONALLY so deploy's `--set-secrets
-# SUPABASE_JWKS_URL=zkvote-staging-supabase-jwks-url:latest` always resolves to an
-# enabled version. An exported SUPABASE_JWKS_URL still overrides it. config.rs:117
-# does NOT empty-filter this value, so refuse an empty override (would mount Some("")
-# and break token verification) rather than fail opaquely at deploy time.
+# AUTH_JWKS_URL=zkvote-staging-auth-jwks-url:latest` always resolves to an
+# enabled version. An exported AUTH_JWKS_URL, or legacy SUPABASE_JWKS_URL, still
+# overrides it.
 GCIP_JWKS_DEFAULT="https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
-SUPABASE_JWKS_URL="${SUPABASE_JWKS_URL:-$GCIP_JWKS_DEFAULT}"
-if [[ -z "${SUPABASE_JWKS_URL// /}" ]]; then
-  echo "Refusing: SUPABASE_JWKS_URL is empty (would mount an empty JWKS and break token verification)." >&2
+AUTH_JWKS_URL="${AUTH_JWKS_URL:-${SUPABASE_JWKS_URL:-$GCIP_JWKS_DEFAULT}}"
+if [[ -z "${AUTH_JWKS_URL// /}" ]]; then
+  echo "Refusing: AUTH_JWKS_URL is empty (would mount an empty JWKS and break token verification)." >&2
   exit 1
 fi
-add_secret_version zkvote-staging-supabase-jwks-url "${SUPABASE_JWKS_URL}"
+add_secret_version zkvote-staging-auth-jwks-url "${AUTH_JWKS_URL}"
+add_secret_version zkvote-staging-supabase-jwks-url "${AUTH_JWKS_URL}"
 
 # SEPOLIA_RPC_URL is a genuine operator-supplied endpoint (cannot be defaulted).
 # Add its version if exported, then fail FAST if the secret still has no enabled

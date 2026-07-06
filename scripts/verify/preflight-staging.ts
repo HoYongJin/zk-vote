@@ -20,6 +20,22 @@ const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const DEFAULT_PROJECT_ID = "zkvote-staging-hhyyj";
 const DEFAULT_REGION = "asia-northeast3";
 const EXPECTED_CHAIN_ID = "11155111";
+const SECRET_FALLBACKS: Record<string, string> = {
+    SEPOLIA_RPC_URL: "zkvote-staging-sepolia-rpc-url",
+    RELAYER_PRIVATE_KEY: "zkvote-staging-relayer-private-key",
+    OWNER_PRIVATE_KEY: "zkvote-staging-owner-private-key",
+    FIREBASE_WEB_API_KEY: "zkvote-staging-firebase-web-api-key",
+    E2E_SUPERADMIN_EMAIL: "zkvote-staging-e2e-superadmin-email",
+    E2E_SUPERADMIN_PASSWORD: "zkvote-staging-e2e-superadmin-password",
+    E2E_VOTER_EMAIL: "zkvote-staging-e2e-voter-email",
+    E2E_VOTER_PASSWORD: "zkvote-staging-e2e-voter-password",
+    E2E_DATABASE_URL: "zkvote-staging-migrator-database-url",
+};
+const POST_INFRA_SECRET_SUBSTITUTES: Record<string, string> = {
+    ADMIN_PASSWORD: "zkvote-staging-postgres-password",
+    MIGRATOR_PASSWORD: "zkvote-staging-migrator-database-url",
+    APP_PASSWORD: "zkvote-staging-database-url",
+};
 
 type Status = "ok" | "warn" | "fail";
 
@@ -76,6 +92,57 @@ async function run(
 async function which(command: string): Promise<string | undefined> {
     const result = await run("which", [command], { timeoutMs: 5_000 });
     return result.ok ? result.stdout.split("\n")[0] : undefined;
+}
+
+async function secretHasEnabledVersion(projectId: string, secretName: string): Promise<boolean> {
+    const result = await run(
+        "gcloud",
+        [
+            "secrets",
+            "versions",
+            "list",
+            secretName,
+            "--project",
+            projectId,
+            "--filter",
+            "state:ENABLED",
+            "--limit",
+            "1",
+            "--format",
+            "value(name)",
+        ],
+        { timeoutMs: 20_000 }
+    );
+    return result.ok && result.stdout.length > 0;
+}
+
+async function secretValue(projectId: string, secretName: string): Promise<string | undefined> {
+    const result = await run(
+        "gcloud",
+        [
+            "secrets",
+            "versions",
+            "access",
+            "latest",
+            "--secret",
+            secretName,
+            "--project",
+            projectId,
+        ],
+        { timeoutMs: 20_000 }
+    );
+    return result.ok && result.stdout ? result.stdout : undefined;
+}
+
+async function envOrSecretValue(
+    projectId: string,
+    envName: string,
+    defaultSecretName: string
+): Promise<string | undefined> {
+    const direct = optionalEnv(envName);
+    if (direct) return direct;
+    const secretName = optionalEnv(`${envName}_SECRET`) ?? defaultSecretName;
+    return secretValue(projectId, secretName);
 }
 
 function addFinding(
@@ -206,28 +273,58 @@ async function checkEnv(evidence: Evidence): Promise<void> {
             ? preInfraRequired
             : [...preInfraRequired, ...fullOnlyRequired];
     const optionalButImportant = ["GCIP_ID_TOKEN", "SUPABASE_ID_TOKEN"];
-    const envChecks: Record<string, string> = {};
+    const envChecks: Record<string, unknown> = {};
     for (const name of [...preInfraRequired, ...fullOnlyRequired]) {
-        envChecks[name] = envStatus(name);
-        if (requiredForScope.includes(name) && envChecks[name] === "missing") {
+        const direct = optionalEnv(name);
+        if (direct) {
+            envChecks[name] = { status: "set", source: "env" };
+            continue;
+        }
+
+        const secretName =
+            SECRET_FALLBACKS[name] ??
+            (evidence.scope === "full" ? POST_INFRA_SECRET_SUBSTITUTES[name] : undefined);
+        if (secretName) {
+            const hasSecret = await secretHasEnabledVersion(evidence.projectId, secretName);
+            envChecks[name] = hasSecret
+                ? { status: "set", source: "secret-manager", secret: secretName }
+                : { status: "missing", source: "secret-manager", secret: secretName };
+            if (requiredForScope.includes(name) && !hasSecret) {
+                addFinding(
+                    evidence,
+                    "fail",
+                    `required env/secret missing for ${evidence.scope} staging preflight: ${name} (${secretName})`
+                );
+            }
+            continue;
+        }
+
+        envChecks[name] = { status: "missing", source: "env" };
+        if (requiredForScope.includes(name)) {
             addFinding(evidence, "fail", `required env missing for ${evidence.scope} staging preflight: ${name}`);
         }
     }
     if (optionalEnv("REDIS_BACKEND") === "external") {
-        envChecks.REDIS_URL = envStatus("REDIS_URL");
-        if (envChecks.REDIS_URL === "missing") {
+        const redisUrl = optionalEnv("REDIS_URL");
+        const redisSecret = redisUrl ? true : await secretHasEnabledVersion(evidence.projectId, "zkvote-staging-redis-url");
+        envChecks.REDIS_URL = redisUrl
+            ? { status: "set", source: "env" }
+            : redisSecret
+              ? { status: "set", source: "secret-manager", secret: "zkvote-staging-redis-url" }
+              : { status: "missing", source: "env-or-secret" };
+        if (!redisUrl && !redisSecret) {
             addFinding(evidence, "fail", "REDIS_BACKEND=external requires REDIS_URL");
         }
     }
     for (const name of optionalButImportant) {
-        envChecks[name] = envStatus(name);
-        if (envChecks[name] === "missing") {
+        envChecks[name] = { status: envStatus(name), source: "env" };
+        if (envStatus(name) === "missing") {
             addFinding(evidence, "warn", `${name} missing; auth migration cannot be fully proven`);
         }
     }
 
     const maxInstances = optionalEnv("MAX_INSTANCES") ?? "1(default)";
-    envChecks.MAX_INSTANCES = maxInstances;
+    envChecks.MAX_INSTANCES = { status: "set", value: maxInstances };
     if (optionalEnv("MAX_INSTANCES") && optionalEnv("MAX_INSTANCES") !== "1") {
         addFinding(evidence, "fail", `MAX_INSTANCES must be 1 for v1, got ${optionalEnv("MAX_INSTANCES")}`);
     }
@@ -236,23 +333,27 @@ async function checkEnv(evidence: Evidence): Promise<void> {
 }
 
 async function checkChain(evidence: Evidence): Promise<void> {
-    const rpcUrl = optionalEnv("SEPOLIA_RPC_URL");
+    const rpcUrl = await envOrSecretValue(evidence.projectId, "SEPOLIA_RPC_URL", SECRET_FALLBACKS.SEPOLIA_RPC_URL);
     if (!rpcUrl) {
         evidence.checks.chain = { status: "skipped", reason: "SEPOLIA_RPC_URL missing" };
         return;
     }
-    const chain = await run("cast", ["chain-id", "--rpc-url", rpcUrl], { timeoutMs: 20_000 });
+    const response = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+    });
+    const body = (await response.json()) as { result?: string; error?: { message?: string } };
+    const actualChainId = body.result ? BigInt(body.result).toString() : "(unavailable)";
     evidence.checks.chain = {
         expectedChainId: EXPECTED_CHAIN_ID,
-        actualChainId: chain.ok ? chain.stdout : "(unavailable)",
+        actualChainId,
     };
-    if (!chain.ok || chain.stdout !== EXPECTED_CHAIN_ID) {
+    if (!response.ok || body.error || actualChainId !== EXPECTED_CHAIN_ID) {
         addFinding(
             evidence,
             "fail",
-            `SEPOLIA_RPC_URL must report chain id ${EXPECTED_CHAIN_ID}, got ${
-                chain.ok ? chain.stdout : "(unavailable)"
-            }`
+            `SEPOLIA_RPC_URL must report chain id ${EXPECTED_CHAIN_ID}, got ${actualChainId}`
         );
     }
 }
@@ -281,7 +382,15 @@ async function checkLocalArtifacts(evidence: Evidence): Promise<void> {
 async function checkNodeDeps(evidence: Evidence): Promise<void> {
     const packageJson = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"));
     const deps = { ...(packageJson.dependencies ?? {}), ...(packageJson.devDependencies ?? {}) };
-    const required = ["tsx", "pg", "@types/pg", "@playwright/test", "snarkjs"];
+    const required = [
+        "tsx",
+        "pg",
+        "@types/pg",
+        "@playwright/test",
+        "snarkjs",
+        "@ethersproject/keccak256",
+        "@ethersproject/signing-key",
+    ];
     const check: Record<string, unknown> = {};
     for (const dep of required) {
         check[dep] = deps[dep] ? { status: "declared", version: deps[dep] } : { status: "missing" };
@@ -297,8 +406,11 @@ async function checkScripts(evidence: Evidence): Promise<void> {
         "scripts/iac/bootstrap-staging-superadmin.sh",
         "scripts/cicd/deploy-staging-api.sh",
         "scripts/verify/verify-staging.sh",
+        "scripts/verify/check-staging-chain.ts",
         "scripts/verify/e2e-staging.ts",
         "scripts/verify/browser-smoke-staging.ts",
+        "scripts/verify/reconcile-staging-tally.ts",
+        "scripts/verify/load-staging-readonly.ts",
     ];
     const check: Record<string, unknown> = {};
     for (const rel of scripts) {
