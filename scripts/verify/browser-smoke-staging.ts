@@ -7,12 +7,20 @@
  * through the configured VITE_API_BASE_URL.
  */
 import fs from "node:fs";
+import { execFile as execFileCallback } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { chromium, type ConsoleMessage, type Page } from "@playwright/test";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "../..");
+const execFile = promisify(execFileCallback);
+const DEFAULT_PROJECT_ID = "zkvote-staging-hhyyj";
+const DEFAULT_SECRET_NAMES = {
+    voterEmail: "zkvote-staging-e2e-voter-email",
+    voterPassword: "zkvote-staging-e2e-voter-password",
+} as const;
 
 interface Evidence {
     status: "running" | "passed" | "failed";
@@ -38,6 +46,37 @@ function env(name: string, fallback?: string): string {
 function optionalEnv(name: string): string | undefined {
     const value = process.env[name]?.trim();
     return value || undefined;
+}
+
+async function secretValue(projectId: string, secretName: string): Promise<string> {
+    const { stdout } = await execFile(
+        "gcloud",
+        [
+            "secrets",
+            "versions",
+            "access",
+            "latest",
+            "--secret",
+            secretName,
+            "--project",
+            projectId,
+        ],
+        { maxBuffer: 1024 * 1024 }
+    );
+    return stdout.trim();
+}
+
+async function envOrSecret(
+    projectId: string,
+    envName: string,
+    defaultSecretName: string
+): Promise<string> {
+    const direct = optionalEnv(envName);
+    if (direct) return direct;
+    const secretName = optionalEnv(`${envName}_SECRET`) ?? defaultSecretName;
+    const value = await secretValue(projectId, secretName);
+    assert(value, `${envName} secret ${secretName} is empty`);
+    return value;
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -71,9 +110,14 @@ async function waitForApiResponse(
 
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
+    const projectId = env("GCP_PROJECT_ID", DEFAULT_PROJECT_ID);
     const hostingUrl = env("FIREBASE_HOSTING_URL").replace(/\/$/, "");
-    const email = env("E2E_VOTER_EMAIL");
-    const password = env("E2E_VOTER_PASSWORD");
+    const email = await envOrSecret(projectId, "E2E_VOTER_EMAIL", DEFAULT_SECRET_NAMES.voterEmail);
+    const password = await envOrSecret(
+        projectId,
+        "E2E_VOTER_PASSWORD",
+        DEFAULT_SECRET_NAMES.voterPassword
+    );
     const evidencePath =
         optionalEnv("BROWSER_SMOKE_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `browser-smoke-${runId}.json`);

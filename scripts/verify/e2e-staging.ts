@@ -6,9 +6,10 @@
  * Direct DB access is used only for readback evidence. The first superadmin
  * bootstrap is handled by bootstrap-staging-superadmin.sh.
  */
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -26,6 +27,15 @@ const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const DEFAULT_PROJECT_ID = "zkvote-staging-hhyyj";
 const DEFAULT_REGION = "asia-northeast3";
 const DEFAULT_SERVICE = "zkvote-staging-api";
+const DEFAULT_SECRET_NAMES = {
+    firebaseApiKey: "zkvote-staging-firebase-web-api-key",
+    superadminEmail: "zkvote-staging-e2e-superadmin-email",
+    superadminPassword: "zkvote-staging-e2e-superadmin-password",
+    voterEmail: "zkvote-staging-e2e-voter-email",
+    voterPassword: "zkvote-staging-e2e-voter-password",
+    sepoliaRpcUrl: "zkvote-staging-sepolia-rpc-url",
+    databaseUrl: "zkvote-staging-migrator-database-url",
+} as const;
 const CHAIN_ID = "11155111";
 const CIRCUIT_DEPTH = 4;
 const CIRCUIT_WIDTH = 10;
@@ -60,6 +70,12 @@ interface Evidence {
     checks: Record<string, unknown>;
     caveats: string[];
     failure?: string;
+}
+
+interface PreparedDatabaseUrl {
+    url: string;
+    connection: Json;
+    cleanup?: () => Promise<void>;
 }
 
 function env(name: string, fallback?: string): string {
@@ -205,6 +221,54 @@ async function gcloudJson(args: string[]): Promise<Json> {
     return JSON.parse(stdout) as Json;
 }
 
+async function gcloudText(args: string[]): Promise<string> {
+    const { stdout } = await execFile("gcloud", args, { maxBuffer: 1024 * 1024 });
+    return stdout.trim();
+}
+
+async function secretValue(projectId: string, secretName: string): Promise<string> {
+    return gcloudText([
+        "secrets",
+        "versions",
+        "access",
+        "latest",
+        "--secret",
+        secretName,
+        "--project",
+        projectId,
+    ]);
+}
+
+async function envOrSecret(
+    projectId: string,
+    envName: string,
+    defaultSecretName: string
+): Promise<string> {
+    const direct = optionalEnv(envName);
+    if (direct) return direct;
+    const secretName = optionalEnv(`${envName}_SECRET`) ?? defaultSecretName;
+    const value = await secretValue(projectId, secretName);
+    assert(value, `${envName} secret ${secretName} is empty`);
+    return value;
+}
+
+async function optionalEnvOrSecret(
+    projectId: string,
+    envName: string,
+    defaultSecretName: string
+): Promise<string | undefined> {
+    const direct = optionalEnv(envName);
+    if (direct) return direct;
+    const secretName = optionalEnv(`${envName}_SECRET`) ?? defaultSecretName;
+    try {
+        const value = await secretValue(projectId, secretName);
+        return value || undefined;
+    } catch (error) {
+        if (optionalEnv(`${envName}_SECRET`)) throw error;
+        return undefined;
+    }
+}
+
 function serviceMaxScale(service: Json): string | undefined {
     const spec = service.spec as Json | undefined;
     const template = spec?.template as Json | undefined;
@@ -264,6 +328,126 @@ async function readDbEvidence(databaseUrl: string, electionId: string, nullifier
     }
 }
 
+function cloudSqlInstanceFromDatabaseUrl(databaseUrl: string): string | undefined {
+    let parsed: URL;
+    try {
+        parsed = new URL(databaseUrl);
+    } catch {
+        return undefined;
+    }
+    const host = parsed.searchParams.get("host");
+    if (!host?.startsWith("/cloudsql/")) return undefined;
+    return host.slice("/cloudsql/".length);
+}
+
+function tcpDatabaseUrl(databaseUrl: string, port: number): string {
+    const parsed = new URL(databaseUrl);
+    parsed.hostname = "127.0.0.1";
+    parsed.port = String(port);
+    parsed.searchParams.delete("host");
+    return parsed.toString();
+}
+
+async function waitForTcp(port: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        try {
+            await new Promise<void>((resolve, reject) => {
+                const socket = net.createConnection({ host: "127.0.0.1", port });
+                socket.once("connect", () => {
+                    socket.destroy();
+                    resolve();
+                });
+                socket.once("error", reject);
+                socket.setTimeout(1_000, () => {
+                    socket.destroy();
+                    reject(new Error("tcp timeout"));
+                });
+            });
+            return;
+        } catch (error) {
+            if (Date.now() >= deadline) {
+                throw new Error(
+                    `Cloud SQL proxy did not become reachable on 127.0.0.1:${port}: ${String(error)}`
+                );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+    }
+}
+
+async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabaseUrl> {
+    const instance = cloudSqlInstanceFromDatabaseUrl(databaseUrl);
+    if (!instance) {
+        return { url: databaseUrl, connection: { mode: "direct" } };
+    }
+
+    const socketDir = `/cloudsql/${instance}`;
+    if (fs.existsSync(socketDir)) {
+        return { url: databaseUrl, connection: { mode: "cloud-sql-socket", instance } };
+    }
+
+    const proxyBin = optionalEnv("E2E_CLOUD_SQL_PROXY_BIN") ?? "/tmp/cloud-sql-proxy";
+    assert(fs.existsSync(proxyBin), `Cloud SQL proxy binary not found at ${proxyBin}`);
+    const proxyPort = Number(optionalEnv("E2E_CLOUD_SQL_PROXY_PORT") ?? "5434");
+    assert(
+        Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536,
+        "E2E_CLOUD_SQL_PROXY_PORT must be a valid TCP port"
+    );
+
+    let proxyOutput = "";
+    const proxy = spawn(proxyBin, ["--address", "127.0.0.1", "--port", String(proxyPort), instance], {
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+    proxy.stdout.on("data", (chunk) => {
+        proxyOutput += String(chunk);
+    });
+    proxy.stderr.on("data", (chunk) => {
+        proxyOutput += String(chunk);
+    });
+
+    const exitBeforeReady = new Promise<never>((_resolve, reject) => {
+        proxy.once("exit", (code, signal) => {
+            reject(
+                new Error(
+                    `Cloud SQL proxy exited before ready (code=${code ?? "null"}, signal=${signal ?? "null"}): ${proxyOutput.trim()}`
+                )
+            );
+        });
+    });
+    await Promise.race([waitForTcp(proxyPort, 15_000), exitBeforeReady]);
+
+    return {
+        url: tcpDatabaseUrl(databaseUrl, proxyPort),
+        connection: { mode: "cloud-sql-proxy", instance, proxyPort },
+        cleanup: async () => {
+            await new Promise<void>((resolve) => {
+                let settled = false;
+                let timer: NodeJS.Timeout;
+                const finish = () => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    proxy.stdout.destroy();
+                    proxy.stderr.destroy();
+                    resolve();
+                };
+
+                timer = setTimeout(() => {
+                    proxy.kill("SIGKILL");
+                    finish();
+                }, 2_000);
+                proxy.once("exit", finish);
+                if (proxy.exitCode !== null || proxy.signalCode !== null) {
+                    finish();
+                    return;
+                }
+                proxy.kill("SIGTERM");
+            });
+        },
+    };
+}
+
 async function completeAfterWindow(
     baseUrl: string,
     adminToken: string,
@@ -309,13 +493,37 @@ async function main(): Promise<void> {
     const service = env("CLOUD_RUN_SERVICE", DEFAULT_SERVICE);
     const baseUrl = env("STAGING_BASE_URL").replace(/\/$/, "");
     const artifactBucket = env("ARTIFACT_BUCKET", `zkvote-staging-artifacts-${projectId}`);
-    const firebaseApiKey = env("FIREBASE_WEB_API_KEY");
-    const superadminEmail = env("E2E_SUPERADMIN_EMAIL");
-    const superadminPassword = env("E2E_SUPERADMIN_PASSWORD");
-    const voterEmail = env("E2E_VOTER_EMAIL");
-    const voterPassword = env("E2E_VOTER_PASSWORD");
-    const rpcUrl = optionalEnv("SEPOLIA_RPC_URL");
-    const databaseUrl = optionalEnv("E2E_DATABASE_URL");
+    const firebaseApiKey = await envOrSecret(
+        projectId,
+        "FIREBASE_WEB_API_KEY",
+        DEFAULT_SECRET_NAMES.firebaseApiKey
+    );
+    const superadminEmail = await envOrSecret(
+        projectId,
+        "E2E_SUPERADMIN_EMAIL",
+        DEFAULT_SECRET_NAMES.superadminEmail
+    );
+    const superadminPassword = await envOrSecret(
+        projectId,
+        "E2E_SUPERADMIN_PASSWORD",
+        DEFAULT_SECRET_NAMES.superadminPassword
+    );
+    const voterEmail = await envOrSecret(projectId, "E2E_VOTER_EMAIL", DEFAULT_SECRET_NAMES.voterEmail);
+    const voterPassword = await envOrSecret(
+        projectId,
+        "E2E_VOTER_PASSWORD",
+        DEFAULT_SECRET_NAMES.voterPassword
+    );
+    const rpcUrl = await optionalEnvOrSecret(
+        projectId,
+        "SEPOLIA_RPC_URL",
+        DEFAULT_SECRET_NAMES.sepoliaRpcUrl
+    );
+    const databaseUrl = await optionalEnvOrSecret(
+        projectId,
+        "E2E_DATABASE_URL",
+        DEFAULT_SECRET_NAMES.databaseUrl
+    );
     const evidencePath =
         optionalEnv("E2E_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `staging-e2e-${runId}.json`);
@@ -333,6 +541,7 @@ async function main(): Promise<void> {
         checks: {},
         caveats: [],
     };
+    let dbCleanup: (() => Promise<void>) | undefined;
 
     try {
         assert(
@@ -569,7 +778,10 @@ async function main(): Promise<void> {
         }
 
         if (databaseUrl) {
-            evidence.checks.dbReadback = await readDbEvidence(databaseUrl, electionId, nullifier);
+            const preparedDb = await prepareDatabaseUrl(databaseUrl);
+            dbCleanup = preparedDb.cleanup;
+            evidence.checks.dbConnection = preparedDb.connection;
+            evidence.checks.dbReadback = await readDbEvidence(preparedDb.url, electionId, nullifier);
         } else if (process.env.ALLOW_DB_READBACK_SKIP === "yes") {
             evidence.caveats.push("E2E_DATABASE_URL absent; DB readback skipped by ALLOW_DB_READBACK_SKIP=yes.");
         } else {
@@ -602,10 +814,16 @@ async function main(): Promise<void> {
         evidence.failure = error instanceof Error ? error.message : String(error);
         writeEvidence(evidencePath, evidence);
         throw error;
+    } finally {
+        await dbCleanup?.();
     }
 }
 
-void main().catch((error) => {
-    console.error(error);
-    process.exit(1);
-});
+void main()
+    .then(() => {
+        process.exit(0);
+    })
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });
