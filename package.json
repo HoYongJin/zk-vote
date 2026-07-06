@@ -10,7 +10,14 @@
     "verify:staging:e2e": "node --import tsx scripts/verify/e2e-staging.ts",
     "verify:staging:browser": "node --import tsx scripts/verify/browser-smoke-staging.ts",
     "verify:staging:reconcile": "node --import tsx scripts/verify/reconcile-staging-tally.ts",
-    "verify:staging:load": "node --import tsx scripts/verify/load-staging-readonly.ts"
+    "verify:staging:load": "node --import tsx scripts/verify/load-staging-readonly.ts",
+    "verify:production:preflight": "node --import tsx scripts/verify/preflight-production.ts",
+    "verify:production": "bash scripts/verify/verify-production.sh",
+    "verify:production:chain": "node --import tsx scripts/verify/check-production-chain.ts",
+    "verify:production:e2e": "node --import tsx scripts/verify/e2e-production.ts",
+    "verify:production:browser": "node --import tsx scripts/verify/browser-smoke-production.ts",
+    "verify:production:reconcile": "node --import tsx scripts/verify/reconcile-production-tally.ts",
+    "verify:production:load": "node --import tsx scripts/verify/load-production-readonly.ts"
   },
   "devDependencies": {
     "@ethersproject/keccak256": "^5.8.0",

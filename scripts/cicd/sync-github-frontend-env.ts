@@ -210,11 +210,21 @@ async function main(): Promise<void> {
         ]);
         if (!serviceUrl) throw new Error(`Cloud Run service URL not found for ${service}`);
         const apiBaseUrl = `${serviceUrl.replace(/\/$/, "")}/api`;
+        const wifProvider = optionalEnv("GCP_WORKLOAD_IDENTITY_PROVIDER");
+        const firebaseDeployServiceAccount = optionalEnv("GCP_FIREBASE_DEPLOY_SERVICE_ACCOUNT")
+            ?? optionalEnv("FIREBASE_DEPLOY_SERVICE_ACCOUNT");
+        const siteId = optionalEnv("FIREBASE_SITE_ID") ?? projectId;
         const values = {
             VITE_API_BASE_URL: apiBaseUrl,
             VITE_FIREBASE_API_KEY: firebase.apiKey,
             VITE_FIREBASE_AUTH_DOMAIN: firebase.authDomain ?? `${projectId}.firebaseapp.com`,
             VITE_FIREBASE_PROJECT_ID: firebase.projectId,
+            GCP_PROJECT_ID: projectId,
+            FIREBASE_SITE_ID: siteId,
+            ...(wifProvider ? { GCP_WORKLOAD_IDENTITY_PROVIDER: wifProvider } : {}),
+            ...(firebaseDeployServiceAccount
+                ? { GCP_FIREBASE_DEPLOY_SERVICE_ACCOUNT: firebaseDeployServiceAccount }
+                : {}),
         };
         await ensureGithubEnvironment(repo, environment);
         for (const [name, value] of Object.entries(values)) {
@@ -231,6 +241,11 @@ async function main(): Promise<void> {
             cloudRun: {
                 service,
                 apiBaseUrl,
+            },
+            deployIdentity: {
+                wifProvider: wifProvider ? "set" : "not-set",
+                firebaseDeployServiceAccount: firebaseDeployServiceAccount ? "set" : "not-set",
+                siteId,
             },
             githubSecrets: Object.fromEntries(
                 Object.entries(values).map(([name, value]) => [name, redacted(value)])
