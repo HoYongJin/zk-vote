@@ -37,9 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
     });
     if auth.is_none() {
-        tracing::warn!(
-            "AUTH_JWKS_URL is not set; authenticated routes will return SERVER_ERROR"
-        );
+        tracing::warn!("AUTH_JWKS_URL is not set; authenticated routes will return SERVER_ERROR");
     }
 
     let state = AppState {
