@@ -24,6 +24,7 @@ import type { ProofInputs, WorkerRequest, WorkerResponse } from '../../workers/p
 interface ProgressState {
   title: ReactNode;
   detail?: ReactNode;
+  cancellable?: boolean;
 }
 
 function terminateWorker(worker: Worker | null) {
@@ -51,7 +52,16 @@ function VotePage() {
   const [errorMessage, setErrorMessage] = useState('');
 
   const workerRef = useRef<Worker | null>(null);
+  const voteRunRef = useRef(0);
   useEffect(() => () => terminateWorker(workerRef.current), []);
+
+  const cancelVote = () => {
+    voteRunRef.current += 1;
+    terminateWorker(workerRef.current);
+    workerRef.current = null;
+    setProgress(null);
+    pushToast({ type: 'info', title: '투표 제출 취소됨', description: 'proof 생성이나 제출이 완료되지 않았습니다.' });
+  };
 
   const handleVote = async () => {
     if (selectedCandidateIndex === null) {
@@ -63,12 +73,16 @@ function VotePage() {
     }
 
     let submissionTicket: string | null = null;
+    const runId = voteRunRef.current + 1;
+    voteRunRef.current = runId;
+    const isActiveRun = () => voteRunRef.current === runId;
 
     try {
       setErrorMessage('');
       setProgress({ title: '투표 증명 정보 요청 중', detail: '/proof는 인증된 요청이며 nullifier를 서버에 보내지 않습니다.' });
 
       const serverResponse = await apiClient.proof(electionId);
+      if (!isActiveRun()) return;
       const submissionTicketIssuedAtMs = Date.now();
       const { root, pathElements, pathIndices, submissionTicket: receivedTicket } = serverResponse;
 
@@ -84,6 +98,7 @@ function VotePage() {
 
       setProgress({ title: '증명 아티팩트 확인 중', detail: 'manifest 해시와 다운로드한 wasm/zkey를 대조합니다.' });
       const artifactInfo = await apiClient.artifactInfo(electionId);
+      if (!isActiveRun()) return;
 
       const voteArray: number[] = new Array(artifactInfo.numOptions).fill(0);
       voteArray[selectedCandidateIndex] = 1;
@@ -101,6 +116,7 @@ function VotePage() {
         fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.wasmPath), artifactInfo.wasmSha256, '증명 회로(wasm)'),
         fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.zkeyPath), artifactInfo.zkeySha256, '증명 키(zkey)'),
       ]);
+      if (!isActiveRun()) return;
 
       setProgress({ title: '영지식 증명 생성 중', detail: '브라우저 worker에서 proof를 생성합니다.' });
       const workerPayload: WorkerRequest = { inputs, wasmData, zkeyData };
@@ -110,6 +126,7 @@ function VotePage() {
 
       worker.onmessage = async (event: MessageEvent<WorkerResponse>) => {
         const message = event.data;
+        if (!isActiveRun()) return;
 
         if (message.status !== 'success') {
           setProgress(null);
@@ -128,7 +145,11 @@ function VotePage() {
           return;
         }
 
-        setProgress({ title: '증명 제출 중', detail: '/submit은 single-use ticket만 사용하며 JWT를 첨부하지 않습니다.' });
+        setProgress({
+          title: '증명 제출 중',
+          detail: '/submit은 single-use ticket만 사용하며 JWT를 첨부하지 않습니다.',
+          cancellable: false,
+        });
 
         const formattedProof: FormattedProof = {
           a: proof.pi_a.slice(0, 2),
@@ -139,11 +160,13 @@ function VotePage() {
         try {
           const jitterMs = calculateSubmissionJitterMs({ ticketIssuedAtMs: submissionTicketIssuedAtMs });
           await delay(jitterMs);
+          if (!isActiveRun()) return;
 
           await submitVote.mutateAsync({
             electionId,
             input: { formattedProof, publicSignals, submissionTicket: submissionTicket as string },
           });
+          if (!isActiveRun()) return;
 
           try {
             clearVoterSecret(electionId);
@@ -171,12 +194,14 @@ function VotePage() {
       };
 
       worker.onerror = (event: ErrorEvent) => {
+        if (!isActiveRun()) return;
         setProgress(null);
         setErrorMessage(`Web worker initialization error: ${event.message}`);
         terminateWorker(worker);
         workerRef.current = null;
       };
     } catch (error) {
+      if (!isActiveRun()) return;
       setProgress(null);
       console.error('Failed to fetch proof data or ticket:', errorData(error));
       setErrorMessage(`투표 실패: ${apiErrorMessage(error)}`);
@@ -269,7 +294,13 @@ function VotePage() {
         </section>
       </PageShell>
 
-      {progress && <ProgressOverlay title={progress.title} detail={progress.detail} />}
+      {progress && (
+        <ProgressOverlay
+          title={progress.title}
+          detail={progress.detail}
+          onCancel={progress.cancellable === false ? undefined : cancelVote}
+        />
+      )}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
     </>
   );

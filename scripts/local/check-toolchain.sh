@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reports which pieces of the zk-vote toolchain are present on this machine.
-# Informational only — never fails. See docs/PROJECT_PLAN.md Phase 2.
+# Informational only — never fails. See the active setup/runbook docs before deploy.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)

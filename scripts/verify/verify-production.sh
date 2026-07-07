@@ -4,12 +4,12 @@ set -euo pipefail
 PROJECT_ID="${GCP_PROJECT_ID:-zkvote-prod-hhyyj}"
 SERVICE="${CLOUD_RUN_SERVICE:-zkvote-prod-api}"
 REGION="${GCP_REGION:-asia-northeast3}"
-if [[ -z "${STAGING_BASE_URL:-}" && -z "${PRODUCTION_BASE_URL:-}" && -z "${PROD_BASE_URL:-}" ]]; then
-  STAGING_BASE_URL="$(gcloud run services describe "${SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.url)')"
+if [[ -z "${VERIFY_BASE_URL:-}" && -z "${PRODUCTION_BASE_URL:-}" && -z "${PROD_BASE_URL:-}" ]]; then
+  VERIFY_BASE_URL="$(gcloud run services describe "${SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.url)')"
 else
-  STAGING_BASE_URL="${STAGING_BASE_URL:-${PRODUCTION_BASE_URL:-${PROD_BASE_URL:-}}}"
+  VERIFY_BASE_URL="${VERIFY_BASE_URL:-${PRODUCTION_BASE_URL:-${PROD_BASE_URL:-}}}"
 fi
-export STAGING_BASE_URL
+export VERIFY_BASE_URL
 export ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-zkvote-prod-artifacts-${PROJECT_ID}}"
 export GCIP_ID_TOKEN="${GCIP_ID_TOKEN:-}"
 export SUPABASE_ID_TOKEN="${SUPABASE_ID_TOKEN:-}"

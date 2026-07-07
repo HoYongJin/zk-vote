@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI gate (PROJECT_PLAN Phase 17): the post-C1 public signal schema must
+# CI gate: the post-C1 public signal schema must
 # hold everywhere — every active verification key exposes exactly 4 public
 # signals and the Solidity boundary is uint[4].
 set -euo pipefail

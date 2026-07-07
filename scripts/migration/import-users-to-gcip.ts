@@ -3,12 +3,12 @@
  * @desc One-time, idempotent migration of Supabase Auth users into GCP Identity
  * Platform (GCIP / Firebase Auth) — PROJECT_PLAN Phase 7.
  *
- * Why this shape (load-bearing — see PROJECT_PLAN §0.3):
- *   - The Rust extractor parses the JWT `sub` via `Uuid::parse_str`
- *     (crates/api/src/auth/mod.rs) and `admins.id` / `voters.user_id` are
- *     UUID-typed. GCIP's native uid is a 28-char string, so we MUST set each
- *     migrated user's GCIP `uid` = their existing Supabase UUID. Then `sub`
- *     stays a UUID, every FK resolves, and NO voter re-registers.
+ * Why this shape:
+ *   - Migrated users keep `uid = legacy Supabase UUID` for continuity and
+ *     auditability. The current Rust auth resolver maps `(issuer, subject)` to
+ *     internal `app_users.id`, so new Google/Firebase string UIDs are valid too;
+ *     preserving the legacy UUID is a migration compatibility choice, not a
+ *     runtime requirement.
  *   - Passwords migrate verbatim: Supabase/GoTrue stores bcrypt in
  *     `auth.users.encrypted_password`; GCIP `importUsers` accepts the raw bcrypt
  *     hash with `{ hash: { algorithm: 'BCRYPT' } }`.
@@ -149,7 +149,7 @@ function partition(rows: SourceUser[]): {
 
 function toFirebaseRecord(row: SourceUser): FirebaseRecord {
     return {
-        uid: row.id, // == Supabase UUID -> keeps JWT `sub` a UUID (PROJECT_PLAN §0.3)
+        uid: row.id, // preserve legacy Supabase UUID as the Firebase subject for migrated users
         email: row.email,
         emailVerified: row.email_verified === true, // actual status only (invariant #8)
         passwordHash: Buffer.from(row.encrypted_password as string, "utf8"), // raw bcrypt bytes
@@ -240,13 +240,13 @@ async function main(): Promise<void> {
         console.log("\nDRY RUN — nothing written to GCIP.");
         const verifiedCount = passwordUsers.filter((u) => u.email_verified).length;
         console.log(
-            `Would import ${passwordUsers.length} users (uid=Supabase UUID, BCRYPT); ` +
+            `Would import ${passwordUsers.length} users (legacy Supabase UUID as uid, BCRYPT); ` +
                 `${verifiedCount} emailVerified, ${passwordUsers.length - verifiedCount} unverified.`
         );
         return;
     }
 
-    console.log(`\nImporting ${passwordUsers.length} users to GCIP (uid=UUID, BCRYPT)...`);
+    console.log(`\nImporting ${passwordUsers.length} users to GCIP (legacy Supabase UUID as uid, BCRYPT)...`);
     const { success, failure, errors } = await importBatches(passwordUsers);
     console.log(`\nDone. imported=${success} failed=${failure}`);
     if (errors.length) {

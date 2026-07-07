@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 3 verification gates (docs/PROJECT_PLAN.md): asserts that the local
+# Local database verification gates: asserts that the local
 # schema enforces the core invariants even if an API bug is introduced, and
 # that the runtime role cannot execute DDL (AR-M3). Runs inside a transaction
 # that is rolled back — leaves no data behind. Fails non-zero on any gate.

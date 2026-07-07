@@ -35,7 +35,7 @@ describe("deploy env loader", function () {
         fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it("keeps root Hardhat vars but lets the migration env own Supabase vars", function () {
+    it("keeps root chain vars but lets the migration env own Supabase vars", function () {
         const rootEnvPath = path.join(tempDir, ".env");
         const serverEnvPath = path.join(tempDir, "server.env");
         fs.writeFileSync(

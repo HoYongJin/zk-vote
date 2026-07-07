@@ -24,7 +24,7 @@ describe("zkArtifacts manifest binding (audit M5)", function () {
     beforeEach(function () {
         zkpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zkvote-artifacts-"));
         manifestPath = path.join(zkpDir, "artifact-manifest.json");
-        makeFakeBuild(zkpDir, 4, 5);
+        makeFakeBuild(zkpDir, 4, 10);
     });
 
     afterEach(function () {
@@ -34,7 +34,7 @@ describe("zkArtifacts manifest binding (audit M5)", function () {
     it("records deploy-time artifact hashes and verifies an unchanged build", function () {
         const record = recordElectionArtifacts(
             "election-1",
-            { merkleTreeDepth: 4, numCandidates: 5, contractAddress: "0x1" },
+            { merkleTreeDepth: 4, numCandidates: 10, contractAddress: "0x1" },
             { zkpDir, manifestPath }
         );
 
@@ -48,12 +48,12 @@ describe("zkArtifacts manifest binding (audit M5)", function () {
     it("detects a regenerated zkey for an already-deployed election", function () {
         recordElectionArtifacts(
             "election-1",
-            { merkleTreeDepth: 4, numCandidates: 5 },
+            { merkleTreeDepth: 4, numCandidates: 10 },
             { zkpDir, manifestPath }
         );
 
         // Simulate setUpZk.sh regenerating the shared build with fresh randomness.
-        fs.writeFileSync(path.join(zkpDir, "build_4_5", "circuit_final.zkey"), "zkey-v2-new-randomness");
+        fs.writeFileSync(path.join(zkpDir, "build_4_10", "circuit_final.zkey"), "zkey-v2-new-randomness");
 
         const check = verifyElectionArtifacts("election-1", { zkpDir, manifestPath });
         expect(check.ok).toBe(false);
@@ -69,11 +69,11 @@ describe("zkArtifacts manifest binding (audit M5)", function () {
     it("fails closed when a recorded election's artifacts disappear", function () {
         recordElectionArtifacts(
             "election-1",
-            { merkleTreeDepth: 4, numCandidates: 5 },
+            { merkleTreeDepth: 4, numCandidates: 10 },
             { zkpDir, manifestPath }
         );
 
-        fs.rmSync(path.join(zkpDir, "build_4_5", "circuit_final.zkey"));
+        fs.rmSync(path.join(zkpDir, "build_4_10", "circuit_final.zkey"));
 
         const check = verifyElectionArtifacts("election-1", { zkpDir, manifestPath });
         expect(check.ok).toBe(false);

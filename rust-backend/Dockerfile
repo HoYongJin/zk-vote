@@ -1,4 +1,4 @@
-# zkvote-api container (PROJECT_PLAN Phase 16).
+# zkvote-api Cloud Run container.
 # Build locally:  docker build -f rust-backend/Dockerfile -t zkvote-api .
 # Cloud Run runtime contract: binds 0.0.0.0:$PORT (handled by config.rs).
 

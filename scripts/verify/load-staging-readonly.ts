@@ -176,7 +176,7 @@ function summarize(samples: Sample[]): Record<string, unknown> {
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
     const projectId = env("GCP_PROJECT_ID", DEFAULT_PROJECT_ID);
-    const baseUrl = env("STAGING_BASE_URL").replace(/\/$/, "");
+    const baseUrl = (optionalEnv("VERIFY_BASE_URL") ?? env("STAGING_BASE_URL")).replace(/\/$/, "");
     const requests = Number(optionalEnv("LOAD_REQUESTS") ?? "50");
     const concurrency = Number(optionalEnv("LOAD_CONCURRENCY") ?? "10");
     assert(Number.isInteger(requests) && requests > 0 && requests <= 1000, "LOAD_REQUESTS must be 1..1000");

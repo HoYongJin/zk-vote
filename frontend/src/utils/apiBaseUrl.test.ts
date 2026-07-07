@@ -21,22 +21,22 @@ describe('apiBaseUrl utilities', () => {
 
   test('resolves server-provided API paths against a separate API origin', () => {
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:8080/api');
-    expect(resolveApiPath('/api/zkp-files/build_4_5/circuit_final.zkey')).toBe(
-      'http://localhost:8080/api/zkp-files/build_4_5/circuit_final.zkey',
+    expect(resolveApiPath('/api/zkp-files/build_4_10/circuit_final.zkey')).toBe(
+      'http://localhost:8080/api/zkp-files/build_4_10/circuit_final.zkey',
     );
   });
 
   test('keeps relative API paths relative to the frontend origin', () => {
     vi.stubEnv('VITE_API_BASE_URL', '/api');
-    expect(resolveApiPath('/api/zkp-files/build_4_5/circuit_final.zkey')).toBe(
-      '/api/zkp-files/build_4_5/circuit_final.zkey',
+    expect(resolveApiPath('/api/zkp-files/build_4_10/circuit_final.zkey')).toBe(
+      '/api/zkp-files/build_4_10/circuit_final.zkey',
     );
   });
 
   test('resolves artifact paths only through /api/zkp-files', () => {
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:8080/api');
-    expect(resolveArtifactApiPath('api/zkp-files/build_4_5/circuit_final.zkey')).toBe(
-      'http://localhost:8080/api/zkp-files/build_4_5/circuit_final.zkey',
+    expect(resolveArtifactApiPath('api/zkp-files/build_4_10/circuit_final.zkey')).toBe(
+      'http://localhost:8080/api/zkp-files/build_4_10/circuit_final.zkey',
     );
   });
 

@@ -484,7 +484,7 @@ mod tests {
     fn artifact_info_matches_node_response_shape() {
         let row = ArtifactInfoRow {
             merkle_tree_depth: 4,
-            num_candidates: 5,
+            num_candidates: 10,
             wasm_uri: None,
             zkey_uri: None,
             manifest: Some(json!({
@@ -499,11 +499,11 @@ mod tests {
 
         assert_eq!(
             response.wasm_path,
-            "/api/zkp-files/build_4_5/VoteCheck_temp_js/VoteCheck_temp.wasm"
+            "/api/zkp-files/build_4_10/VoteCheck_temp_js/VoteCheck_temp.wasm"
         );
         assert_eq!(
             response.zkey_path,
-            "/api/zkp-files/build_4_5/circuit_final.zkey"
+            "/api/zkp-files/build_4_10/circuit_final.zkey"
         );
         assert_eq!(response.wasm_sha256, "a".repeat(64));
         assert_eq!(response.zkey_sha256, "b".repeat(64));
@@ -514,8 +514,8 @@ mod tests {
     #[test]
     fn artifact_info_accepts_canonical_nested_hash_manifest() {
         let row = ArtifactInfoRow {
-            merkle_tree_depth: 5,
-            num_candidates: 4,
+            merkle_tree_depth: 6,
+            num_candidates: 10,
             wasm_uri: Some("gs://bucket/circuits/v1/proof.wasm".to_string()),
             zkey_uri: Some("gs://bucket/circuits/v1/proof.zkey".to_string()),
             manifest: Some(json!({
@@ -532,11 +532,11 @@ mod tests {
 
         assert_eq!(
             response.wasm_path,
-            "/api/zkp-files/build_5_4/VoteCheck_temp_js/VoteCheck_temp.wasm"
+            "/api/zkp-files/build_6_10/VoteCheck_temp_js/VoteCheck_temp.wasm"
         );
         assert_eq!(
             response.zkey_path,
-            "/api/zkp-files/build_5_4/circuit_final.zkey"
+            "/api/zkp-files/build_6_10/circuit_final.zkey"
         );
         assert_eq!(response.wasm_sha256, "d".repeat(64));
         assert_eq!(response.zkey_sha256, "e".repeat(64));
@@ -547,7 +547,7 @@ mod tests {
     fn artifact_info_rejects_missing_hashes() {
         let row = ArtifactInfoRow {
             merkle_tree_depth: 4,
-            num_candidates: 5,
+            num_candidates: 10,
             wasm_uri: None,
             zkey_uri: None,
             manifest: Some(json!({ "wasmSha256": "a".repeat(64) })),
@@ -560,12 +560,12 @@ mod tests {
     fn artifact_info_accepts_manifest_api_artifact_paths() {
         let row = ArtifactInfoRow {
             merkle_tree_depth: 4,
-            num_candidates: 5,
+            num_candidates: 10,
             wasm_uri: None,
             zkey_uri: None,
             manifest: Some(json!({
-                "wasmPath": "/api/zkp-files/build_4_5/VoteCheck_temp_js/VoteCheck_temp.wasm",
-                "zkeyPath": "build_4_5/circuit_final.zkey",
+                "wasmPath": "/api/zkp-files/build_4_10/VoteCheck_temp_js/VoteCheck_temp.wasm",
+                "zkeyPath": "build_4_10/circuit_final.zkey",
                 "wasmSha256": "a".repeat(64),
                 "zkeySha256": "b".repeat(64),
                 "verificationKeySha256": "c".repeat(64)
@@ -576,11 +576,11 @@ mod tests {
 
         assert_eq!(
             response.wasm_path,
-            "/api/zkp-files/build_4_5/VoteCheck_temp_js/VoteCheck_temp.wasm"
+            "/api/zkp-files/build_4_10/VoteCheck_temp_js/VoteCheck_temp.wasm"
         );
         assert_eq!(
             response.zkey_path,
-            "/api/zkp-files/build_4_5/circuit_final.zkey"
+            "/api/zkp-files/build_4_10/circuit_final.zkey"
         );
     }
 
@@ -588,12 +588,12 @@ mod tests {
     fn artifact_info_rejects_manifest_external_artifact_paths() {
         let row = ArtifactInfoRow {
             merkle_tree_depth: 4,
-            num_candidates: 5,
+            num_candidates: 10,
             wasm_uri: None,
             zkey_uri: None,
             manifest: Some(json!({
                 "wasmPath": "https://evil.example/VoteCheck_temp.wasm",
-                "zkeyPath": "/api/zkp-files/build_4_5/circuit_final.zkey",
+                "zkeyPath": "/api/zkp-files/build_4_10/circuit_final.zkey",
                 "wasmSha256": "a".repeat(64),
                 "zkeySha256": "b".repeat(64),
                 "verificationKeySha256": "c".repeat(64)
@@ -609,12 +609,12 @@ mod tests {
     fn artifact_info_rejects_manifest_path_traversal() {
         let row = ArtifactInfoRow {
             merkle_tree_depth: 4,
-            num_candidates: 5,
+            num_candidates: 10,
             wasm_uri: None,
             zkey_uri: None,
             manifest: Some(json!({
                 "wasmPath": "/api/zkp-files/../server/.env",
-                "zkeyPath": "/api/zkp-files/build_4_5/circuit_final.zkey",
+                "zkeyPath": "/api/zkp-files/build_4_10/circuit_final.zkey",
                 "wasmSha256": "a".repeat(64),
                 "zkeySha256": "b".repeat(64),
                 "verificationKeySha256": "c".repeat(64)
@@ -694,11 +694,11 @@ mod tests {
     #[test]
     fn zkp_file_path_filter_matches_node_static_surface() {
         assert!(allowed_zkp_artifact_path(
-            "build_4_5/VoteCheck_temp_js/VoteCheck_temp.wasm"
+            "build_4_10/VoteCheck_temp_js/VoteCheck_temp.wasm"
         ));
-        assert!(allowed_zkp_artifact_path("/build_4_5/circuit_final.zkey"));
+        assert!(allowed_zkp_artifact_path("/build_4_10/circuit_final.zkey"));
         assert!(allowed_zkp_artifact_path(
-            "/build_4_5/verification_key.json"
+            "/build_4_10/verification_key.json"
         ));
         assert!(allowed_zkp_artifact_path(
             "/circuits/votecheck/v1/VoteCheck_temp_js/VoteCheck_temp.wasm"
@@ -706,7 +706,7 @@ mod tests {
         assert!(allowed_zkp_artifact_path(
             "/circuits/votecheck/v1/circuit_final.zkey"
         ));
-        assert!(!allowed_zkp_artifact_path("/build_4_5/VoteCheck.circom"));
+        assert!(!allowed_zkp_artifact_path("/build_4_10/VoteCheck.circom"));
         assert!(!allowed_zkp_artifact_path("/../server/.env"));
         assert!(!allowed_zkp_artifact_path("/build_21_5/circuit_final.zkey"));
         assert!(!allowed_zkp_artifact_path(

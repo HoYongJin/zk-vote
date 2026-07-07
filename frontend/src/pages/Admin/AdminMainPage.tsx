@@ -33,6 +33,7 @@ import {
   ToastViewport,
 } from '../../components/ui';
 import { useToasts } from '../../components/useToasts';
+import { explorerAddressUrl } from '../../utils/explorer';
 import { auth } from '../../firebase';
 import { useAppSelector } from '../../store/hooks';
 import { errorCode, errorData, errorMessage } from '../../utils/errors';
@@ -390,7 +391,7 @@ function AdminMainPage() {
                       </div>
                       <div className="election-item__actions">
                         {vote.contract_address && (
-                          <a href={`https://sepolia.etherscan.io/address/${vote.contract_address}`} target="_blank" rel="noopener noreferrer">
+                          <a href={explorerAddressUrl(vote.contract_address)} target="_blank" rel="noopener noreferrer">
                             <Button type="button" variant="secondary" icon={ExternalLink}>
                               컨트랙트 보기
                             </Button>
@@ -430,7 +431,7 @@ function AdminMainPage() {
                     </div>
                     <div className="election-item__actions">
                       {vote.contract_address && (
-                        <a href={`https://sepolia.etherscan.io/address/${vote.contract_address}`} target="_blank" rel="noopener noreferrer">
+                        <a href={explorerAddressUrl(vote.contract_address)} target="_blank" rel="noopener noreferrer">
                           <Button type="button" variant="secondary" icon={ExternalLink}>
                             컨트랙트 보기
                           </Button>

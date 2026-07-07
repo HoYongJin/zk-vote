@@ -296,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn zkp_files_route_serves_only_allowed_artifacts() {
         let root = std::env::temp_dir().join(format!("zkvote-artifacts-{}", uuid::Uuid::new_v4()));
-        let build = root.join("build_4_5");
+        let build = root.join("build_4_10");
         std::fs::create_dir_all(&build).unwrap();
         std::fs::write(build.join("circuit_final.zkey"), b"test-zkey").unwrap();
         std::fs::write(build.join("VoteCheck.circom"), b"secret source").unwrap();
@@ -305,7 +305,7 @@ mod tests {
         let response = app
             .clone()
             .oneshot(
-                Request::get("/api/zkp-files/build_4_5/circuit_final.zkey")
+                Request::get("/api/zkp-files/build_4_10/circuit_final.zkey")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -317,7 +317,7 @@ mod tests {
 
         let response = app
             .oneshot(
-                Request::get("/api/zkp-files/build_4_5/VoteCheck.circom")
+                Request::get("/api/zkp-files/build_4_10/VoteCheck.circom")
                     .body(Body::empty())
                     .unwrap(),
             )

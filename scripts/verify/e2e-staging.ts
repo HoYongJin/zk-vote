@@ -528,7 +528,7 @@ async function main(): Promise<void> {
     const projectId = env("GCP_PROJECT_ID", DEFAULT_PROJECT_ID);
     const region = env("GCP_REGION", DEFAULT_REGION);
     const service = env("CLOUD_RUN_SERVICE", DEFAULT_SERVICE);
-    const baseUrl = env("STAGING_BASE_URL").replace(/\/$/, "");
+    const baseUrl = (optionalEnv("VERIFY_BASE_URL") ?? env("STAGING_BASE_URL")).replace(/\/$/, "");
     const artifactBucket = env("ARTIFACT_BUCKET", `zkvote-staging-artifacts-${projectId}`);
     const firebaseApiKey = await envOrSecret(
         projectId,

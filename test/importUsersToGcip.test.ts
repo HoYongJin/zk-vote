@@ -6,8 +6,8 @@ import {
     chunk,
 } from "../scripts/migration/import-users-to-gcip";
 
-// PROJECT_PLAN Phase 7 — the import script's load-bearing logic (uid=UUID per
-// §0.3, emailVerified-from-actual-status per invariant #8, OAuth partition).
+// GCIP import migration logic: legacy Supabase UUID continuity,
+// emailVerified-from-actual-status per invariant #8, and OAuth partitioning.
 // These are pure functions, so they test without firebase-admin or credentials.
 describe("import-users-to-gcip", function () {
     describe("isUsableBcrypt", function () {
@@ -68,7 +68,7 @@ describe("import-users-to-gcip", function () {
     });
 
     describe("toFirebaseRecord", function () {
-        it("keeps uid = the Supabase UUID so JWT sub stays a UUID (§0.3)", function () {
+        it("keeps uid = the legacy Supabase UUID for migrated-user continuity", function () {
             const row = {
                 id: "44444444-4444-4444-4444-444444444444",
                 email: "a@example.com",

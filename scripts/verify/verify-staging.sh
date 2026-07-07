@@ -3,7 +3,7 @@
 # Runs against an already-deployed staging Cloud Run service to prove the rollout
 # is correct before declaring Phase 18 done. Safe to run repeatedly.
 #
-# Implements docs/RUNBOOK_PHASE18_STANDUP.md §8 + PROJECT_PLAN §18 verification gate:
+# Implements the staging verification gate from the active runbook:
 #   1. /healthz + /readyz return 200
 #   2. every proving artifact GETs 200 AND is byte-identical to the committed
 #      zk/ circuit bytes (invariant #7 — proves the GCS bucket was seeded correctly)
@@ -27,9 +27,9 @@ EVIDENCE_PATH="${VERIFY_EVIDENCE_PATH:-${PROJECT_ROOT}/docs/evidence/verify-stag
 EVIDENCE_TMP="$(mktemp)"
 EVIDENCE_FINALIZED=false
 
-BASE_URL="${STAGING_BASE_URL:-}"
+BASE_URL="${VERIFY_BASE_URL:-${STAGING_BASE_URL:-}}"
 if [[ -z "${BASE_URL}" ]]; then
-  echo "Set STAGING_BASE_URL to the deployed Cloud Run service URL." >&2
+  echo "Set VERIFY_BASE_URL or STAGING_BASE_URL to the deployed Cloud Run service URL." >&2
   exit 1
 fi
 BASE_URL="${BASE_URL%/}"

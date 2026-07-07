@@ -70,7 +70,7 @@ const EmailAuthForm = ({ onLoadingChange, onError, onInfo }: EmailAuthFormProps)
     try {
       const { user } = await signInWithEmailAndPassword(auth, email, password);
       if (user && !user.emailVerified) {
-        onInfo('이메일 인증이 완료되지 않았습니다. 받은 편지함의 인증 링크를 확인해주세요.');
+        onInfo('이메일 인증이 필요합니다. 인증 전에는 관리자 초대나 유권자 등록 매칭이 반영되지 않을 수 있습니다.');
         try {
           await sendEmailVerification(user);
         } catch {
@@ -91,7 +91,7 @@ const EmailAuthForm = ({ onLoadingChange, onError, onInfo }: EmailAuthFormProps)
     try {
       const { user } = await createUserWithEmailAndPassword(auth, email, password);
       await sendEmailVerification(user);
-      onInfo('회원가입이 완료되었습니다. 이메일 인증 링크를 확인해주세요.');
+      onInfo('회원가입이 완료되었습니다. 관리자 초대나 유권자 등록을 사용하려면 이메일 인증을 완료해주세요.');
     } catch (signUpError) {
       onError(parseAuthError(authErrorCode(signUpError)));
     } finally {

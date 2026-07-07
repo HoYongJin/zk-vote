@@ -5909,14 +5909,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zkvote-workers"
-version = "0.1.0"
-dependencies = [
- "thiserror 1.0.69",
- "zkvote-domain",
-]
-
-[[package]]
 name = "zkvote-zkp"
 version = "0.1.0"
 dependencies = [

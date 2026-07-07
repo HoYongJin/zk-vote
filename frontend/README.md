@@ -46,6 +46,7 @@ VITE_API_BASE_URL=http://localhost:8080/api   # backend API base; defaults to "/
 VITE_FIREBASE_API_KEY=<firebase web api key>
 VITE_FIREBASE_AUTH_DOMAIN=<project>.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=<project-id>
+VITE_CHAIN_EXPLORER_BASE_URL=https://sepolia.etherscan.io
 ```
 
 `src/firebase.ts` fails fast (throws) if the Firebase values are missing, so a misconfigured
@@ -75,7 +76,7 @@ was removed.) The deployed origin must be allowed in the Cloud Run `CORS_ALLOWED
 
 ## Notes
 
-- The Merkle-depth selector supports depth 2–5 (the provisioned ZK artifacts); larger trees
-  require generating new circuits + ptau (see root `README.md`).
+- The Merkle-depth selector supports the provisioned `{4,6,8,10}` depths with verifier width
+  10. Different depth/width combinations require generating and registering new artifacts.
 - The main bundle (~1 MB, mostly Firebase) is above Vite's 500 kB warning; snarkjs already
   lazy-loads in the worker chunk. Code-splitting Firebase is a possible future optimization.

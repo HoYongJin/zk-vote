@@ -12,27 +12,30 @@ import {VotingTally} from "../contracts/VotingTally.sol";
 ///         deploy JS for local/dev use.
 ///
 /// @dev Env:
-///   MERKLE_TREE_DEPTH  uint    - Merkle depth (selects Groth16Verifier_<depth>_<numCandidates>)
-///   NUM_CANDIDATES     uint    - candidate width of the circuit/verifier
+///   MERKLE_TREE_DEPTH  uint    - Merkle depth (selects Groth16Verifier_<depth>_<VERIFIER_WIDTH>)
+///   NUM_CANDIDATES     uint    - active candidate count for VotingTally
+///   VERIFIER_WIDTH      uint    - optional circuit/verifier candidate width; defaults to 10
 ///   ELECTION_ID        uint    - election id as a decimal uint256
 ///   OWNER              address - cold owner key address (configureElection rights; AR-M4)
 ///   PRIVATE_KEY        uint    - hot relayer key that signs the deploy txs (pays gas only)
 ///
 /// Usage:
-///   MERKLE_TREE_DEPTH=4 NUM_CANDIDATES=10 ELECTION_ID=123 OWNER=0x.. PRIVATE_KEY=0x.. \
+///   MERKLE_TREE_DEPTH=4 NUM_CANDIDATES=3 VERIFIER_WIDTH=10 ELECTION_ID=123 OWNER=0x.. PRIVATE_KEY=0x.. \
 ///     forge script script/Deploy.s.sol:Deploy --rpc-url <rpc> --broadcast
 contract Deploy is Script, StdCheats {
     function run() external {
         uint256 depth = vm.envUint("MERKLE_TREE_DEPTH");
         uint256 numCandidates = vm.envUint("NUM_CANDIDATES");
+        uint256 verifierWidth = vm.envOr("VERIFIER_WIDTH", uint256(10));
         uint256 electionId = vm.envUint("ELECTION_ID");
         address owner = vm.envAddress("OWNER");
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
 
         // Resolve the shape-specific verifier artifact by name (e.g.
-        // "Groth16Verifier_4_10.sol") so this script is shape-agnostic.
+        // "Groth16Verifier_4_10.sol") while keeping the active candidate
+        // count independent from the provisioned verifier width.
         string memory verifierArtifact =
-            string.concat("Groth16Verifier_", vm.toString(depth), "_", vm.toString(numCandidates), ".sol");
+            string.concat("Groth16Verifier_", vm.toString(depth), "_", vm.toString(verifierWidth), ".sol");
 
         vm.startBroadcast(deployerKey);
         address verifier = deployCode(verifierArtifact);
@@ -43,5 +46,6 @@ contract Deploy is Script, StdCheats {
         console.log("VotingTally :", address(votingTally));
         console.log("owner       :", owner);
         console.log("electionId  :", electionId);
+        console.log("width       :", verifierWidth);
     }
 }

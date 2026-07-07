@@ -10,7 +10,7 @@ script = "script"
 libs = ["lib"]
 solc = "0.8.20"             # match hardhat.config.js
 optimizer = false           # hardhat had no optimizer block -> disabled; keep audited-bytecode parity
-evm_version = "paris"       # MATCHES hardhat build-info (evmVersion: paris) — avoids PUSH0, keeps audited-bytecode parity
+evm_version = "paris"       # avoids PUSH0 and preserves bytecode compatibility with the audited pre-Foundry build
 # forge test reads the shared real-proof fixture (rust-backend/crates/api/testdata/proof_fixture.json) via vm.readFile.
 fs_permissions = [{ access = "read", path = "./" }]
 

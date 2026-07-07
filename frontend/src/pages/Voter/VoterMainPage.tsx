@@ -26,6 +26,7 @@ import {
 import { useToasts } from '../../components/useToasts';
 import { auth as firebaseAuth } from '../../firebase';
 import { useAppSelector } from '../../store/hooks';
+import { explorerAddressUrl } from '../../utils/explorer';
 import {
   calculateSecretCommitment,
   clearVoterSecret,
@@ -221,7 +222,7 @@ function VoterMainPage() {
                     </div>
                     <div className="election-item__actions">
                       {election.contract_address && (
-                        <a href={`https://sepolia.etherscan.io/address/${election.contract_address}`} target="_blank" rel="noopener noreferrer">
+                        <a href={explorerAddressUrl(election.contract_address)} target="_blank" rel="noopener noreferrer">
                           <Button type="button" variant="secondary" icon={ExternalLink}>
                             컨트랙트 보기
                           </Button>

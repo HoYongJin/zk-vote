@@ -19,7 +19,7 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    // Dev-only proxy: when REACT_APP/VITE_API_BASE_URL is the default "/api",
+    // Dev-only proxy: when VITE_API_BASE_URL is the default "/api",
     // forward API calls to the local Rust backend. Harmless when an absolute
     // API base URL is configured (those requests bypass the proxy).
     proxy: {

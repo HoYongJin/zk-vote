@@ -5,7 +5,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react';
+import { useId, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import { createPortal } from 'react-dom';
 import type { ToastMessage } from './useToasts';
 
@@ -101,6 +101,7 @@ interface DialogProps {
 const modalRoot = () => document.getElementById('modal-root') ?? document.body;
 
 export function Dialog({ isOpen, title, description, children, footer, onClose, tone = 'default' }: DialogProps) {
+  const titleId = useId();
   if (!isOpen) return null;
   const root = modalRoot();
 
@@ -110,12 +111,12 @@ export function Dialog({ isOpen, title, description, children, footer, onClose, 
         className={`ui-dialog ui-dialog--${tone}`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="dialog-title"
+        aria-labelledby={titleId}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="ui-dialog__header">
           <div>
-            <h2 id="dialog-title">{title}</h2>
+            <h2 id={titleId}>{title}</h2>
             {description && <p>{description}</p>}
           </div>
           <IconButton icon={X} label="닫기" onClick={onClose} />
@@ -203,13 +204,26 @@ export function ElectionList<T>({ title, description, items, empty, getKey, rend
   );
 }
 
-export function ProgressOverlay({ title, detail }: { title: ReactNode; detail?: ReactNode }) {
+export function ProgressOverlay({
+  title,
+  detail,
+  onCancel,
+}: {
+  title: ReactNode;
+  detail?: ReactNode;
+  onCancel?: () => void;
+}) {
   return (
     <div className="progress-overlay" role="status" aria-live="assertive">
       <div className="progress-overlay__panel">
         <Loader2 className="progress-overlay__icon" aria-hidden="true" />
         <h2>{title}</h2>
         {detail && <p>{detail}</p>}
+        {onCancel && (
+          <Button type="button" variant="secondary" onClick={onCancel}>
+            취소
+          </Button>
+        )}
       </div>
     </div>
   );
