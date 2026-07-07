@@ -107,6 +107,10 @@ for cloud_build_role in roles/cloudbuild.builds.builder roles/storage.objectView
     --role "${cloud_build_role}" \
     --quiet >/dev/null
 done
+gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
+  --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
+  --role roles/storage.objectViewer \
+  --quiet >/dev/null
 
 gcloud builds submit . \
   --config scripts/cicd/cloudbuild-staging-api.yaml \
