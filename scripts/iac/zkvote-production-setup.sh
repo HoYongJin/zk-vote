@@ -34,6 +34,8 @@ REDIS_SIZE="${REDIS_SIZE:-1}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-prod-vpc}"
 NETWORK="${NETWORK:-default}"
 VPC_RANGE="${VPC_RANGE:-10.9.0.0/28}"
+PRIVATE_SERVICE_RANGE="${PRIVATE_SERVICE_RANGE:-google-managed-services-default}"
+PRIVATE_SERVICE_PREFIX_LENGTH="${PRIVATE_SERVICE_PREFIX_LENGTH:-16}"
 VPC_MIN_INSTANCES="${VPC_MIN_INSTANCES:-2}"
 VPC_MAX_INSTANCES="${VPC_MAX_INSTANCES:-3}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-prod-api}"
@@ -61,6 +63,7 @@ required_apis=(
   redis.googleapis.com
   secretmanager.googleapis.com
   vpcaccess.googleapis.com
+  servicenetworking.googleapis.com
   compute.googleapis.com
   cloudkms.googleapis.com
   run.googleapis.com
@@ -86,6 +89,7 @@ Cloud SQL          : ${SQL_INSTANCE} POSTGRES_16 ENTERPRISE REGIONAL ${SQL_TIER}
 Redis              : ${REDIS_INSTANCE} STANDARD_HA Redis 7 ${REDIS_SIZE}GB
 Cloud Run API      : zkvote-prod-api min=1 max=1
 artifact bucket    : gs://${BUCKET}
+private services   : ${PRIVATE_SERVICE_RANGE} /${PRIVATE_SERVICE_PREFIX_LENGTH} on ${NETWORK}
 runtime SA         : ${SERVICE_ACCOUNT_EMAIL}
 Cloud Build SA     : ${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}
 Firebase deploy SA : ${FIREBASE_DEPLOY_SERVICE_ACCOUNT}
@@ -297,6 +301,30 @@ fi
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(random_password)}"
 add_secret_version zkvote-prod-postgres-password "${ADMIN_PASSWORD}"
 
+if ! gcloud compute addresses describe "${PRIVATE_SERVICE_RANGE}" \
+  --global \
+  --project "${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud compute addresses create "${PRIVATE_SERVICE_RANGE}" \
+    --project "${PROJECT_ID}" \
+    --global \
+    --purpose=VPC_PEERING \
+    --prefix-length="${PRIVATE_SERVICE_PREFIX_LENGTH}" \
+    --network="${NETWORK}" \
+    --quiet
+fi
+
+if ! gcloud services vpc-peerings list \
+  --project "${PROJECT_ID}" \
+  --network="${NETWORK}" \
+  --format='value(service)' | grep -qx 'servicenetworking.googleapis.com'; then
+  gcloud services vpc-peerings connect \
+    --project "${PROJECT_ID}" \
+    --service=servicenetworking.googleapis.com \
+    --ranges="${PRIVATE_SERVICE_RANGE}" \
+    --network="${NETWORK}" \
+    --quiet
+fi
+
 if ! gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud sql instances create "${SQL_INSTANCE}" \
     --project "${PROJECT_ID}" \
@@ -308,6 +336,7 @@ if ! gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" >
     --storage-type SSD \
     --storage-size "${SQL_STORAGE_SIZE}" \
     --storage-auto-increase \
+    --network="${NETWORK}" \
     --no-assign-ip \
     --ssl-mode=ENCRYPTED_ONLY \
     --backup-start-time "${SQL_BACKUP_START_TIME}" \
