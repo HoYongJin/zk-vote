@@ -7,3 +7,7 @@
 !rust-backend/crates/**
 !out/
 !out/**
+!scripts/
+!scripts/verify/
+!scripts/verify/cloud-run-db-dump.Dockerfile
+!scripts/verify/cloud-run-db-dump.sh
