@@ -19,6 +19,11 @@ describe('apiBaseUrl utilities', () => {
     expect(getApiBaseUrl()).toBe('http://localhost:8080/api');
   });
 
+  test('adds the backend /api prefix when only an origin is configured', () => {
+    vi.stubEnv('VITE_API_BASE_URL', ' https://zkvote-prod-api.example.run.app/ ');
+    expect(getApiBaseUrl()).toBe('https://zkvote-prod-api.example.run.app/api');
+  });
+
   test('resolves server-provided API paths against a separate API origin', () => {
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:8080/api');
     expect(resolveApiPath('/api/zkp-files/build_4_10/circuit_final.zkey')).toBe(

@@ -9,7 +9,11 @@ export function getApiBaseUrl(): string {
   if (!configured || configured === '/') {
     return API_PREFIX;
   }
-  return stripTrailingSlash(configured);
+  const normalized = stripTrailingSlash(configured);
+  if (normalized === API_PREFIX || normalized.endsWith(API_PREFIX)) {
+    return normalized;
+  }
+  return `${normalized}${API_PREFIX}`;
 }
 
 export function resolveApiPath(path: string): string {
