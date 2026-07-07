@@ -196,10 +196,20 @@ async function main(): Promise<void> {
         const backupEnabled = nested(sql, ["settings", "backupConfiguration", "enabled"]);
         const pitrEnabled = nested(sql, ["settings", "backupConfiguration", "pointInTimeRecoveryEnabled"]);
         const deletionProtection = nested(sql, ["settings", "deletionProtectionEnabled"]);
+        const ipv4Enabled = nested(sql, ["settings", "ipConfiguration", "ipv4Enabled"]);
+        const sslMode = nested(sql, ["settings", "ipConfiguration", "sslMode"]);
+        const requireSsl = nested(sql, ["settings", "ipConfiguration", "requireSsl"]);
         if (availability !== "REGIONAL") addFail(evidence, `Cloud SQL availabilityType must be REGIONAL, got ${String(availability)}`);
         if (backupEnabled !== true) addFail(evidence, "Cloud SQL backup must be enabled");
         if (pitrEnabled !== true) addFail(evidence, "Cloud SQL PITR must be enabled");
         if (deletionProtection !== true) addFail(evidence, "Cloud SQL deletion protection must be enabled");
+        if (ipv4Enabled === true) addFail(evidence, "Cloud SQL public IPv4 must be disabled for production");
+        if (
+            sslMode === "ALLOW_UNENCRYPTED_AND_ENCRYPTED" ||
+            (sslMode == null && requireSsl === false)
+        ) {
+            addFail(evidence, `Cloud SQL must not allow unencrypted client sessions, sslMode=${String(sslMode)} requireSsl=${String(requireSsl)}`);
+        }
     }
 
     const redis = await gcloudJson(["redis", "instances", "describe", "zkvote-prod-redis", "--project", projectId, "--region", region]);
@@ -214,7 +224,9 @@ async function main(): Promise<void> {
     evidence.checks.cloudRun = service ?? { status: "missing" };
     if (service) {
         const maxScale = nested(service, ["spec", "template", "metadata", "annotations", "autoscaling.knative.dev/maxScale"]);
+        const containerConcurrency = nested(service, ["spec", "template", "spec", "containerConcurrency"]);
         if (maxScale !== "1") addFail(evidence, `Cloud Run maxScale must be 1, got ${String(maxScale)}`);
+        if (containerConcurrency !== 1) addFail(evidence, `Cloud Run containerConcurrency must be 1, got ${String(containerConcurrency)}`);
     } else {
         addCaveat(evidence, "Cloud Run service not deployed yet; expected before post-deploy preflight");
     }

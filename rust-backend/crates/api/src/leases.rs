@@ -29,6 +29,12 @@ pub const RELAYER_LEASE_KEY: &str = "chain-relayer:tx";
 /// normal RPC; the G3 deploy path holds it across two sends + a DB write.
 pub const RELAYER_LEASE_SECONDS: u64 = 900;
 
+/// Serializes every transaction signed by the cold owner key. The finalize
+/// lease is per-election; this lease protects the owner EOA nonce across
+/// different elections running concurrently on the same Cloud Run instance.
+pub const OWNER_LEASE_KEY: &str = "chain-owner:tx";
+pub const OWNER_LEASE_SECONDS: u64 = 1800;
+
 /// TTL crash-backstop for the per-election finalize lease. Raised from 600 to
 /// 1800 (L-finalize-ttl) so the owner-key `configureElection` send + receipt
 /// wait cannot outrun the lease under slow RPC. This lease serializes ONLY

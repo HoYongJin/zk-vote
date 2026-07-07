@@ -38,6 +38,8 @@ VPC_MIN_INSTANCES="${VPC_MIN_INSTANCES:-2}"
 VPC_MAX_INSTANCES="${VPC_MAX_INSTANCES:-3}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-prod-api}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
+CLOUD_BUILD_SERVICE_ACCOUNT="${CLOUD_BUILD_SERVICE_ACCOUNT:-zkvote-prod-cloud-build}"
+CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL="${CLOUD_BUILD_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
 FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME="${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME:-zkvote-prod-firebase-admin}"
 FIREBASE_DEPLOY_SERVICE_ACCOUNT_OVERRIDE="${FIREBASE_DEPLOY_SERVICE_ACCOUNT:-}"
 FIREBASE_DEPLOY_SERVICE_ACCOUNT="${FIREBASE_DEPLOY_SERVICE_ACCOUNT_OVERRIDE:-${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com}"
@@ -85,6 +87,7 @@ Redis              : ${REDIS_INSTANCE} STANDARD_HA Redis 7 ${REDIS_SIZE}GB
 Cloud Run API      : zkvote-prod-api min=1 max=1
 artifact bucket    : gs://${BUCKET}
 runtime SA         : ${SERVICE_ACCOUNT_EMAIL}
+Cloud Build SA     : ${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}
 Firebase deploy SA : ${FIREBASE_DEPLOY_SERVICE_ACCOUNT}
 secrets            : zkvote-prod-* only; staging secrets are not reused
 
@@ -229,7 +232,7 @@ gcloud storage buckets update "gs://${BUCKET}" \
 PROJECT_ID="${PROJECT_ID}" BUCKET="${BUCKET}" CONFIRM_COSTS="${CONFIRM_COSTS}" \
   bash "${PROJECT_ROOT}/scripts/cicd/seed-artifacts.sh"
 
-for account in "${SERVICE_ACCOUNT}" "${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME}"; do
+for account in "${SERVICE_ACCOUNT}" "${CLOUD_BUILD_SERVICE_ACCOUNT}" "${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME}"; do
   email="${account}@${PROJECT_ID}.iam.gserviceaccount.com"
   if ! gcloud iam service-accounts describe "${email}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
     gcloud iam service-accounts create "${account}" \
@@ -250,10 +253,9 @@ for role in roles/cloudsql.client roles/logging.logWriter roles/monitoring.metri
     --role "${role}" \
     --quiet >/dev/null
 done
-PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-for cloud_build_role in roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
+for cloud_build_role in roles/cloudbuild.builds.builder roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
   retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
     --role "${cloud_build_role}" \
     --quiet >/dev/null
 done
@@ -306,6 +308,8 @@ if ! gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" >
     --storage-type SSD \
     --storage-size "${SQL_STORAGE_SIZE}" \
     --storage-auto-increase \
+    --no-assign-ip \
+    --ssl-mode=ENCRYPTED_ONLY \
     --backup-start-time "${SQL_BACKUP_START_TIME}" \
     --enable-point-in-time-recovery \
     --retained-backups-count 7 \

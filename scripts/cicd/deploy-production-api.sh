@@ -25,6 +25,8 @@ REPO="${REPO:-zkvote-prod}"
 SQL_INSTANCE="${SQL_INSTANCE:-zkvote-prod-pg}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-prod-api}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_EMAIL:-${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com}"
+CLOUD_BUILD_SERVICE_ACCOUNT="${CLOUD_BUILD_SERVICE_ACCOUNT:-zkvote-prod-cloud-build}"
+CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL="${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL:-${CLOUD_BUILD_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-prod-vpc}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://${PROJECT_ID}.web.app,https://${PROJECT_ID}.firebaseapp.com}"
 RELAYER_PRIVATE_KEY_SECRET="${RELAYER_PRIVATE_KEY_SECRET:-zkvote-prod-relayer-private-key}"
@@ -66,7 +68,6 @@ done
 
 CONNECTION_NAME="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/zkvote-api:$(git rev-parse --short HEAD)"
-PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 
 gcloud secrets describe "${RELAYER_PRIVATE_KEY_SECRET}" --project "${PROJECT_ID}" >/dev/null
 gcloud secrets describe "${OWNER_PRIVATE_KEY_SECRET}" --project "${PROJECT_ID}" >/dev/null
@@ -93,11 +94,16 @@ done
 gcloud artifacts repositories describe "${REPO}" --location "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1 \
   || gcloud artifacts repositories create "${REPO}" --repository-format=docker --location "${REGION}" --project "${PROJECT_ID}" --quiet
 
-# New projects can run Cloud Build with the Compute default service account.
-# It needs source-bucket read, image push, and log-write permissions.
-for cloud_build_role in roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
+gcloud iam service-accounts describe "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
+  --project "${PROJECT_ID}" >/dev/null 2>&1 \
+  || gcloud iam service-accounts create "${CLOUD_BUILD_SERVICE_ACCOUNT}" \
+      --project "${PROJECT_ID}" \
+      --display-name "zk-vote production Cloud Build" \
+      --quiet
+
+for cloud_build_role in roles/cloudbuild.builds.builder roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
     --role "${cloud_build_role}" \
     --quiet >/dev/null
 done
@@ -105,6 +111,7 @@ done
 gcloud builds submit . \
   --config scripts/cicd/cloudbuild-staging-api.yaml \
   --substitutions "_IMAGE=${IMAGE}" \
+  --service-account "projects/${PROJECT_ID}/serviceAccounts/${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
   --project "${PROJECT_ID}"
 
 deploy_args=(
@@ -115,6 +122,7 @@ deploy_args=(
   --service-account "${SERVICE_ACCOUNT_EMAIL}"
   --add-cloudsql-instances "${CONNECTION_NAME}"
   --allow-unauthenticated
+  --concurrency 1
   --min-instances "${MIN_INSTANCES}"
   --max-instances "${MAX_INSTANCES}"
   --vpc-connector "${VPC_CONNECTOR}"

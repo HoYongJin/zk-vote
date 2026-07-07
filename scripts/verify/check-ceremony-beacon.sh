@@ -2,13 +2,10 @@
 # ZK-SETUP-1 / AR-H1 pre-filter: assert a build's ceremony.json declares the
 # trusted setup was beacon-finalized (finalizedWithBeacon == true).
 #
-# This flag is, on its own, FORGEABLE (a hand-edited manifest), so seed-artifacts.sh
-# pairs this cheap structural check with an authoritative `snarkjs zkey verify`.
-# It is factored out here so it can be unit-tested without gcloud or a ptau file
-# (test/seedBeaconGate.test.ts). The match is ANCHORED on
-# `"finalizedWithBeacon" : true` so a decoy substring (e.g. `"beaconHex":"truested"`
-# next to `finalizedWithBeacon: false`) cannot false-pass. Fails closed (non-zero)
-# on the first non-beacon or missing manifest.
+# This manifest is, on its own, FORGEABLE (hand-edited JSON), so seed-artifacts.sh
+# pairs this structural check with authoritative `snarkjs zkey verify`. This gate
+# still fails closed unless the manifest carries the exact finalized flag and a
+# real 32-byte hex beacon value.
 #
 # Usage: check-ceremony-beacon.sh <ceremony.json> [<ceremony.json> ...]
 set -euo pipefail
@@ -25,6 +22,10 @@ for cer in "$@"; do
   fi
   if ! grep -Eq '"finalizedWithBeacon"[[:space:]]*:[[:space:]]*true[[:space:]]*[,}]' "${cer}"; then
     echo "FAIL: ${cer} is not beacon-finalized (finalizedWithBeacon != true). Regenerate with BEACON_HEX via zk/setUpZk.sh (AR-H1)." >&2
+    exit 1
+  fi
+  if ! grep -Eq '"beaconHex"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{64}"[[:space:]]*[,}]' "${cer}"; then
+    echo "FAIL: ${cer} is missing a 32-byte hex beaconHex. Regenerate with a published BEACON_HEX via zk/setUpZk.sh (AR-H1)." >&2
     exit 1
   fi
 done

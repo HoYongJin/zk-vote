@@ -36,3 +36,12 @@ firebase-debug.log
 .firebase/
 firebase*.generated.json
 firebase.*.generated.json
+
+# Local-only docs/evidence can include production URLs, test-account emails,
+# tx hashes, screenshots, and transient tickets. Never upload them to Cloud
+# Build source buckets.
+docs/
+Architecture.md
+CLAUDE.md
+AGENTS.md
+audit.md

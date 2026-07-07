@@ -482,7 +482,7 @@ pub async fn submit(
     // Run the contract's view/static preflight before GETDEL.
     // Permanent verifier/contract rejections must not burn the one-use ticket;
     // the actual send path still rechecks after consumption to handle races.
-    preflight_submit_tally(
+    if let Err(err) = preflight_submit_tally(
         &chain,
         expected_chain_id,
         contract_address,
@@ -492,7 +492,31 @@ pub async fn submit(
         args.signals,
     )
     .await
-    .map_err(chain_unavailable)?;
+    {
+        if !err.is_retryable() {
+            let failures = tickets::record_preflight_failure(&state.redis, ticket_token)
+                .await
+                .unwrap_or_else(|record_err| {
+                    tracing::warn!(
+                        error = %record_err,
+                        "failed to record submit preflight failure"
+                    );
+                    1
+                });
+            if failures >= tickets::MAX_PREFLIGHT_FAILURES_PER_TICKET {
+                if let Err(consume_err) = tickets::consume(&state.redis, ticket_token)
+                    .await
+                    .map_err(map_ticket_error)
+                {
+                    tracing::warn!(
+                        error = %consume_err,
+                        "failed to consume repeatedly rejected submission ticket"
+                    );
+                }
+            }
+        }
+        return Err(chain_unavailable(err));
+    }
 
     // Serialize the relay per wallet (AR-M5). The relayer EOA has one nonce
     // sequence, so EVERY send from it (deploy + this vote relay) must be

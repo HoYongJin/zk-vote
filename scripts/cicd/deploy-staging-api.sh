@@ -20,6 +20,8 @@ REPO="${REPO:-zkvote-staging}"
 SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-staging-api}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_EMAIL:-${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com}"
+CLOUD_BUILD_SERVICE_ACCOUNT="${CLOUD_BUILD_SERVICE_ACCOUNT:-zkvote-staging-cloud-build}"
+CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL="${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL:-${CLOUD_BUILD_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-staging-vpc}"
 # Must match the setup run: memorystore attaches the VPC connector; external
 # (Upstash/VM) omits it and reaches Redis over the public rediss:// REDIS_URL.
@@ -97,9 +99,24 @@ gcloud secrets add-iam-policy-binding "${RELAYER_PRIVATE_KEY_SECRET}" \
 gcloud artifacts repositories describe "${REPO}" --location "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1 \
   || gcloud artifacts repositories create "${REPO}" --repository-format=docker --location "${REGION}" --project "${PROJECT_ID}"
 
+gcloud iam service-accounts describe "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
+  --project "${PROJECT_ID}" >/dev/null 2>&1 \
+  || gcloud iam service-accounts create "${CLOUD_BUILD_SERVICE_ACCOUNT}" \
+      --project "${PROJECT_ID}" \
+      --display-name "zk-vote staging Cloud Build" \
+      --quiet
+
+for cloud_build_role in roles/cloudbuild.builds.builder roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
+    --role "${cloud_build_role}" \
+    --quiet >/dev/null
+done
+
 gcloud builds submit . \
   --config scripts/cicd/cloudbuild-staging-api.yaml \
   --substitutions "_IMAGE=${IMAGE}" \
+  --service-account "projects/${PROJECT_ID}/serviceAccounts/${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
   --project "${PROJECT_ID}"
 
 deploy_args=(
@@ -110,6 +127,7 @@ deploy_args=(
   --service-account "${SERVICE_ACCOUNT_EMAIL}"
   --add-cloudsql-instances "${CONNECTION_NAME}"
   --allow-unauthenticated
+  --concurrency 1
   # Minimal/free-tier: scale to zero when idle (no Cloud Run charge), cap at 1.
   # MAX_INSTANCES=1 is load-bearing for v1 nonce/lease safety.
   --min-instances "${MIN_INSTANCES}"

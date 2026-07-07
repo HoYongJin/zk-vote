@@ -122,7 +122,7 @@ async function run(
         const err = error as { stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
         const stdout = redact(String(err.stdout ?? "").trim(), options.secrets ?? []);
         const stderr = redact(String(err.stderr ?? err.message ?? "").trim(), options.secrets ?? []);
-        throw new Error(`${command} ${args.join(" ")} failed\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+        throw new Error(`${command} failed\nstdout:\n${stdout}\nstderr:\n${stderr}`);
     }
 }
 
@@ -400,7 +400,10 @@ async function forgeVerify(
         ...args,
     ];
     const rpcUrl = optionalEnv("SEPOLIA_RPC_URL") ?? optionalEnv("ETH_RPC_URL");
-    if (rpcUrl) verifyArgs.splice(10, 0, "--rpc-url", rpcUrl);
+    if (rpcUrl) {
+        secrets.push(rpcUrl);
+        verifyArgs.splice(10, 0, "--rpc-url", rpcUrl);
+    }
 
     try {
         const output = await run("forge", verifyArgs, {
@@ -462,8 +465,9 @@ async function main(): Promise<void> {
             envOrSecret(projectId, "E2E_DATABASE_URL", optionalEnv("E2E_DATABASE_URL_SECRET")),
             envOrSecret(projectId, "OWNER_PRIVATE_KEY", optionalEnv("OWNER_PRIVATE_KEY_SECRET")),
         ]);
-        const secrets = [apiKey, ownerPrivateKey];
+        const secrets = [apiKey, ownerPrivateKey, rawDatabaseUrl];
         const preparedDb = await prepareDatabaseUrl(rawDatabaseUrl);
+        secrets.push(preparedDb.url);
         cleanup = preparedDb.cleanup;
         const deployment = await readDeployment(preparedDb.url);
         assert(deployment.chain_id === null || deployment.chain_id === expectedChainId, `deployment chain_id ${deployment.chain_id} != expected ${expectedChainId}`);

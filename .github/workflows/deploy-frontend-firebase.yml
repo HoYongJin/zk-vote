@@ -31,8 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
@@ -57,12 +57,13 @@ jobs:
           VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           FIREBASE_CONFIG_OUTPUT: firebase.generated.json
       - name: Authenticate to GCP (Firebase deployer service account)
-        uses: google-github-actions/auth@v2 # TODO Phase 18: pin to a commit SHA
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
       - name: Deploy to Firebase Hosting
-        # npx fetches firebase-tools transiently (no global add) — AR-H8 stays green.
-        run: npx --yes firebase-tools@13 deploy --only hosting --project "${GCP_PROJECT_ID}" --config firebase.generated.json --non-interactive
+        run: npm exec --prefix frontend -- firebase deploy --only hosting --project "${GCP_PROJECT_ID}" --config firebase.generated.json --non-interactive
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          FIREBASE_CLI_DISABLE_UPDATE_CHECK: "true"
+          XDG_CONFIG_HOME: ${{ runner.temp }}/firebase-cli-config

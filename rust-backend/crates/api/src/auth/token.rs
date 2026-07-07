@@ -26,13 +26,14 @@ pub struct UserMetadata {
 }
 
 impl Claims {
-    /// True only when the token EXPLICITLY marks the e-mail unverified
+    /// True only when the token explicitly proves the email is verified
     /// (top-level `email_verified` or `user_metadata.email_verified`).
-    /// Absent verification is treated as "unknown", not "unverified", so the
-    /// check never breaks a correctly-configured project — the operational
-    /// requirement that the IdP's e-mail confirmation is enabled is the primary
-    /// control (RUST-AUTH-2). An unverified e-mail must not be trusted as the
-    /// admin-invitation / voter-allowlist join key.
+    /// Absent verification is not enough for email-authority joins.
+    pub fn email_is_verified(&self) -> bool {
+        self.email_verified_claim() == Some(true)
+    }
+
+    /// True when the token explicitly marks the e-mail unverified.
     pub fn email_explicitly_unverified(&self) -> bool {
         self.email_verified == Some(false)
             || self.user_metadata.as_ref().and_then(|m| m.email_verified) == Some(false)
@@ -186,6 +187,28 @@ pub mod test_support {
         let claims = json!({
             "sub": sub,
             "email": email,
+            "email_verified": true,
+            "aud": audience,
+            "iss": issuer,
+            "exp": now + exp_offset_secs,
+        });
+        sign(claims)
+    }
+
+    pub fn mint_token_without_email_verification(
+        sub: &str,
+        email: &str,
+        audience: &str,
+        issuer: &str,
+        exp_offset_secs: i64,
+    ) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let claims = json!({
+            "sub": sub,
+            "email": email,
             "aud": audience,
             "iss": issuer,
             "exp": now + exp_offset_secs,
@@ -280,18 +303,30 @@ mod tests {
     }
 
     #[test]
-    fn explicit_email_unverified_is_detected_and_absent_is_unknown() {
+    fn only_explicitly_verified_email_is_authoritative() {
         // RUST-AUTH-2: an explicit email_verified:false token must be flagged...
         let unverified = mint_token_unverified(SUB, "v@example.com");
         let claims =
             validate_token(&unverified, &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap();
         assert!(claims.email_explicitly_unverified());
+        assert!(!claims.email_is_verified());
 
-        // ...while a normal token with no verification claim is "unknown", not
-        // unverified (must not break a correctly-configured project).
-        let normal = mint_token(SUB, "v@example.com", TEST_AUDIENCE, TEST_ISSUER, 300);
-        let claims = validate_token(&normal, &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap();
+        // Missing verification is unknown and must not authorize email joins.
+        let missing = mint_token_without_email_verification(
+            SUB,
+            "v@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+        let claims = validate_token(&missing, &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap();
         assert!(!claims.email_explicitly_unverified());
+        assert!(!claims.email_is_verified());
+
+        let verified = mint_token(SUB, "v@example.com", TEST_AUDIENCE, TEST_ISSUER, 300);
+        let claims =
+            validate_token(&verified, &keyset(), Some(TEST_ISSUER), TEST_AUDIENCE).unwrap();
+        assert!(claims.email_is_verified());
     }
 
     #[test]

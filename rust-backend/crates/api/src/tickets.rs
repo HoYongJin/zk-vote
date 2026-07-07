@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const TICKET_EXPIRY_SECONDS: u64 = 300;
+pub const MAX_PREFLIGHT_FAILURES_PER_TICKET: u64 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +25,10 @@ pub struct TicketPayload {
 
 fn key(token: &str) -> String {
     format!("submission-ticket:{token}")
+}
+
+fn preflight_failure_key(token: &str) -> String {
+    format!("submission-ticket-preflight-failures:{token}")
 }
 
 async fn connection(client: &redis::Client) -> Result<redis::aio::MultiplexedConnection, ApiError> {
@@ -94,6 +99,28 @@ pub async fn consume(
         .await
         .map_err(ApiError::from)?;
     parse(raw)
+}
+
+/// Records a verifier/contract preflight rejection against the ticket without
+/// storing identity or nullifier. This prevents one valid ticket from driving
+/// unbounded expensive `eth_call` verifier work until TTL expiry.
+pub async fn record_preflight_failure(
+    client: &redis::Client,
+    token: &str,
+) -> Result<u64, ApiError> {
+    let mut conn = connection(client).await?;
+    let count: u64 = redis::cmd("INCR")
+        .arg(preflight_failure_key(token))
+        .query_async(&mut conn)
+        .await
+        .map_err(ApiError::from)?;
+    let _: () = redis::cmd("EXPIRE")
+        .arg(preflight_failure_key(token))
+        .arg(TICKET_EXPIRY_SECONDS)
+        .query_async(&mut conn)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(count)
 }
 
 fn parse(raw: Option<String>) -> Result<Option<TicketPayload>, ApiError> {

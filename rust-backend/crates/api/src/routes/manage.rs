@@ -1008,7 +1008,7 @@ fn require_manifest_sha(manifest: &Value, key: &str) -> Result<String, ApiError>
 /// produced by `scripts/zkArtifacts.js` (`artifact-manifest.json`).
 pub async fn register_zk_artifact(
     State(state): State<AppState>,
-    AdminUser(_admin): AdminUser,
+    SuperAdminUser(_admin): SuperAdminUser,
     Json(body): Json<RegisterArtifactBody>,
 ) -> Result<(StatusCode, Json<RegisterArtifactResponse>), ApiError> {
     let circuit_id = require_field(body.circuit_id, "circuitId")?;

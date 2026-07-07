@@ -344,18 +344,31 @@ async fn finalize_locked(
             ));
         }
         JobRepo::set_status(&state.pg, job_id, "onchain_sent", None, None).await?;
-        let tx_hash = chain_try!(
-            configure_election(
-                chain,
-                expected_chain_id,
-                owner_key,
-                contract_address,
-                root_u256,
-                alloy::primitives::U256::from(now.unix_timestamp() as u64),
-                alloy::primitives::U256::from(vote_end.unix_timestamp() as u64),
-            )
-            .await
-        );
+        let owner_lease = leases::acquire(
+            &state.redis,
+            leases::OWNER_LEASE_KEY.to_string(),
+            leases::OWNER_LEASE_SECONDS,
+            "OWNER_BUSY",
+            "The owner key is configuring another election. Retry shortly.",
+        )
+        .await?;
+        let configure_result = configure_election(
+            chain,
+            expected_chain_id,
+            owner_key,
+            contract_address,
+            root_u256,
+            alloy::primitives::U256::from(now.unix_timestamp() as u64),
+            alloy::primitives::U256::from(vote_end.unix_timestamp() as u64),
+        )
+        .await;
+        if let Err(err) = leases::release(&state.redis, &owner_lease).await {
+            tracing::warn!(error = %err, "failed to release owner redis lease");
+        }
+        let tx_hash = match configure_result {
+            Ok(tx_hash) => tx_hash,
+            Err(err) => return Err(chain_api_error(state, job_id, err).await),
+        };
         JobRepo::set_status(&state.pg, job_id, "onchain_confirmed", Some(&tx_hash), None).await?;
         (now, vote_end, Some(tx_hash))
     };

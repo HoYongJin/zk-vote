@@ -667,6 +667,67 @@ mod tests {
             .ok();
     }
 
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn missing_email_verified_does_not_consume_admin_invitation() {
+        use auth::token::test_support::*;
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let subject = format!("missing-verified-google-{}", uuid::Uuid::new_v4());
+        let email = format!(
+            "missing-verified-admin-{}@example.com",
+            uuid::Uuid::new_v4()
+        );
+        let token = mint_token_without_email_verification(
+            &subject,
+            &email,
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        sqlx::query("INSERT INTO admin_invitations (email) VALUES ($1)")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, json) = get_me(routes::router(state.clone()), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["is_admin"], false);
+        assert!(json["email"].is_null());
+
+        let pending: Option<String> = sqlx::query_scalar(
+            "SELECT email::text FROM admin_invitations WHERE email = $1 AND accepted_at IS NULL",
+        )
+        .bind(&email)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending.as_deref(), Some(email.as_str()));
+
+        let internal_id: uuid::Uuid = json["id"].as_str().unwrap().parse().unwrap();
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM auth_identities WHERE issuer = $1 AND subject = $2")
+            .bind(TEST_ISSUER)
+            .bind(&subject)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(internal_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     /// H5 race gate: invitation promotion must be claim-first. A request that
     /// loses the accepted_at race must not insert a different admin row for
     /// the same invited e-mail.
@@ -1805,6 +1866,59 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn ordinary_admin_cannot_register_zk_artifacts() {
+        use auth::token::test_support::*;
+
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let admin_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO admins (id, is_superadmin) VALUES ($1, false)")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let admin_token = mint_token(
+            &admin_id.to_string(),
+            "ordinary-artifact-admin@example.com",
+            TEST_AUDIENCE,
+            TEST_ISSUER,
+            300,
+        );
+
+        let (status, json) = post_json(
+            routes::router(state.clone()),
+            "/api/admin/zk-artifacts",
+            &admin_token,
+            serde_json::json!({
+                "circuitId": "votecheck", "version": format!("ordinary-{admin_id}"),
+                "merkleTreeDepth": 4, "numCandidates": 10,
+                "manifest": {
+                    "wasmSha256": "11".repeat(32),
+                    "zkeySha256": "22".repeat(32),
+                    "verificationKeySha256": "33".repeat(32),
+                    "publicSignalCount": 4
+                }
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "ordinary admin registered artifact: {json}"
+        );
+
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(admin_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     /// L-proof-rl: the atomic limiter caps per key and is isolated across keys.
     #[tokio::test]
     #[ignore = "requires Redis (scripts/local/smoke.sh)"]
@@ -1849,6 +1963,41 @@ mod tests {
             Some("2026-06-23T00:00:00.000Z")
         );
         let _ = tickets::consume(&client, &token).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Redis (scripts/local/smoke.sh)"]
+    async fn ticket_preflight_failures_are_counted_per_ticket_without_nullifier() {
+        let client = RedisClient::open("redis://localhost:6379").unwrap();
+        let payload = tickets::TicketPayload {
+            election_id: uuid::Uuid::new_v4(),
+            merkle_root: "123".to_string(),
+            issued_at: None,
+        };
+        let token_a = tickets::issue(&client, &payload).await.unwrap();
+        let token_b = tickets::issue(&client, &payload).await.unwrap();
+
+        assert_eq!(
+            tickets::record_preflight_failure(&client, &token_a)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            tickets::record_preflight_failure(&client, &token_a)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            tickets::record_preflight_failure(&client, &token_b)
+                .await
+                .unwrap(),
+            1
+        );
+
+        let _ = tickets::consume(&client, &token_a).await;
+        let _ = tickets::consume(&client, &token_b).await;
     }
 
     /// Admin setup gates: creation validation (M4), invitation upsert

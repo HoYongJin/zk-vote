@@ -161,6 +161,17 @@ async function responseJson(response: PlaywrightResponse): Promise<unknown> {
     }
 }
 
+function redactApiJson(label: string, body: unknown): unknown {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+    const copy: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+    if (label === "proof") {
+        if ("submissionTicket" in copy) copy.submissionTicket = "[redacted]";
+        if (Array.isArray(copy.pathElements)) copy.pathElements = `[${copy.pathElements.length} field elements]`;
+        if (Array.isArray(copy.pathIndices)) copy.pathIndices = `[${copy.pathIndices.length} path indices]`;
+    }
+    return copy;
+}
+
 async function observeResponse(
     page: Page,
     label: string,
@@ -178,7 +189,7 @@ async function observeResponse(
     const observed: ApiObservation = {
         status: response.status(),
         url: response.url(),
-        json: await responseJson(response),
+        json: redactApiJson(label, await responseJson(response)),
     };
     const request = response.request();
     observed.method = request.method();
@@ -472,8 +483,8 @@ async function main(): Promise<void> {
         await screenshot(page, evidence, screenshotDir, "10-voter-after-submit");
 
         evidence.checks.accounts = {
-            superadminEmail,
-            voterEmail,
+            superadminEmail: "[secret-manager]",
+            voterEmail: "[secret-manager]",
         };
         evidence.status = "passed";
         evidence.finishedAt = new Date().toISOString();

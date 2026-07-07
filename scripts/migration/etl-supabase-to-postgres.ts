@@ -384,6 +384,17 @@ async function main(): Promise<void> {
             throw new Error("VERIFICATION FAILED: counts/checksums diverge — rolling back cutover ETL.");
         }
 
+        const superadminResult = await target.query(
+            "SELECT count(*)::int AS count FROM admins WHERE is_superadmin = true AND revoked_at IS NULL"
+        );
+        const activeSuperadmins = Number(superadminResult.rows[0]?.count ?? 0);
+        if (activeSuperadmins < 1) {
+            throw new Error(
+                "VERIFICATION FAILED: cutover target has zero active superadmins. Bootstrap or mark at least one verified admin as superadmin before committing ETL."
+            );
+        }
+        console.log(`ok: active superadmin gate (${activeSuperadmins})`);
+
         await target.query("COMMIT");
         committed = true;
     } catch (err) {
