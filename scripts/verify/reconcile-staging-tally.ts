@@ -277,6 +277,14 @@ async function readElections(databaseUrl: string): Promise<ElectionRow[]> {
     }
 }
 
+function readElectionsFromEnv(): ElectionRow[] | undefined {
+    const raw = optionalEnv("RECONCILE_ROWS_JSON");
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as ElectionRow[];
+    assert(Array.isArray(parsed), "RECONCILE_ROWS_JSON must be a JSON array");
+    return parsed;
+}
+
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
     const projectId = env("GCP_PROJECT_ID", DEFAULT_PROJECT_ID);
@@ -299,17 +307,28 @@ async function main(): Promise<void> {
     let cleanup: (() => Promise<void>) | undefined;
 
     try {
-        const [rpcUrl, rawDatabaseUrl] = await Promise.all([
-            envOrSecret(projectId, "SEPOLIA_RPC_URL", DEFAULT_SECRET_NAMES.rpcUrl),
-            envOrSecret(projectId, "E2E_DATABASE_URL", DEFAULT_SECRET_NAMES.databaseUrl),
-        ]);
+        const rpcUrl = await envOrSecret(projectId, "SEPOLIA_RPC_URL", DEFAULT_SECRET_NAMES.rpcUrl);
         const chainIdHex = await rpc<string>(rpcUrl, "eth_chainId", []);
         const chainId = BigInt(chainIdHex).toString();
         assert(chainId === EXPECTED_CHAIN_ID_DECIMAL, `RPC chain id ${chainId} != ${EXPECTED_CHAIN_ID_DECIMAL}`);
 
-        const preparedDb = await prepareDatabaseUrl(rawDatabaseUrl);
-        cleanup = preparedDb.cleanup;
-        const elections = await readElections(preparedDb.url);
+        let dbConnection: Json;
+        const envRows = readElectionsFromEnv();
+        let elections: ElectionRow[];
+        if (envRows) {
+            elections = envRows;
+            dbConnection = { mode: "env-rows" };
+        } else {
+            const rawDatabaseUrl = await envOrSecret(
+                projectId,
+                "E2E_DATABASE_URL",
+                DEFAULT_SECRET_NAMES.databaseUrl
+            );
+            const preparedDb = await prepareDatabaseUrl(rawDatabaseUrl);
+            cleanup = preparedDb.cleanup;
+            elections = await readElections(preparedDb.url);
+            dbConnection = preparedDb.connection;
+        }
         if (elections.length === 0) {
             evidence.caveats.push("No deployed, non-superseded elections found to reconcile.");
         }
@@ -359,7 +378,7 @@ async function main(): Promise<void> {
 
         evidence.checks = {
             chainId,
-            dbConnection: preparedDb.connection,
+            dbConnection,
             electionsChecked: reconciled.length,
             elections: reconciled,
         };
