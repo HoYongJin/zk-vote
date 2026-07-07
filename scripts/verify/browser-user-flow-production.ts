@@ -250,6 +250,15 @@ function extractJsonString(json: unknown, pathParts: string[]): string | undefin
     return typeof current === "string" ? current : undefined;
 }
 
+function extractJsonNumber(json: unknown, pathParts: string[]): number | undefined {
+    let current: unknown = json;
+    for (const part of pathParts) {
+        if (!current || typeof current !== "object") return undefined;
+        current = (current as Json)[part];
+    }
+    return typeof current === "number" ? current : undefined;
+}
+
 function relativeToProject(filePath: string): string {
     return path.relative(PROJECT_ROOT, filePath);
 }
@@ -270,6 +279,18 @@ async function verifyContractsOnEtherscan(
     const verificationEvidencePath =
         optionalEnv("ETHERSCAN_VERIFY_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `production-etherscan-verify-${evidence.runId}.json`);
+    const createJson = evidence.apiResponses.createElection?.json;
+    const deploymentJson = evidence.apiResponses.setZkDeploy?.json;
+    const contractAddress = extractJsonString(deploymentJson, ["contractAddress"]);
+    const verifierAddress = extractJsonString(deploymentJson, ["verifierAddress"]);
+    const deployTxHash = extractJsonString(deploymentJson, ["deployTxHash"]);
+    const artifactId = extractJsonString(deploymentJson, ["artifactId"]);
+    const merkleTreeDepth = extractJsonNumber(createJson, ["election", "merkle_tree_depth"]);
+    const numCandidates = extractJsonNumber(createJson, ["election", "num_candidates"]);
+    assert(contractAddress, "setZkDeploy response missing contractAddress");
+    assert(verifierAddress, "setZkDeploy response missing verifierAddress");
+    assert(Number.isInteger(merkleTreeDepth), "createElection response missing merkle_tree_depth");
+    assert(Number.isInteger(numCandidates), "createElection response missing num_candidates");
     const { stdout, stderr } = await execFile(
         "node",
         ["--import", "tsx", "scripts/verify/verify-production-contracts-etherscan.ts"],
@@ -281,6 +302,14 @@ async function verifyContractsOnEtherscan(
                 ...process.env,
                 VERIFY_ELECTION_ID: electionId,
                 VERIFY_ELECTION_NAME: electionName,
+                VERIFY_CONTRACT_ADDRESS: contractAddress,
+                VERIFY_VERIFIER_ADDRESS: verifierAddress,
+                VERIFY_DEPLOY_TX_HASH: deployTxHash ?? "",
+                VERIFY_MERKLE_TREE_DEPTH: String(merkleTreeDepth),
+                VERIFY_NUM_CANDIDATES: String(numCandidates),
+                VERIFY_VERIFIER_WIDTH: "10",
+                VERIFY_ZK_ARTIFACT_ID: artifactId ?? "",
+                VERIFY_DEPLOY_CHAIN_ID: "11155111",
                 ETHERSCAN_VERIFY_EVIDENCE_PATH: verificationEvidencePath,
             },
         }

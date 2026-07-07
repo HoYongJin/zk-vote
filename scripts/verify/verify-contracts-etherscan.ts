@@ -222,7 +222,11 @@ async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabase
     assert(Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536, "invalid proxy port");
 
     let proxyOutput = "";
-    const proxy = spawn(proxyBin, ["--address", "127.0.0.1", "--port", String(proxyPort), instance], {
+    const proxyArgs = ["--address", "127.0.0.1", "--port", String(proxyPort), instance];
+    if (optionalEnv("E2E_CLOUD_SQL_PROXY_PRIVATE_IP") === "true") {
+        proxyArgs.unshift("--private-ip");
+    }
+    const proxy = spawn(proxyBin, proxyArgs, {
         stdio: ["ignore", "pipe", "pipe"],
     });
     proxy.stdout.on("data", (chunk) => {
@@ -322,6 +326,31 @@ async function readDeployment(databaseUrl: string): Promise<DeploymentRow> {
 function electionIdField(electionId: string): string {
     assert(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(electionId), `invalid election UUID: ${electionId}`);
     return BigInt(`0x${electionId.replace(/-/g, "")}`).toString();
+}
+
+function deploymentFromEnv(): DeploymentRow | undefined {
+    const id = optionalEnv("VERIFY_ELECTION_ID") ?? optionalEnv("ELECTION_ID");
+    const contractAddress = optionalEnv("VERIFY_CONTRACT_ADDRESS");
+    const verifierAddress = optionalEnv("VERIFY_VERIFIER_ADDRESS");
+    const merkleTreeDepth = optionalEnv("VERIFY_MERKLE_TREE_DEPTH");
+    const numCandidates = optionalEnv("VERIFY_NUM_CANDIDATES");
+    if (!id || !contractAddress || !verifierAddress || !merkleTreeDepth || !numCandidates) {
+        return undefined;
+    }
+    return {
+        id,
+        name: optionalEnv("VERIFY_ELECTION_NAME") ?? id,
+        merkle_tree_depth: Number(merkleTreeDepth),
+        num_candidates: Number(numCandidates),
+        contract_address: contractAddress,
+        verifier_address: verifierAddress,
+        deploy_tx_hash: optionalEnv("VERIFY_DEPLOY_TX_HASH") ?? null,
+        chain_id: optionalEnv("VERIFY_DEPLOY_CHAIN_ID") ?? null,
+        zk_artifact_id: optionalEnv("VERIFY_ZK_ARTIFACT_ID") ?? null,
+        verifier_num_candidates: optionalEnv("VERIFY_VERIFIER_WIDTH")
+            ? Number(optionalEnv("VERIFY_VERIFIER_WIDTH"))
+            : null,
+    };
 }
 
 function addressForPrivateKey(privateKey: string): string {
@@ -460,16 +489,30 @@ async function main(): Promise<void> {
 
     let cleanup: (() => Promise<void>) | undefined;
     try {
-        const [apiKey, rawDatabaseUrl, ownerPrivateKey] = await Promise.all([
+        const [apiKey, ownerPrivateKey] = await Promise.all([
             envOrSecret(projectId, "ETHERSCAN_API_KEY", optionalEnv("ETHERSCAN_API_KEY_SECRET")),
-            envOrSecret(projectId, "E2E_DATABASE_URL", optionalEnv("E2E_DATABASE_URL_SECRET")),
             envOrSecret(projectId, "OWNER_PRIVATE_KEY", optionalEnv("OWNER_PRIVATE_KEY_SECRET")),
         ]);
-        const secrets = [apiKey, ownerPrivateKey, rawDatabaseUrl];
-        const preparedDb = await prepareDatabaseUrl(rawDatabaseUrl);
-        secrets.push(preparedDb.url);
-        cleanup = preparedDb.cleanup;
-        const deployment = await readDeployment(preparedDb.url);
+        const secrets = [apiKey, ownerPrivateKey];
+        const envDeployment = deploymentFromEnv();
+        let deployment: DeploymentRow;
+        let dbConnection: Json | undefined;
+        if (envDeployment) {
+            deployment = envDeployment;
+            dbConnection = { mode: "env-override" };
+        } else {
+            const rawDatabaseUrl = await envOrSecret(
+                projectId,
+                "E2E_DATABASE_URL",
+                optionalEnv("E2E_DATABASE_URL_SECRET")
+            );
+            secrets.push(rawDatabaseUrl);
+            const preparedDb = await prepareDatabaseUrl(rawDatabaseUrl);
+            secrets.push(preparedDb.url);
+            cleanup = preparedDb.cleanup;
+            deployment = await readDeployment(preparedDb.url);
+            dbConnection = preparedDb.connection;
+        }
         assert(deployment.chain_id === null || deployment.chain_id === expectedChainId, `deployment chain_id ${deployment.chain_id} != expected ${expectedChainId}`);
         assert(/^0x[0-9a-fA-F]{40}$/.test(deployment.contract_address), `invalid contract_address: ${deployment.contract_address}`);
         assert(/^0x[0-9a-fA-F]{40}$/.test(deployment.verifier_address), `invalid verifier_address: ${deployment.verifier_address}`);
@@ -504,7 +547,7 @@ async function main(): Promise<void> {
         assert(/^0x[0-9a-fA-F]+$/.test(constructorArgs), "cast returned invalid constructor args");
 
         evidence.checks.deployment = {
-            dbConnection: preparedDb.connection,
+            dbConnection,
             electionId: deployment.id,
             electionName: deployment.name,
             merkleTreeDepth: deployment.merkle_tree_depth,

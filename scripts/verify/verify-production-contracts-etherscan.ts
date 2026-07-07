@@ -10,6 +10,7 @@ process.env.E2E_DATABASE_URL_SECRET ??= "zkvote-prod-migrator-database-url";
 process.env.OWNER_PRIVATE_KEY_SECRET ??= "zkvote-prod-owner-private-key";
 process.env.SEPOLIA_RPC_URL_SECRET ??= "zkvote-prod-sepolia-rpc-url";
 process.env.ETHERSCAN_API_KEY_SECRET ??= "zkvote-prod-etherscan-api-key";
+process.env.E2E_CLOUD_SQL_PROXY_PRIVATE_IP ??= "true";
 process.env.ETHERSCAN_VERIFY_EVIDENCE_PATH ??= `docs/evidence/production-etherscan-verify-${runId}.json`;
 
 await import("./verify-contracts-etherscan");
