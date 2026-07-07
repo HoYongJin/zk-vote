@@ -19,6 +19,8 @@ SQL_DATABASE="${SQL_DATABASE:-zkvote}"
 PORT="${PORT:-5433}"
 PROXY_BIN="${PROXY_BIN:-/tmp/cloud-sql-proxy}"
 PGIMAGE="${PGIMAGE:-postgres:16}"
+PROJECT_ID="${GCP_PROJECT_ID:-${SQL_CONNECTION_NAME%%:*}}"
+JWT_ISSUER="${JWT_ISSUER:-https://securetoken.google.com/${PROJECT_ID}}"
 
 if [[ "${CONFIRM_E2E_BOOTSTRAP:-}" != "yes" ]]; then
   echo "Refusing to bootstrap: set CONFIRM_E2E_BOOTSTRAP=yes after confirming this should mutate the staging admins table." >&2
@@ -48,9 +50,7 @@ uid="$(
   AUTH_JSON="${auth_json}" node <<'NODE'
 const body = JSON.parse(process.env.AUTH_JSON || "{}");
 const uid = String(body.localId || "");
-if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uid)) {
-  throw new Error(`Firebase localId must be a UUID for zk-vote auth, got ${uid || "(empty)"}`);
-}
+if (!uid.trim()) throw new Error("Firebase sign-in returned no localId");
 process.stdout.write(uid);
 NODE
 )"
@@ -89,15 +89,36 @@ for _ in $(seq 1 20); do
 done
 [[ "${ready}" == true ]] || { echo "Proxy/DB not reachable on 127.0.0.1:${PORT}." >&2; exit 1; }
 
-psql_as_postgres -v uid="${uid}" -v email="${email}" <<'SQL'
+psql_as_postgres -v subject="${uid}" -v email="${email}" -v issuer="${JWT_ISSUER}" <<'SQL'
+WITH app_user AS (
+    INSERT INTO app_users (email, last_seen_at)
+    VALUES (:'email', now())
+    ON CONFLICT (email) WHERE email IS NOT NULL DO UPDATE
+    SET last_seen_at = now(),
+        updated_at = now()
+    RETURNING id
+),
+identity AS (
+    INSERT INTO auth_identities (user_id, issuer, subject, email, email_verified, last_seen_at)
+    SELECT id, :'issuer', :'subject', :'email', true, now()
+    FROM app_user
+    ON CONFLICT (issuer, subject) DO UPDATE
+    SET email = EXCLUDED.email,
+        email_verified = EXCLUDED.email_verified,
+        last_seen_at = now(),
+        updated_at = now()
+    RETURNING user_id
+)
 INSERT INTO admins (id, email, is_superadmin, revoked_at)
-VALUES (:'uid', :'email', true, NULL)
+SELECT user_id, :'email', true, NULL
+FROM identity
 ON CONFLICT (id) DO UPDATE
 SET email = EXCLUDED.email,
     is_superadmin = true,
     revoked_at = NULL,
-    updated_at = now();
+    updated_at = now()
+RETURNING id;
 SQL
 
-echo "Staging superadmin bootstrapped: uid=${uid} email=${email}"
+echo "Staging superadmin bootstrapped: provider_subject=${uid} email=${email}"
 echo "Next: run scripts/verify/e2e-staging.ts with the same E2E_SUPERADMIN_* account."

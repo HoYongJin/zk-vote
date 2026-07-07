@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import VotePage from './VotePage';
 import type { Election } from '../../types/domain';
@@ -38,13 +39,21 @@ class MockWorker {
   }
 }
 
-function renderVotePage() {
+function renderVotePage(withRouteState = true) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const initialEntry = withRouteState
+    ? { pathname: `/vote/${ELECTION_ID}`, state: { vote: election } }
+    : { pathname: `/vote/${ELECTION_ID}` };
   return render(
-    <MemoryRouter initialEntries={[{ pathname: `/vote/${ELECTION_ID}`, state: { vote: election } }]}>
-      <Routes>
-        <Route path="/vote/:id" element={<VotePage />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route path="/vote/:id" element={<VotePage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -63,6 +72,32 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('VotePage', () => {
+  test('recovers a direct vote URL from the finalized election query', async () => {
+    (axios.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/elections/finalized') {
+        return Promise.resolve({
+          data: [
+            {
+              id: ELECTION_ID,
+              name: 'Recovered Election',
+              candidates: ['A', 'B'],
+              contract_address: null,
+              voting_end_time: null,
+              merkle_tree_depth: 4,
+              num_candidates: 2,
+            },
+          ],
+        });
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+
+    renderVotePage(false);
+
+    expect(await screen.findByText('Recovered Election')).toBeInTheDocument();
+    expect(screen.getByText('투표 제출하기')).toBeInTheDocument();
+  });
+
   test('G5: aborts the vote when the artifact manifest is missing (no unverified fetch)', async () => {
     proofOk();
     // artifact-info 404 -> the verified path must fail closed, never spawn a worker.
@@ -76,7 +111,7 @@ describe('VotePage', () => {
     fireEvent.click(screen.getByText('A'));
     fireEvent.click(screen.getByText('투표 제출하기'));
 
-    await waitFor(() => expect(screen.getByText('오류')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('투표 오류')).toBeInTheDocument());
     expect(screen.getByText(/투표 실패/)).toBeInTheDocument();
     // The defining G5 property: NO proof worker was ever constructed.
     expect(MockWorker.instances).toHaveLength(0);

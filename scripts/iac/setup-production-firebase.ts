@@ -53,6 +53,22 @@ interface FirebaseWebAppConfig {
     authDomain?: string;
 }
 
+interface IdentityConfig {
+    signIn?: {
+        email?: {
+            enabled?: boolean;
+            passwordRequired?: boolean;
+        };
+    };
+}
+
+interface DefaultSupportedIdpConfig {
+    name?: string;
+    enabled?: boolean;
+    clientId?: string;
+    clientSecret?: string;
+}
+
 interface HostingSite {
     name?: string;
     defaultUrl?: string;
@@ -199,6 +215,18 @@ async function secretValue(projectId: string, secretName: string): Promise<strin
     }
 }
 
+async function requiredEnvOrSecret(projectId: string, envName: string, secretName: string): Promise<string> {
+    const direct = optionalEnv(envName);
+    if (direct) return direct;
+    const value = await secretValue(projectId, secretName);
+    if (!value) throw new Error(`Set ${envName} or Secret Manager ${secretName}`);
+    return value;
+}
+
+function isGoogleOAuthWebClientId(clientId: string): boolean {
+    return clientId.endsWith(".apps.googleusercontent.com");
+}
+
 async function ensureFirebaseProject(token: string, projectId: string): Promise<string> {
     const existing = await request(FIREBASE_ORIGIN, token, "GET", `v1beta1/projects/${projectId}`);
     if (existing.status === 200) return "existing";
@@ -229,6 +257,78 @@ async function ensureIdentityPlatform(token: string, projectId: string): Promise
         return "existing";
     }
     throw new Error(`initializeAuth returned ${response.status}: ${response.text}`);
+}
+
+async function ensureEmailPasswordSignIn(token: string, projectId: string): Promise<string> {
+    const configPath = `v2/projects/${projectId}/config`;
+    const existing = await api<IdentityConfig>(IDENTITY_ORIGIN, token, "GET", configPath);
+    if (existing.signIn?.email?.enabled === true && existing.signIn.email.passwordRequired === true) {
+        return "existing";
+    }
+
+    const updated = await api<IdentityConfig>(
+        IDENTITY_ORIGIN,
+        token,
+        "PATCH",
+        `${configPath}?updateMask=signIn.email.enabled,signIn.email.passwordRequired`,
+        { signIn: { email: { enabled: true, passwordRequired: true } } }
+    );
+    if (updated.signIn?.email?.enabled !== true || updated.signIn.email.passwordRequired !== true) {
+        throw new Error("Identity Platform email/password provider was not enabled after updateConfig");
+    }
+    return "enabled";
+}
+
+async function ensureGoogleSignIn(token: string, projectId: string): Promise<string> {
+    const idpPath = `admin/v2/projects/${projectId}/defaultSupportedIdpConfigs/google.com`;
+    const existing = await request(IDENTITY_ORIGIN, token, "GET", idpPath);
+    if (existing.status === 200) {
+        const config = (existing.json ?? {}) as DefaultSupportedIdpConfig;
+        if (config.enabled === true && config.clientId && isGoogleOAuthWebClientId(config.clientId)) {
+            return "existing";
+        }
+    }
+
+    const [clientId, clientSecret] = await Promise.all([
+        requiredEnvOrSecret(projectId, "GOOGLE_OAUTH_CLIENT_ID", "zkvote-prod-google-oauth-client-id"),
+        requiredEnvOrSecret(projectId, "GOOGLE_OAUTH_CLIENT_SECRET", "zkvote-prod-google-oauth-client-secret"),
+    ]);
+    if (!isGoogleOAuthWebClientId(clientId)) {
+        throw new Error(
+            "GOOGLE_OAUTH_CLIENT_ID must be a Google Auth Platform Web client id ending in .apps.googleusercontent.com"
+        );
+    }
+    const body: DefaultSupportedIdpConfig = { enabled: true, clientId, clientSecret };
+
+    if (existing.status === 200) {
+        const updated = await api<DefaultSupportedIdpConfig>(
+            IDENTITY_ORIGIN,
+            token,
+            "PATCH",
+            `${idpPath}?updateMask=enabled,clientId,clientSecret`,
+            body
+        );
+        if (updated.enabled !== true || !updated.clientId) {
+            throw new Error("Identity Platform Google provider was not enabled after patch");
+        }
+        return "enabled";
+    }
+    if (existing.status !== 404) {
+        throw new Error(`GET Google provider config returned ${existing.status}: ${existing.text}`);
+    }
+
+    const created = await api<DefaultSupportedIdpConfig>(
+        IDENTITY_ORIGIN,
+        token,
+        "POST",
+        `admin/v2/projects/${projectId}/defaultSupportedIdpConfigs?idpId=google.com`,
+        body,
+        [200, 201]
+    );
+    if (created.enabled !== true || !created.clientId) {
+        throw new Error("Identity Platform Google provider was not enabled after create");
+    }
+    return "created";
 }
 
 async function ensureWebApp(token: string, projectId: string): Promise<FirebaseWebAppConfig> {
@@ -315,7 +415,6 @@ async function createIdentityUser(
         return { status: "existing-secret", email: existingEmail, uid: existingUid };
     }
 
-    const uid = crypto.randomUUID();
     const email = `zkvote-prod-e2e-${role}-${Date.now()}@example.com`;
     const pw = password();
     const created = await request(
@@ -325,7 +424,6 @@ async function createIdentityUser(
         "v1/accounts:signUp",
         {
             targetProjectId: projectId,
-            localId: uid,
             email,
             password: pw,
             emailVerified: true,
@@ -334,6 +432,10 @@ async function createIdentityUser(
     );
     if (![200, 201].includes(created.status)) {
         throw new Error(`create ${role} GCIP user returned ${created.status}: ${created.text}`);
+    }
+    const uid = String(created.json?.localId ?? "");
+    if (!uid) {
+        throw new Error(`create ${role} GCIP user returned no localId: ${created.text}`);
     }
 
     const signIn = await fetch(
@@ -384,6 +486,8 @@ async function main(): Promise<void> {
         const token = await accessToken();
         const firebaseProject = await ensureFirebaseProject(token, projectId);
         const identityPlatform = await ensureIdentityPlatform(token, projectId);
+        const emailPasswordSignIn = await ensureEmailPasswordSignIn(token, projectId);
+        const googleSignIn = await ensureGoogleSignIn(token, projectId);
         const webConfig = await ensureWebApp(token, projectId);
         if (webConfig.projectId !== projectId) {
             throw new Error(`Firebase web config projectId ${webConfig.projectId} != ${projectId}`);
@@ -398,6 +502,8 @@ async function main(): Promise<void> {
         evidence.checks = {
             firebaseProject,
             identityPlatform,
+            emailPasswordSignIn,
+            googleSignIn,
             webConfig: {
                 projectId: webConfig.projectId,
                 appId: webConfig.appId,

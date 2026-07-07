@@ -143,7 +143,7 @@ async function firebaseSignIn(apiKey: string, email: string, password: string): 
     const uid = String(body.localId ?? "");
     const normalizedEmail = String(body.email ?? email).trim().toLowerCase();
     assert(idToken, `Firebase sign-in for ${email} returned no idToken`);
-    assert(isUuid(uid), `Firebase uid for ${email} is not a UUID: ${uid}`);
+    assert(uid, `Firebase sign-in for ${email} returned no localId`);
 
     const claims = decodeJwtPayload(idToken);
     const emailVerified =
@@ -486,6 +486,43 @@ function invocation(): string {
         .join(" ");
 }
 
+function lastNonEmptyLine(output: string): string {
+    return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+}
+
+async function maybeVerifyContractsOnEtherscan(
+    evidence: Evidence,
+    electionId: string,
+    electionName: string
+): Promise<void> {
+    if (optionalEnv("ETHERSCAN_VERIFY_AFTER_DEPLOY") !== "true") return;
+    const script = optionalEnv("ETHERSCAN_VERIFY_SCRIPT") ?? "scripts/verify/verify-contracts-etherscan.ts";
+    const evidencePath =
+        optionalEnv("ETHERSCAN_VERIFY_EVIDENCE_PATH") ??
+        path.join(PROJECT_ROOT, "docs", "evidence", `etherscan-verify-${evidence.runId}.json`);
+    const { stdout, stderr } = await execFile(
+        "node",
+        ["--import", "tsx", script],
+        {
+            cwd: PROJECT_ROOT,
+            timeout: Number(optionalEnv("ETHERSCAN_VERIFY_AFTER_DEPLOY_TIMEOUT_MS") ?? "900000"),
+            maxBuffer: 8 * 1024 * 1024,
+            env: {
+                ...process.env,
+                VERIFY_ELECTION_ID: electionId,
+                VERIFY_ELECTION_NAME: electionName,
+                ETHERSCAN_VERIFY_EVIDENCE_PATH: evidencePath,
+            },
+        }
+    );
+    evidence.checks.etherscanVerification = {
+        status: "passed",
+        evidence: path.relative(PROJECT_ROOT, evidencePath),
+        stdout: lastNonEmptyLine(stdout),
+        stderr: lastNonEmptyLine(stderr),
+    };
+}
+
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
     const projectId = env("GCP_PROJECT_ID", DEFAULT_PROJECT_ID);
@@ -576,8 +613,8 @@ async function main(): Promise<void> {
             firebaseSignIn(firebaseApiKey, voterEmail, voterPassword),
         ]);
         evidence.checks.gcip = {
-            adminUid: admin.uid,
-            voterUid: voter.uid,
+            adminProviderUid: admin.uid,
+            voterProviderUid: voter.uid,
             adminEmailVerified: admin.emailVerified,
             voterEmailVerified: voter.emailVerified,
             adminUserMetadataEmailVerified: admin.userMetadataEmailVerified,
@@ -596,7 +633,12 @@ async function main(): Promise<void> {
             "superadmin token is not superadmin according to /api/me"
         );
         assert(voterMe.json.is_admin === false, "voter test account unexpectedly has admin role");
-        evidence.checks.roles = { admin: adminMe.json, voter: voterMe.json };
+        evidence.checks.roles = {
+            admin: adminMe.json,
+            voter: voterMe.json,
+            adminProviderUid: admin.uid,
+            voterProviderUid: voter.uid,
+        };
 
         const rel = {
             wasm: "build_4_10/VoteCheck_temp_js/VoteCheck_temp.wasm",
@@ -635,11 +677,12 @@ async function main(): Promise<void> {
         };
 
         const regEnd = new Date(Date.now() + 15 * 60_000);
+        const electionName = `staging-e2e-${runId}`;
         const created = await apiRequest<Json>(baseUrl, "POST", "/elections/set", {
             token: admin.idToken,
             expected: [201],
             body: {
-                name: `staging-e2e-${runId}`,
+                name: electionName,
                 merkleTreeDepth: CIRCUIT_DEPTH,
                 candidates: ["E2E-A", "E2E-B"],
                 regEndTime: regEnd.toISOString(),
@@ -686,6 +729,7 @@ async function main(): Promise<void> {
         assert(/^0x[0-9a-fA-F]{40}$/.test(contractAddress), "setZkDeploy returned invalid contract");
         assert(/^0x[0-9a-fA-F]{64}$/.test(deployTxHash), "setZkDeploy returned invalid deployTxHash");
         evidence.checks.deployment = deployment.json;
+        await maybeVerifyContractsOnEtherscan(evidence, electionId, electionName);
 
         const voteEnd = new Date(Date.now() + voteWindowSeconds * 1000);
         const finalized = await apiRequest<Json>(

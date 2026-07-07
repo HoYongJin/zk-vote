@@ -34,3 +34,5 @@ serviceAccount*.json
 *-sa.json
 firebase-debug.log
 .firebase/
+firebase*.generated.json
+firebase.*.generated.json

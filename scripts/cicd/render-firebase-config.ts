@@ -59,7 +59,7 @@ function cspValue(): string {
     const uniqueConnectSrc = [...new Set(connectSrc)];
     return [
         "default-src 'self'",
-        "script-src 'self' 'wasm-unsafe-eval'",
+        "script-src 'self' 'wasm-unsafe-eval' https://apis.google.com",
         "worker-src 'self' blob:",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",

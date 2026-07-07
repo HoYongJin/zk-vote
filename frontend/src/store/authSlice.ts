@@ -11,6 +11,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 export interface AuthUser {
+  /** Firebase/GCIP provider UID, not the zk-vote internal app user id. */
   uid: string;
   email: string | null;
 }
@@ -21,6 +22,10 @@ interface AuthState {
   session: null;
   isLoggedIn: boolean;
   isAdmin: boolean;
+  /** Internal `app_users.id` from /api/me. This is not Firebase uid/localId. */
+  appUserId: string | null;
+  /** Normalized backend e-mail from /api/me; may be null for unusable claims. */
+  backendEmail: string | null;
   /**
    * GOV-1 second tier. True only for a non-revoked superadmin; gates the
    * high-blast-radius admin controls (add-admin, ZK setup/deploy) in the UI so
@@ -41,6 +46,8 @@ const initialState: AuthState = {
   session: null,
   isLoggedIn: false,
   isAdmin: false,
+  appUserId: null,
+  backendEmail: null,
   isSuperAdmin: false,
   loading: true,
   postLoginRedirectComplete: false,
@@ -59,9 +66,19 @@ const authSlice = createSlice({
     },
 
     // Sets admin + superadmin status AND clears `loading` (auth check complete).
-    setAdmin: (state, action: PayloadAction<{ isAdmin: boolean; isSuperAdmin: boolean }>) => {
+    setAdmin: (
+      state,
+      action: PayloadAction<{
+        isAdmin: boolean;
+        isSuperAdmin: boolean;
+        appUserId: string | null;
+        backendEmail: string | null;
+      }>,
+    ) => {
       state.isAdmin = action.payload.isAdmin;
       state.isSuperAdmin = action.payload.isSuperAdmin;
+      state.appUserId = action.payload.appUserId;
+      state.backendEmail = action.payload.backendEmail;
       state.loading = false;
     },
 
@@ -75,6 +92,8 @@ const authSlice = createSlice({
       state.session = null;
       state.isLoggedIn = false;
       state.isAdmin = false;
+      state.appUserId = null;
+      state.backendEmail = null;
       state.isSuperAdmin = false;
       state.loading = false;
       state.postLoginRedirectComplete = false;

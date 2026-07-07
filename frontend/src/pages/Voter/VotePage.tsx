@@ -2,65 +2,75 @@
  * @file frontend/src/pages/Voter/VotePage.tsx
  * @desc Individual voting page. Runs the full client-side ZK flow:
  *  1. Fetch proof data + single-use submission ticket from /proof (authenticated).
- *  2. Generate the ZK proof in a Web Worker (snarkjs).
+ *  2. Generate the ZK proof in a Web Worker.
  *  3. Submit proof + ticket to the anonymous /submit relayer endpoint.
  *  4. On success, mark this election as voted in localStorage (UX-only).
  */
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import axios from '../../api/axios';
-import { getVoterSecret, clearVoterSecret } from '../../utils/voterSecret';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, CheckCircle2, Send } from 'lucide-react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { apiClient } from '../../api/client';
+import type { FinalizedElectionView, FormattedProof } from '../../api/contracts';
+import { useFinalizedElectionsQuery, useSubmitVoteMutation } from '../../api/queries';
+import { Button, PageShell, ProgressOverlay, ToastViewport } from '../../components/ui';
+import { useToasts } from '../../components/useToasts';
 import { fetchVerifiedArtifact } from '../../utils/artifactIntegrity';
 import { resolveArtifactApiPath } from '../../utils/apiBaseUrl';
 import { calculateSubmissionJitterMs, delay } from '../../utils/submissionJitter';
+import { clearVoterSecret, getVoterSecret } from '../../utils/voterSecret';
 import { errorData, errorMessage as apiErrorMessage } from '../../utils/errors';
-import type { ArtifactInfo, Election, FormattedProof, ProofResponse } from '../../types/domain';
 import type { ProofInputs, WorkerRequest, WorkerResponse } from '../../workers/proof.types';
 
-const pageStyle: CSSProperties = { fontFamily: 'sans-serif', padding: '20px', maxWidth: '600px', margin: 'auto' };
-const headerStyle: CSSProperties = { borderBottom: '1px solid #eee', paddingBottom: '10px', marginBottom: '20px' };
-const candidateListStyle: CSSProperties = { listStyleType: 'none', padding: '0' };
-const candidateItemStyle: CSSProperties = { border: '1px solid #ccc', borderRadius: '8px', padding: '15px', margin: '10px 0', cursor: 'pointer', transition: 'all 0.2s' };
-const selectedCandidateStyle: CSSProperties = { ...candidateItemStyle, borderColor: '#007bff', backgroundColor: '#f0f8ff', fontWeight: 'bold' };
-const buttonStyle: CSSProperties = { width: '100%', padding: '15px', border: 'none', borderRadius: '8px', backgroundColor: '#007bff', color: 'white', cursor: 'pointer', fontSize: '18px', marginTop: '20px' };
-const loadingOverlayStyle: CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', zIndex: 1000, fontSize: '1.5em', textAlign: 'center' };
+interface ProgressState {
+  title: ReactNode;
+  detail?: ReactNode;
+}
+
+function terminateWorker(worker: Worker | null) {
+  if (worker) {
+    worker.terminate();
+  }
+}
 
 function VotePage() {
   const { id: electionId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const election = (location.state as { vote?: Election } | null)?.vote;
+  const stateElection = (location.state as { vote?: FinalizedElectionView } | null)?.vote;
+  const finalizedQuery = useFinalizedElectionsQuery(Boolean(electionId && !stateElection));
+  const submitVote = useSubmitVoteMutation();
+  const { toasts, pushToast, dismissToast } = useToasts();
+
+  const election = useMemo(
+    () => stateElection ?? finalizedQuery.data?.find((item) => item.id === electionId) ?? null,
+    [electionId, finalizedQuery.data, stateElection],
+  );
 
   const [selectedCandidateIndex, setSelectedCandidateIndex] = useState<number | null>(null);
-  const [loadingMessage, setLoadingMessage] = useState<ReactNode>('');
+  const [progress, setProgress] = useState<ProgressState | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // L-fe-worker: track the live proof worker so it is terminated if the user
-  // navigates away mid-proof (the worker is otherwise only torn down by its own
-  // onmessage/onerror, which never fire on unmount — leaking a CPU-heavy worker).
   const workerRef = useRef<Worker | null>(null);
-  useEffect(() => () => workerRef.current?.terminate(), []);
+  useEffect(() => () => terminateWorker(workerRef.current), []);
 
   const handleVote = async () => {
     if (selectedCandidateIndex === null) {
-      alert('먼저 후보를 선택해주세요.');
+      pushToast({ type: 'error', title: '후보자 선택 필요', description: '먼저 후보를 선택해주세요.' });
       return;
     }
     if (!election || !electionId) {
       return;
     }
 
-    // Declared in the outer scope so the worker.onmessage closure can read it.
     let submissionTicket: string | null = null;
 
     try {
       setErrorMessage('');
-      setLoadingMessage('투표 증명에 필요한 정보를 요청하는 중...');
+      setProgress({ title: '투표 증명 정보 요청 중', detail: '/proof는 인증된 요청이며 nullifier를 서버에 보내지 않습니다.' });
 
-      // --- 1. Fetch proof data + submission ticket (authenticated) ---
-      const serverResponse = await axios.post<ProofResponse>(`/elections/${electionId}/proof`);
+      const serverResponse = await apiClient.proof(electionId);
       const submissionTicketIssuedAtMs = Date.now();
-      const { root, pathElements, pathIndices, submissionTicket: receivedTicket } = serverResponse.data;
+      const { root, pathElements, pathIndices, submissionTicket: receivedTicket } = serverResponse;
 
       const userSecret = getVoterSecret(electionId);
       if (!userSecret) {
@@ -72,27 +82,9 @@ function VotePage() {
         throw new Error('Failed to retrieve submission ticket. Cannot proceed.');
       }
 
-      // --- 2. Fetch the proving-artifact manifest FIRST (AR-M6 / G5: fail closed) ---
-      // A missing/unrecorded manifest is FATAL: we never fall back to fetching
-      // unverified proving artifacts, so a tampered or wrong circuit can never be
-      // fed to the prover. Every deployed election has a sha256 manifest (the
-      // setZkDeploy artifact requires one), so this path is always available.
-      // We need it before building the vote vector because it carries the
-      // circuit's vote-vector width (numOptions).
-      let artifactInfo: ArtifactInfo;
-      try {
-        const infoResponse = await axios.get<ArtifactInfo>(`/elections/${electionId}/artifact-info`);
-        artifactInfo = infoResponse.data;
-      } catch (infoError) {
-        throw new Error(`아티팩트 정보를 가져오지 못했습니다: ${apiErrorMessage(infoError)}`);
-      }
+      setProgress({ title: '증명 아티팩트 확인 중', detail: 'manifest 해시와 다운로드한 wasm/zkey를 대조합니다.' });
+      const artifactInfo = await apiClient.artifactInfo(electionId);
 
-      // --- 3. Prepare ZK inputs (1-hot vote vector padded to the circuit width) ---
-      // The padded grid builds ONE circuit per depth at candidate width
-      // artifactInfo.numOptions (10), so the 1-hot vector must be that length —
-      // not the election's display candidate count. The selected index stays
-      // within the real candidate count; VotingTally enforces
-      // candidateIndex < numCandidates on-chain, so the padded slots are unusable.
       const voteArray: number[] = new Array(artifactInfo.numOptions).fill(0);
       voteArray[selectedCandidateIndex] = 1;
 
@@ -102,160 +94,184 @@ function VotePage() {
         vote: voteArray,
         pathElements,
         pathIndices,
-        // election_id must be a hex string for the circuit.
-        election_id: '0x' + electionId.replace(/-/g, ''),
+        election_id: `0x${electionId.replace(/-/g, '')}`,
       };
 
-      setLoadingMessage('증명 아티팩트 무결성을 검증하는 중...');
       const [wasmData, zkeyData] = await Promise.all([
         fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.wasmPath), artifactInfo.wasmSha256, '증명 회로(wasm)'),
         fetchVerifiedArtifact(resolveArtifactApiPath(artifactInfo.zkeyPath), artifactInfo.zkeySha256, '증명 키(zkey)'),
       ]);
+
+      setProgress({ title: '영지식 증명 생성 중', detail: '브라우저 worker에서 proof를 생성합니다.' });
       const workerPayload: WorkerRequest = { inputs, wasmData, zkeyData };
-
-      setLoadingMessage(
-        <>
-          영지식 증명을 생성하는 중...
-          <br />
-          (UI는 멈추지 않아요!)
-        </>,
-      );
-
-      // --- 4. Run the proof worker ---
       const worker = new Worker(new URL('../../workers/proof.worker.ts', import.meta.url), { type: 'module' });
       workerRef.current = worker;
       worker.postMessage(workerPayload);
 
-      // --- 5. Handle worker result ---
       worker.onmessage = async (event: MessageEvent<WorkerResponse>) => {
         const message = event.data;
 
-        if (message.status === 'success') {
-          const { proof, publicSignals } = message;
+        if (message.status !== 'success') {
+          setProgress(null);
+          setErrorMessage(`증명 생성 실패: ${message.message}`);
+          terminateWorker(worker);
+          workerRef.current = null;
+          return;
+        }
 
-          // The v2 circuit exposes exactly 4 public signals:
-          // [root_out, vote_index, nullifier_hash, election_id].
-          if (!Array.isArray(publicSignals) || publicSignals.length !== 4) {
-            setLoadingMessage('');
-            setErrorMessage('증명 형식이 올바르지 않습니다. 페이지를 새로고침한 뒤 다시 시도해주세요. (예상 공개 신호 4개)');
-            worker.terminate();
-            return;
-          }
+        const { proof, publicSignals } = message;
+        if (!Array.isArray(publicSignals) || publicSignals.length !== 4) {
+          setProgress(null);
+          setErrorMessage('증명 형식이 올바르지 않습니다. 페이지를 새로고침한 뒤 다시 시도해주세요. (예상 공개 신호 4개)');
+          terminateWorker(worker);
+          workerRef.current = null;
+          return;
+        }
 
-          setLoadingMessage('생성된 증명을 안전하게 제출하는 중...');
+        setProgress({ title: '증명 제출 중', detail: '/submit은 single-use ticket만 사용하며 JWT를 첨부하지 않습니다.' });
 
-          // Reshape for the Solidity verifier; keep snarkjs order verbatim.
-          // The B coordinates need each pair reversed (non-mutating copy).
-          const formattedProof: FormattedProof = {
-            a: proof.pi_a.slice(0, 2),
-            b: proof.pi_b.slice(0, 2).map((row) => [...row].reverse()),
-            c: proof.pi_c.slice(0, 2),
-          };
+        const formattedProof: FormattedProof = {
+          a: proof.pi_a.slice(0, 2),
+          b: proof.pi_b.slice(0, 2).map((row) => [...row].reverse()),
+          c: proof.pi_c.slice(0, 2),
+        };
+
+        try {
+          const jitterMs = calculateSubmissionJitterMs({ ticketIssuedAtMs: submissionTicketIssuedAtMs });
+          await delay(jitterMs);
+
+          await submitVote.mutateAsync({
+            electionId,
+            input: { formattedProof, publicSignals, submissionTicket: submissionTicket as string },
+          });
 
           try {
-            const jitterMs = calculateSubmissionJitterMs({ ticketIssuedAtMs: submissionTicketIssuedAtMs });
-            await delay(jitterMs);
-
-            // --- 6. Submit proof (anonymous; carries the single-use ticket) ---
-            await axios.post(
-              `/elections/${electionId}/submit`,
-              { formattedProof, publicSignals, submissionTicket },
-              { skipAuth: true },
-            );
-
-            // FE-3: the secret has served its purpose once the vote is on-chain.
-            try {
-              clearVoterSecret(electionId);
-            } catch (e) {
-              console.error('Failed to clear voter secret after vote:', e);
-            }
-
-            setLoadingMessage('');
-            alert('투표가 성공적으로 제출되었습니다!');
-
-            // UX-only: mark voted on this browser so the list hides the button.
-            try {
-              localStorage.setItem(`voted_${electionId}`, 'true');
-            } catch (e) {
-              console.error('Failed to save vote status to localStorage:', e);
-            }
-
-            navigate('/');
-          } catch (submitError) {
-            setLoadingMessage('');
-            console.error('Failed to submit proof:', errorData(submitError));
-            setErrorMessage(`투표 제출 실패: ${apiErrorMessage(submitError)}`);
-            worker.terminate();
-            return;
+            clearVoterSecret(electionId);
+          } catch (e) {
+            console.error('Failed to clear voter secret after vote:', e);
           }
-        } else {
-          setLoadingMessage('');
-          setErrorMessage(`증명 생성 실패: ${message.message}`);
+
+          try {
+            localStorage.setItem(`voted_${electionId}`, 'true');
+          } catch (e) {
+            console.error('Failed to save vote status to localStorage:', e);
+          }
+
+          setProgress(null);
+          terminateWorker(worker);
+          workerRef.current = null;
+          navigate('/', { state: { toast: '투표가 성공적으로 제출되었습니다.' } });
+        } catch (submitError) {
+          setProgress(null);
+          console.error('Failed to submit proof:', errorData(submitError));
+          setErrorMessage(`투표 제출 실패: ${apiErrorMessage(submitError)}`);
+          terminateWorker(worker);
+          workerRef.current = null;
         }
-        worker.terminate();
       };
 
       worker.onerror = (event: ErrorEvent) => {
-        setLoadingMessage('');
+        setProgress(null);
         setErrorMessage(`Web worker initialization error: ${event.message}`);
-        worker.terminate();
+        terminateWorker(worker);
+        workerRef.current = null;
       };
     } catch (error) {
-      setLoadingMessage('');
+      setProgress(null);
       console.error('Failed to fetch proof data or ticket:', errorData(error));
       setErrorMessage(`투표 실패: ${apiErrorMessage(error)}`);
     }
   };
 
-  // --- Render ---
-  if (loadingMessage) {
-    return <div style={loadingOverlayStyle}>{loadingMessage}</div>;
+  if (finalizedQuery.isLoading && !election) {
+    return (
+      <PageShell title="투표 불러오는 중" width="narrow">
+        <div className="panel">진행 중인 투표 목록에서 URL을 확인하고 있습니다.</div>
+      </PageShell>
+    );
   }
 
   if (errorMessage) {
     return (
-      <div style={pageStyle}>
-        <h2>오류</h2>
-        <p style={{ color: 'red' }}>{errorMessage}</p>
-        <button style={buttonStyle} onClick={() => navigate('/')}>메인으로 돌아가기</button>
-      </div>
+      <>
+        <PageShell
+          title="투표 오류"
+          width="narrow"
+          actions={
+            <Button type="button" variant="secondary" icon={ArrowLeft} onClick={() => navigate('/')}>
+              메인으로 돌아가기
+            </Button>
+          }
+        >
+          <div className="error-banner" role="alert">{errorMessage}</div>
+        </PageShell>
+        <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+      </>
     );
   }
 
   if (!election) {
     return (
-      <div style={pageStyle}>
-        <h2>잘못된 접근입니다.</h2>
-        <p>투표 정보를 찾을 수 없습니다. 메인 페이지에서 다시 시도해주세요.</p>
-        <button style={buttonStyle} onClick={() => navigate('/')}>메인으로 돌아가기</button>
-      </div>
+      <PageShell
+        title="투표를 찾을 수 없습니다"
+        width="narrow"
+        actions={
+          <Button type="button" variant="secondary" icon={ArrowLeft} onClick={() => navigate('/')}>
+            메인으로 돌아가기
+          </Button>
+        }
+      >
+        <div className="panel">
+          직접 URL로 접근했거나 투표가 더 이상 진행 중 상태가 아닙니다. 메인 화면에서 현재 참여 가능한 투표를 다시 확인하세요.
+        </div>
+      </PageShell>
     );
   }
 
   return (
-    <div style={pageStyle}>
-      <header style={headerStyle}>
-        <h1>{election.name}</h1>
-        <p>투표 마감일: {election.voting_end_time ? new Date(election.voting_end_time).toLocaleString() : '정보 없음'}</p>
-      </header>
+    <>
+      <PageShell
+        title={election.name}
+        eyebrow={`투표 마감일: ${election.voting_end_time ? new Date(election.voting_end_time).toLocaleString() : '정보 없음'}`}
+        width="narrow"
+        actions={
+          <Button type="button" variant="secondary" icon={ArrowLeft} onClick={() => navigate('/')}>
+            메인으로
+          </Button>
+        }
+      >
+        <section className="panel">
+          <div className="panel__header">
+            <div>
+              <h2>후보 선택</h2>
+              <p>후보를 하나 선택한 뒤 브라우저에서 proof를 생성합니다.</p>
+            </div>
+          </div>
 
-      <p>투표할 후보를 선택해주세요.</p>
-      <ul style={candidateListStyle}>
-        {election.candidates.map((candidate, index) => (
-          <li
-            key={index}
-            style={selectedCandidateIndex === index ? selectedCandidateStyle : candidateItemStyle}
-            onClick={() => setSelectedCandidateIndex(index)}
-          >
-            {candidate}
-          </li>
-        ))}
-      </ul>
+          <div className="vote-choice-list" role="listbox" aria-label="후보자 목록">
+            {election.candidates.map((candidate, index) => (
+              <button
+                key={candidate}
+                type="button"
+                className="vote-choice"
+                aria-pressed={selectedCandidateIndex === index}
+                onClick={() => setSelectedCandidateIndex(index)}
+              >
+                <span>{candidate}</span>
+                {selectedCandidateIndex === index && <CheckCircle2 className="ui-icon" aria-hidden="true" />}
+              </button>
+            ))}
+          </div>
 
-      <button style={buttonStyle} onClick={handleVote} disabled={!!loadingMessage}>
-        {loadingMessage ? '처리 중...' : '투표 제출하기'}
-      </button>
-    </div>
+          <Button type="button" icon={Send} onClick={handleVote} disabled={Boolean(progress)} fullWidth>
+            투표 제출하기
+          </Button>
+        </section>
+      </PageShell>
+
+      {progress && <ProgressOverlay title={progress.title} detail={progress.detail} />}
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+    </>
   );
 }
 

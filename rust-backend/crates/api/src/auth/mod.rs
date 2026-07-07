@@ -65,6 +65,160 @@ fn bearer_token(parts: &Parts) -> Result<&str, AuthError> {
         .ok_or(AuthError::MissingToken)
 }
 
+fn normalized_subject(subject: &str) -> Result<String, AuthError> {
+    let subject = subject.trim();
+    if subject.is_empty() {
+        return Err(AuthError::InvalidToken(
+            "token subject is empty".to_string(),
+        ));
+    }
+    Ok(subject.to_string())
+}
+
+fn identity_issuer(
+    claim_issuer: Option<&str>,
+    configured_issuer: Option<&str>,
+) -> Result<String, AuthError> {
+    let issuer = claim_issuer
+        .or(configured_issuer)
+        .map(str::trim)
+        .filter(|issuer| !issuer.is_empty())
+        .ok_or_else(|| AuthError::InvalidToken("token issuer is missing".to_string()))?;
+    Ok(issuer.to_string())
+}
+
+async fn update_app_user_seen(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    email: Option<&str>,
+) -> Result<(), zkvote_db::DbError> {
+    sqlx::query(
+        "UPDATE app_users \
+         SET email = CASE \
+                 WHEN $2::citext IS NOT NULL \
+                      AND (email IS NULL OR email = $2::citext) \
+                      AND NOT EXISTS ( \
+                          SELECT 1 FROM app_users other \
+                          WHERE other.email = $2::citext AND other.id <> app_users.id \
+                      ) \
+                 THEN $2::citext \
+                 ELSE email \
+             END, \
+             last_seen_at = now(), updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(email)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn app_user_for_email(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email: &str,
+) -> Result<Uuid, zkvote_db::DbError> {
+    Ok(sqlx::query_scalar(
+        "INSERT INTO app_users (email, last_seen_at) VALUES ($1, now()) \
+         ON CONFLICT (email) WHERE email IS NOT NULL DO UPDATE \
+         SET last_seen_at = now(), updated_at = now() \
+         RETURNING id",
+    )
+    .bind(email)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn app_user_for_uuid_subject(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    subject: &str,
+    email: Option<&str>,
+) -> Result<Option<Uuid>, zkvote_db::DbError> {
+    let Ok(subject_uuid) = Uuid::parse_str(subject) else {
+        return Ok(None);
+    };
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app_users (id, last_seen_at) VALUES ($1, now()) \
+         ON CONFLICT (id) DO UPDATE \
+         SET last_seen_at = now(), updated_at = now() \
+         RETURNING id",
+    )
+    .bind(subject_uuid)
+    .fetch_one(&mut **tx)
+    .await?;
+    update_app_user_seen(tx, user_id, email).await?;
+    Ok(Some(user_id))
+}
+
+async fn resolve_or_create_app_user(
+    pool: &PgPool,
+    issuer: &str,
+    subject: &str,
+    email: Option<&str>,
+    email_verified: Option<bool>,
+) -> Result<Uuid, ApiError> {
+    let mut tx = pool.begin().await.map_err(zkvote_db::DbError::from)?;
+
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM auth_identities WHERE issuer = $1 AND subject = $2",
+    )
+    .bind(issuer)
+    .bind(subject)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(zkvote_db::DbError::from)?;
+    if let Some(user_id) = existing {
+        sqlx::query(
+            "UPDATE auth_identities \
+             SET email = $3, email_verified = $4, last_seen_at = now(), updated_at = now() \
+             WHERE issuer = $1 AND subject = $2",
+        )
+        .bind(issuer)
+        .bind(subject)
+        .bind(email)
+        .bind(email_verified)
+        .execute(&mut *tx)
+        .await
+        .map_err(zkvote_db::DbError::from)?;
+        update_app_user_seen(&mut tx, user_id, email).await?;
+        tx.commit().await.map_err(zkvote_db::DbError::from)?;
+        return Ok(user_id);
+    }
+
+    let user_id = if let Some(user_id) = app_user_for_uuid_subject(&mut tx, subject, email).await? {
+        user_id
+    } else if let Some(email) = email {
+        app_user_for_email(&mut tx, email).await?
+    } else {
+        sqlx::query_scalar("INSERT INTO app_users (last_seen_at) VALUES (now()) RETURNING id")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(zkvote_db::DbError::from)?
+    };
+
+    let identity_user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO auth_identities \
+             (user_id, issuer, subject, email, email_verified, last_seen_at) \
+         VALUES ($1, $2, $3, $4, $5, now()) \
+         ON CONFLICT (issuer, subject) DO UPDATE \
+         SET email = EXCLUDED.email, \
+             email_verified = EXCLUDED.email_verified, \
+             last_seen_at = now(), updated_at = now() \
+         RETURNING user_id",
+    )
+    .bind(user_id)
+    .bind(issuer)
+    .bind(subject)
+    .bind(email)
+    .bind(email_verified)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(zkvote_db::DbError::from)?;
+    update_app_user_seen(&mut tx, identity_user_id, email).await?;
+    tx.commit().await.map_err(zkvote_db::DbError::from)?;
+    Ok(identity_user_id)
+}
+
 #[axum::async_trait]
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
@@ -86,9 +240,8 @@ impl FromRequestParts<AppState> for CurrentUser {
             other => other?,
         };
 
-        let id = Uuid::parse_str(&claims.sub).map_err(|_| {
-            AuthError::InvalidToken("token subject is not a valid user id".to_string())
-        })?;
+        let issuer = identity_issuer(claims.iss.as_deref(), auth.issuer.as_deref())?;
+        let subject = normalized_subject(&claims.sub)?;
         let email = claims
             .email
             .as_deref()
@@ -102,7 +255,8 @@ impl FromRequestParts<AppState> for CurrentUser {
         let email = match email {
             Some(addr) if claims.email_explicitly_unverified() => {
                 tracing::warn!(
-                    user_id = %id,
+                    issuer = %issuer,
+                    subject = %subject,
                     "ignoring unverified e-mail claim; it will not match admin invitations or the voter allowlist (RUST-AUTH-2)"
                 );
                 let _ = addr;
@@ -110,6 +264,15 @@ impl FromRequestParts<AppState> for CurrentUser {
             }
             other => other,
         };
+
+        let id = resolve_or_create_app_user(
+            &state.pg,
+            &issuer,
+            &subject,
+            email.as_deref(),
+            claims.email_verified_claim(),
+        )
+        .await?;
 
         Ok(CurrentUser { id, email })
     }

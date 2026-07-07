@@ -476,6 +476,195 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("DELETE FROM auth_identities WHERE subject = $1 AND issuer = $2")
+            .bind(user_id.to_string())
+            .bind(TEST_ISSUER)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// GCIP/Firebase subjects are not guaranteed to be UUIDs. /api/me must map
+    /// a provider subject to an internal UUID before role lookup and invitation
+    /// consumption.
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn me_accepts_non_uuid_subject_and_promotes_invited_admin() {
+        use auth::token::test_support::*;
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let subject = format!("google-subject-{}", uuid::Uuid::new_v4());
+        let email = format!("google-admin-{}@example.com", uuid::Uuid::new_v4());
+        let token = mint_token(&subject, &email, TEST_AUDIENCE, TEST_ISSUER, 300);
+
+        sqlx::query("INSERT INTO admin_invitations (email) VALUES ($1)")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, json) = get_me(routes::router(state.clone()), Some(&token)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "non-UUID subject must authenticate: {json}"
+        );
+        assert_eq!(json["is_admin"], true);
+        assert_eq!(json["is_superadmin"], false);
+        assert_eq!(json["email"], email);
+        let internal_id: uuid::Uuid = json["id"].as_str().unwrap().parse().unwrap();
+        assert_ne!(json["id"].as_str(), Some(subject.as_str()));
+
+        let identity_user_id: uuid::Uuid = sqlx::query_scalar(
+            "SELECT user_id FROM auth_identities WHERE issuer = $1 AND subject = $2",
+        )
+        .bind(TEST_ISSUER)
+        .bind(&subject)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(identity_user_id, internal_id);
+
+        let accepted_by: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT accepted_by FROM admin_invitations WHERE email = $1")
+                .bind(&email)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(accepted_by, Some(internal_id));
+
+        let (status, json_again) = get_me(routes::router(state.clone()), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_again["id"], json["id"]);
+
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM admins WHERE id = $1")
+            .bind(internal_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM auth_identities WHERE issuer = $1 AND subject = $2")
+            .bind(TEST_ISSUER)
+            .bind(&subject)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(internal_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn same_verified_email_links_different_subjects_to_one_internal_user() {
+        use auth::token::test_support::*;
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let email = format!("linked-email-{}@example.com", uuid::Uuid::new_v4());
+        let subject_a = format!("google-a-{}", uuid::Uuid::new_v4());
+        let subject_b = format!("password-b-{}", uuid::Uuid::new_v4());
+        let token_a = mint_token(&subject_a, &email, TEST_AUDIENCE, TEST_ISSUER, 300);
+        let token_b = mint_token(&subject_b, &email, TEST_AUDIENCE, TEST_ISSUER, 300);
+
+        let (status_a, json_a) = get_me(routes::router(state.clone()), Some(&token_a)).await;
+        let (status_b, json_b) = get_me(routes::router(state.clone()), Some(&token_b)).await;
+        assert_eq!(status_a, StatusCode::OK);
+        assert_eq!(status_b, StatusCode::OK);
+        assert_eq!(json_a["id"], json_b["id"]);
+        assert_eq!(json_a["is_admin"], false);
+        assert_eq!(json_b["is_admin"], false);
+
+        let internal_id: uuid::Uuid = json_a["id"].as_str().unwrap().parse().unwrap();
+        let linked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM auth_identities WHERE user_id = $1 AND subject IN ($2, $3)",
+        )
+        .bind(internal_id)
+        .bind(&subject_a)
+        .bind(&subject_b)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(linked, 2);
+
+        sqlx::query("DELETE FROM auth_identities WHERE user_id = $1")
+            .bind(internal_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(internal_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the docker-compose Postgres (scripts/local/smoke.sh)"]
+    async fn explicitly_unverified_email_does_not_consume_admin_invitation() {
+        use auth::token::test_support::*;
+        let database_url = "postgres://zkvote:zkvote_dev_password@localhost:5432/zkvote";
+        let jwks_url = spawn_jwks_server().await;
+        let state = test_state_with(&jwks_url, database_url);
+        let pool = state.pg.clone();
+
+        let subject = format!("unverified-google-{}", uuid::Uuid::new_v4());
+        let email = format!("unverified-admin-{}@example.com", uuid::Uuid::new_v4());
+        let token = mint_token_unverified(&subject, &email);
+
+        sqlx::query("INSERT INTO admin_invitations (email) VALUES ($1)")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, json) = get_me(routes::router(state.clone()), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["is_admin"], false);
+        assert!(json["email"].is_null());
+
+        let pending: Option<String> = sqlx::query_scalar(
+            "SELECT email::text FROM admin_invitations WHERE email = $1 AND accepted_at IS NULL",
+        )
+        .bind(&email)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending.as_deref(), Some(email.as_str()));
+
+        let internal_id: uuid::Uuid = json["id"].as_str().unwrap().parse().unwrap();
+        sqlx::query("DELETE FROM admin_invitations WHERE email = $1")
+            .bind(&email)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM auth_identities WHERE issuer = $1 AND subject = $2")
+            .bind(TEST_ISSUER)
+            .bind(&subject)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(internal_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     /// H5 race gate: invitation promotion must be claim-first. A request that
@@ -2048,13 +2237,26 @@ mod tests {
             300,
         );
         let voter_id = uuid::Uuid::new_v4();
+        let voter_subject = format!("firebase-voter-{voter_id}");
         let voter_email = format!("p9-voter-{voter_id}@example.com");
         let voter_token = mint_token(
-            &voter_id.to_string(),
+            &voter_subject,
             &voter_email,
             TEST_AUDIENCE,
             TEST_ISSUER,
             300,
+        );
+        let (status, voter_me) = get_me(routes::router(state.clone()), Some(&voter_token)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "non-UUID voter subject must authenticate: {voter_me}"
+        );
+        let voter_internal_id: uuid::Uuid = voter_me["id"].as_str().unwrap().parse().unwrap();
+        assert_ne!(
+            voter_me["id"].as_str(),
+            Some(voter_subject.as_str()),
+            "/api/me.id must be the internal app user UUID, not the Firebase UID"
         );
 
         // depth 2 -> Merkle capacity 4 (AR-H2 gate material).
@@ -2154,7 +2356,7 @@ mod tests {
             "SELECT user_secret_commitment FROM voters WHERE election_id = $1 AND user_id = $2",
         )
         .bind(election.id)
-        .bind(voter_id)
+        .bind(voter_internal_id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -2258,6 +2460,17 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("DELETE FROM auth_identities WHERE issuer = $1 AND subject = $2")
+            .bind(TEST_ISSUER)
+            .bind(&voter_subject)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(voter_internal_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]

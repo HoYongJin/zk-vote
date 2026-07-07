@@ -7,5 +7,6 @@ process.env.SEPOLIA_RPC_URL_SECRET ??= "zkvote-prod-sepolia-rpc-url";
 process.env.RELAYER_PRIVATE_KEY_SECRET ??= "zkvote-prod-relayer-private-key";
 process.env.OWNER_PRIVATE_KEY_SECRET ??= "zkvote-prod-owner-private-key";
 const runId = new Date().toISOString().replace(/[:.]/g, "-");
+process.env.CHAIN_CHECK_LABEL ??= "production chain check";
 process.env.CHAIN_EVIDENCE_PATH ??= `docs/evidence/production-chain-${runId}.json`;
 await import("./check-staging-chain");

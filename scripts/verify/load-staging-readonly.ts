@@ -184,6 +184,7 @@ async function main(): Promise<void> {
     const evidencePath =
         optionalEnv("LOAD_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `staging-load-readonly-${runId}.json`);
+    const checkLabel = env("LOAD_CHECK_LABEL", "staging read-only load");
     const evidence: Evidence = {
         status: "running",
         runId,
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
         evidence.status = "passed";
         evidence.finishedAt = new Date().toISOString();
         writeEvidence(evidencePath, evidence);
-        console.log(`staging read-only load PASSED; evidence=${evidencePath}`);
+        console.log(`${checkLabel} PASSED; evidence=${evidencePath}`);
     } catch (error) {
         evidence.status = "failed";
         evidence.finishedAt = new Date().toISOString();

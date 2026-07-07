@@ -43,6 +43,8 @@ GRANT  CREATE, USAGE ON SCHEMA public TO zkvote_migrator;
 -- Runtime DML, least privilege per table. No DELETE except where the
 -- application semantically deletes (consumed admin invitations, H5).
 GRANT SELECT, INSERT, UPDATE         ON elections            TO zkvote_app;
+GRANT SELECT, INSERT, UPDATE         ON app_users            TO zkvote_app;
+GRANT SELECT, INSERT, UPDATE         ON auth_identities      TO zkvote_app;
 GRANT SELECT, INSERT, UPDATE         ON admins               TO zkvote_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON admin_invitations    TO zkvote_app;
 GRANT SELECT, INSERT, UPDATE         ON voters               TO zkvote_app;

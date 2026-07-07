@@ -2,12 +2,14 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// Claims the API relies on. The IdP's access tokens carry the user id in
-/// `sub` and the e-mail in `email`; verification status appears top-level
-/// and/or in `user_metadata.email_verified`.
+/// Claims the API relies on. The IdP's access tokens carry the external
+/// subject in `sub` and the e-mail in `email`; verification status appears
+/// top-level and/or in `user_metadata.email_verified`.
 #[derive(Debug, Deserialize)]
 pub struct Claims {
     pub sub: String,
+    #[serde(default)]
+    pub iss: Option<String>,
     pub email: Option<String>,
     #[serde(default)]
     pub email_verified: Option<bool>,
@@ -34,6 +36,11 @@ impl Claims {
     pub fn email_explicitly_unverified(&self) -> bool {
         self.email_verified == Some(false)
             || self.user_metadata.as_ref().and_then(|m| m.email_verified) == Some(false)
+    }
+
+    pub fn email_verified_claim(&self) -> Option<bool> {
+        self.email_verified
+            .or_else(|| self.user_metadata.as_ref().and_then(|m| m.email_verified))
     }
 }
 
@@ -291,6 +298,7 @@ mod tests {
     fn user_metadata_email_verified_false_is_detected() {
         let claims = Claims {
             sub: SUB.to_string(),
+            iss: Some(TEST_ISSUER.to_string()),
             email: Some("v@example.com".to_string()),
             email_verified: None,
             user_metadata: Some(UserMetadata {

@@ -6,12 +6,16 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
+EXTERNAL_CONFIRM_COSTS="${CONFIRM_COSTS:-}"
 
 if [[ -f "${PROJECT_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
   source "${PROJECT_ROOT}/.env"
   set +a
+fi
+if [[ -n "${EXTERNAL_CONFIRM_COSTS}" ]]; then
+  CONFIRM_COSTS="${EXTERNAL_CONFIRM_COSTS}"
 fi
 
 PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-prod-hhyyj}}"

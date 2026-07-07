@@ -139,6 +139,7 @@ async function main(): Promise<void> {
     const evidencePath =
         optionalEnv("CHAIN_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `staging-chain-${runId}.json`);
+    const checkLabel = env("CHAIN_CHECK_LABEL", "staging chain check");
     const evidence: Evidence = {
         status: "running",
         runId,
@@ -198,7 +199,7 @@ async function main(): Promise<void> {
         evidence.status = "passed";
         evidence.finishedAt = new Date().toISOString();
         writeEvidence(evidencePath, evidence);
-        console.log(`staging chain check PASSED; evidence=${evidencePath}`);
+        console.log(`${checkLabel} PASSED; evidence=${evidencePath}`);
     } catch (error) {
         evidence.status = "failed";
         evidence.finishedAt = new Date().toISOString();

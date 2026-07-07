@@ -285,6 +285,7 @@ async function main(): Promise<void> {
     const evidencePath =
         optionalEnv("RECONCILE_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `staging-reconcile-${runId}.json`);
+    const checkLabel = env("RECONCILE_CHECK_LABEL", "staging tally reconciliation");
     const evidence: Evidence = {
         status: "running",
         runId,
@@ -365,7 +366,7 @@ async function main(): Promise<void> {
         evidence.status = "passed";
         evidence.finishedAt = new Date().toISOString();
         writeEvidence(evidencePath, evidence);
-        console.log(`staging tally reconciliation PASSED; evidence=${evidencePath}`);
+        console.log(`${checkLabel} PASSED; evidence=${evidencePath}`);
     } catch (error) {
         evidence.status = "failed";
         evidence.finishedAt = new Date().toISOString();

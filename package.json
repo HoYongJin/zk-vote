@@ -16,6 +16,8 @@
     "verify:production:chain": "node --import tsx scripts/verify/check-production-chain.ts",
     "verify:production:e2e": "node --import tsx scripts/verify/e2e-production.ts",
     "verify:production:browser": "node --import tsx scripts/verify/browser-smoke-production.ts",
+    "verify:production:user-flow": "node --import tsx scripts/verify/browser-user-flow-production.ts",
+    "verify:production:etherscan": "node --import tsx scripts/verify/verify-production-contracts-etherscan.ts",
     "verify:production:reconcile": "node --import tsx scripts/verify/reconcile-production-tally.ts",
     "verify:production:load": "node --import tsx scripts/verify/load-production-readonly.ts"
   },

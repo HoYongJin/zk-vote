@@ -55,6 +55,8 @@ survive production hardening.
 - `verify/check-production-chain.ts`
 - `verify/e2e-production.ts`
 - `verify/browser-smoke-production.ts`
+- `verify/verify-contracts-etherscan.ts`
+- `verify/verify-production-contracts-etherscan.ts`
 - `verify/reconcile-production-tally.ts`
 - `verify/load-production-readonly.ts`
 
