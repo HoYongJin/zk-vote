@@ -18,6 +18,7 @@ import dotenv from "dotenv";
 import { keccak256 } from "@ethersproject/keccak256";
 import { SigningKey } from "@ethersproject/signing-key";
 import { Client } from "pg";
+import { prepareCloudSqlProxyBinary } from "./cloudSqlProxy";
 
 const execFile = promisify(execFileCallback);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -216,8 +217,8 @@ async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabase
         return { url: databaseUrl, connection: { mode: "cloud-sql-socket", instance } };
     }
 
-    const proxyBin = optionalEnv("E2E_CLOUD_SQL_PROXY_BIN") ?? "/tmp/cloud-sql-proxy";
-    assert(fs.existsSync(proxyBin), `Cloud SQL proxy binary not found at ${proxyBin}`);
+    const proxyBinary = prepareCloudSqlProxyBinary();
+    const proxyBin = proxyBinary.path;
     const proxyPort = Number(optionalEnv("ETHERSCAN_VERIFY_CLOUD_SQL_PROXY_PORT") ?? "5436");
     assert(Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536, "invalid proxy port");
 
@@ -267,6 +268,7 @@ async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabase
                 }
                 proxy.kill("SIGTERM");
             });
+            proxyBinary.cleanup?.();
         },
     };
 }

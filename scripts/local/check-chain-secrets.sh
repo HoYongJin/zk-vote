@@ -10,7 +10,7 @@
 #   set -a; source .env.deploy-secrets; set +a        # gitignored (.env* rule)
 #   bash scripts/local/check-chain-secrets.sh
 #
-# Requires: foundry `cast`.
+# Requires: foundry `cast` and Node.js.
 set -euo pipefail
 
 : "${OWNER_PRIVATE_KEY:?set OWNER_PRIVATE_KEY (cold, configureElection)}"
@@ -18,14 +18,28 @@ set -euo pipefail
 : "${SEPOLIA_RPC_URL:?set SEPOLIA_RPC_URL}"
 
 command -v cast >/dev/null 2>&1 || { echo "FAIL: foundry 'cast' not found (https://getfoundry.sh)"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "FAIL: node not found"; exit 1; }
 
 EXPECTED_CHAIN_ID=11155111
 RELAYER_MIN_ETH="0.05"   # 배포(verifier+VotingTally)+투표 가스. 여유롭게 0.2~0.5 권장.
 OWNER_MIN_ETH="0.01"     # configureElection 1회분(소량).
 
-# Address derivation is offline; key is passed in argv only within YOUR local shell.
-owner_addr=$(cast wallet address --private-key "$OWNER_PRIVATE_KEY")
-relayer_addr=$(cast wallet address --private-key "$RELAYER_PRIVATE_KEY")
+derive_address_from_stdin_key() {
+  node --input-type=module -e '
+    import { SigningKey } from "@ethersproject/signing-key";
+    import { keccak256 } from "@ethersproject/keccak256";
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    const key = Buffer.concat(chunks).toString("utf8").trim();
+    const publicKey = new SigningKey(key).publicKey;
+    const address = "0x" + keccak256("0x" + publicKey.slice(4)).slice(-40);
+    process.stdout.write(address.toLowerCase());
+  '
+}
+
+# Address derivation is offline; private keys are passed over stdin, not argv.
+owner_addr=$(printf "%s" "$OWNER_PRIVATE_KEY" | derive_address_from_stdin_key)
+relayer_addr=$(printf "%s" "$RELAYER_PRIVATE_KEY" | derive_address_from_stdin_key)
 
 fail=0
 echo "OWNER   address: $owner_addr"

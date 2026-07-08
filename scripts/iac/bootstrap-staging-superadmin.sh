@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
+source "${PROJECT_ROOT}/scripts/lib/cloud-sql-proxy.sh"
 
 : "${FIREBASE_WEB_API_KEY:?set FIREBASE_WEB_API_KEY}"
 : "${E2E_SUPERADMIN_EMAIL:?set E2E_SUPERADMIN_EMAIL}"
@@ -17,7 +18,6 @@ PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 
 SQL_DATABASE="${SQL_DATABASE:-zkvote}"
 PORT="${PORT:-5433}"
-PROXY_BIN="${PROXY_BIN:-/tmp/cloud-sql-proxy}"
 PGIMAGE="${PGIMAGE:-postgres:16}"
 PROJECT_ID="${GCP_PROJECT_ID:-${SQL_CONNECTION_NAME%%:*}}"
 JWT_ISSUER="${JWT_ISSUER:-https://securetoken.google.com/${PROJECT_ID}}"
@@ -46,35 +46,29 @@ auth_json="$(
     "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_WEB_API_KEY}"
 )"
 
-uid="$(
-  AUTH_JSON="${auth_json}" node <<'NODE'
-const body = JSON.parse(process.env.AUTH_JSON || "{}");
-const uid = String(body.localId || "");
-if (!uid.trim()) throw new Error("Firebase sign-in returned no localId");
-process.stdout.write(uid);
-NODE
-)"
-email="$(
-  AUTH_JSON="${auth_json}" node <<'NODE'
+read -r uid email < <(
+  AUTH_JSON="${auth_json}" PROJECT_ID="${PROJECT_ID}" node <<'NODE'
 const body = JSON.parse(process.env.AUTH_JSON || "{}");
 const email = String(body.email || "").trim().toLowerCase();
 if (!email || !email.includes("@")) throw new Error("Firebase sign-in returned no valid email");
-process.stdout.write(email);
+const uid = String(body.localId || "");
+if (!uid.trim()) throw new Error("Firebase sign-in returned no localId");
+const idToken = String(body.idToken || "");
+const [, payload] = idToken.split(".");
+if (!payload) throw new Error("Firebase sign-in returned no ID token payload");
+const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+const expectedIssuer = `https://securetoken.google.com/${process.env.PROJECT_ID}`;
+if (claims.email_verified !== true) throw new Error("Firebase ID token email_verified is not true");
+if (String(claims.sub || "") !== uid) throw new Error("Firebase ID token sub does not match localId");
+if (String(claims.email || "").trim().toLowerCase() !== email) throw new Error("Firebase ID token email does not match response email");
+if (String(claims.iss || "") !== expectedIssuer) throw new Error("Firebase ID token issuer does not match GCIP project");
+if (String(claims.aud || "") !== String(process.env.PROJECT_ID || "")) throw new Error("Firebase ID token audience does not match GCIP project");
+process.stdout.write(`${uid} ${email}`);
 NODE
-)"
+)
 
-if [[ ! -x "${PROXY_BIN}" ]]; then
-  os=$(uname -s | tr '[:upper:]' '[:lower:]')
-  arch=$(uname -m)
-  case "${arch}" in arm64 | aarch64) arch=arm64 ;; *) arch=amd64 ;; esac
-  echo "Downloading cloud-sql-proxy (${os}.${arch})..."
-  curl -fsSL -o "${PROXY_BIN}" "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.${os}.${arch}"
-  chmod +x "${PROXY_BIN}"
-fi
-
-"${PROXY_BIN}" --token "$(gcloud auth print-access-token)" --address 127.0.0.1 --port "${PORT}" "${SQL_CONNECTION_NAME}" &
-PROXY_PID=$!
-trap 'kill "${PROXY_PID}" 2>/dev/null || true' EXIT
+start_cloud_sql_proxy "${SQL_CONNECTION_NAME}" "${PORT}"
+trap 'stop_cloud_sql_proxy' EXIT
 
 psql_as_postgres() {
   docker run --rm -i -e PGPASSWORD="${ADMIN_PASSWORD}" "${PGIMAGE}" \

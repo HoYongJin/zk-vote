@@ -3,7 +3,7 @@
 # instance via the Cloud SQL Auth Proxy (IAM-authenticated — NO public-IP
 # authorized-networks change) + a docker postgres:16 psql (no local psql needed).
 #
-# Honors the AR-M3 two-role model on Cloud SQL, working around two Cloud SQL
+# Honors the AR-M3 least-privilege role model on Cloud SQL, working around two Cloud SQL
 # behaviours the local docker model never hits (both verified live on
 # zkvote-staging):
 #   1. `gcloud sql users create` users join the cloudsqlsuperuser role AND get
@@ -20,39 +20,30 @@
 #   ADMIN_PASSWORD        the `postgres` user password (gcloud sql users set-password postgres ...)
 #   MIGRATOR_PASSWORD     zkvote_migrator password
 #   APP_PASSWORD          zkvote_app password
+#   READONLY_PASSWORD     zkvote_readonly password
 #   SQL_DATABASE          default: zkvote
-# Auth: the active gcloud account's OAuth token (needs roles/cloudsql.client).
+# Auth: gcloud ADC/application-default credentials (needs roles/cloudsql.client).
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
+source "${PROJECT_ROOT}/scripts/lib/cloud-sql-proxy.sh"
 
 : "${SQL_CONNECTION_NAME:?set SQL_CONNECTION_NAME=project:region:instance}"
 : "${ADMIN_PASSWORD:?set ADMIN_PASSWORD (the postgres user password)}"
 : "${MIGRATOR_PASSWORD:?set MIGRATOR_PASSWORD}"
 : "${APP_PASSWORD:?set APP_PASSWORD}"
+: "${READONLY_PASSWORD:?set READONLY_PASSWORD}"
 SQL_DATABASE="${SQL_DATABASE:-zkvote}"
 PORT="${PORT:-5433}"
-PROXY_BIN="${PROXY_BIN:-/tmp/cloud-sql-proxy}"
 PGIMAGE="${PGIMAGE:-postgres:16}"
 
 command -v docker >/dev/null || { echo "docker is required (used for psql)." >&2; exit 1; }
 command -v gcloud >/dev/null || { echo "gcloud is required." >&2; exit 1; }
 
-# Fetch the Cloud SQL Auth Proxy if absent (os/arch auto-detected).
-if [[ ! -x "${PROXY_BIN}" ]]; then
-  os=$(uname -s | tr '[:upper:]' '[:lower:]')
-  arch=$(uname -m)
-  case "${arch}" in arm64 | aarch64) arch=arm64 ;; *) arch=amd64 ;; esac
-  echo "Downloading cloud-sql-proxy (${os}.${arch})..."
-  curl -fsSL -o "${PROXY_BIN}" "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.${os}.${arch}"
-  chmod +x "${PROXY_BIN}"
-fi
-
-# Start the proxy (IAM token auth; mTLS tunnel — no DB public exposure).
-"${PROXY_BIN}" --token "$(gcloud auth print-access-token)" --address 127.0.0.1 --port "${PORT}" "${SQL_CONNECTION_NAME}" &
-PROXY_PID=$!
-trap 'kill "${PROXY_PID}" 2>/dev/null || true' EXIT
+# Start the proxy (ADC/IAM-authenticated mTLS tunnel — no DB public exposure).
+start_cloud_sql_proxy "${SQL_CONNECTION_NAME}" "${PORT}"
+trap 'stop_cloud_sql_proxy' EXIT
 
 # psql via docker reaches the host proxy through host.docker.internal.
 psql_as() { # usage: psql_as <user> <password> [psql args...]   (SQL on stdin)
@@ -61,6 +52,19 @@ psql_as() { # usage: psql_as <user> <password> [psql args...]   (SQL on stdin)
   docker run --rm -i -e PGPASSWORD="${pw}" "${PGIMAGE}" \
     psql "host=host.docker.internal port=${PORT} user=${user} dbname=${SQL_DATABASE} sslmode=disable" \
     -v ON_ERROR_STOP=1 "$@"
+}
+
+sql_literal() {
+  local value="$1"
+  value=${value//\'/\'\'}
+  printf "'%s'" "${value}"
+}
+
+roles_sql_with_password_preamble() {
+  printf "SELECT set_config('zkvote.migrator_password', %s, false);\n" "$(sql_literal "${MIGRATOR_PASSWORD}")"
+  printf "SELECT set_config('zkvote.app_password', %s, false);\n" "$(sql_literal "${APP_PASSWORD}")"
+  printf "SELECT set_config('zkvote.readonly_password', %s, false);\n" "$(sql_literal "${READONLY_PASSWORD}")"
+  cat "${PROJECT_ROOT}/rust-backend/db/roles.sql"
 }
 
 # Wait for the proxy to accept connections.
@@ -88,10 +92,7 @@ for m in "${PROJECT_ROOT}"/rust-backend/migrations/*.sql; do
 done
 
 echo "== Step C: roles.sql (as postgres) — per-table app DML + AR-M3 + Cloud SQL hardening =="
-psql_as postgres "${ADMIN_PASSWORD}" \
-  -v migrator_password="${MIGRATOR_PASSWORD}" \
-  -v app_password="${APP_PASSWORD}" \
-  < "${PROJECT_ROOT}/rust-backend/db/roles.sql"
+roles_sql_with_password_preamble | psql_as postgres "${ADMIN_PASSWORD}"
 
 echo "== Verify AR-M3 boundary =="
 psql_as postgres "${ADMIN_PASSWORD}" -tA <<'SQL'

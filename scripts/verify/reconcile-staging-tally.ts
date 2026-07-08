@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "pg";
+import { prepareCloudSqlProxyBinary } from "./cloudSqlProxy";
 
 const execFile = promisify(execFileCallback);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -21,7 +22,7 @@ const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const DEFAULT_PROJECT_ID = "zkvote-staging-hhyyj";
 const DEFAULT_SECRET_NAMES = {
     rpcUrl: "zkvote-staging-sepolia-rpc-url",
-    databaseUrl: "zkvote-staging-migrator-database-url",
+    databaseUrl: "zkvote-staging-readonly-database-url",
 } as const;
 const EXPECTED_CHAIN_ID_DECIMAL = "11155111";
 const VOTE_COUNTS_SELECTOR = "0x3c3a220d";
@@ -167,8 +168,8 @@ async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabase
         return { url: databaseUrl, connection: { mode: "cloud-sql-socket", instance } };
     }
 
-    const proxyBin = optionalEnv("E2E_CLOUD_SQL_PROXY_BIN") ?? "/tmp/cloud-sql-proxy";
-    assert(fs.existsSync(proxyBin), `Cloud SQL proxy binary not found at ${proxyBin}`);
+    const proxyBinary = prepareCloudSqlProxyBinary();
+    const proxyBin = proxyBinary.path;
     const proxyPort = Number(optionalEnv("RECONCILE_CLOUD_SQL_PROXY_PORT") ?? "5435");
     assert(Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536, "invalid proxy port");
 
@@ -214,6 +215,7 @@ async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabase
                 }
                 proxy.kill("SIGTERM");
             });
+            proxyBinary.cleanup?.();
         },
     };
 }
