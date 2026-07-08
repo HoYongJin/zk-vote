@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-use zkvote_chain::{configure_election, connect_election, ChainConfig, ChainError};
+use zkvote_chain::{
+    address_for_private_key, configure_election, connect_election, ChainConfig, ChainError,
+};
 use zkvote_db::repos::{ElectionRepo, JobRepo};
 use zkvote_db::{with_transaction, DbError, Tx};
 use zkvote_domain::services::{check_finalization, FinalizationCheck, FinalizationRejection};
@@ -224,6 +226,16 @@ pub async fn finalize(
             "OWNER_PRIVATE_KEY must be configured so the hot relayer key cannot own or configure VotingTally.",
         )
     })?;
+    let relayer = address_for_private_key(&relayer_key).map_err(chain_config_error)?;
+    let owner = address_for_private_key(&owner_key).map_err(chain_config_error)?;
+    if owner == relayer {
+        return Err(coded(
+            503,
+            "CHAIN_CONFIG_INVALID",
+            "OWNER_PRIVATE_KEY and RELAYER_PRIVATE_KEY must be different keys (AR-M4): \
+             the cold owner key must not equal the hot relayer key.",
+        ));
+    }
     let chain = ChainConfig {
         rpc_url,
         relayer_private_key: relayer_key,
@@ -435,6 +447,14 @@ fn truncate_to_seconds(t: OffsetDateTime) -> Result<OffsetDateTime, ApiError> {
         .map_err(|err| ApiError::Internal(format!("timestamp truncation failed: {err}")))
 }
 
+fn chain_config_error(err: ChainError) -> ApiError {
+    coded(
+        503,
+        "CHAIN_CONFIG_INVALID",
+        format!("Invalid chain key configuration: {err}"),
+    )
+}
+
 /// Classifies chain failures into the API error vocabulary and records the
 /// job failure. Reverts are permanent (ON_CHAIN_ERROR); transport errors are
 /// retryable (502).
@@ -511,6 +531,63 @@ mod tests {
             ApiError::Coded {
                 status: 503,
                 code: "CHAIN_CONFIG_MISSING",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn finalize_rejects_same_owner_and_relayer_key_before_db_or_chain() {
+        let config = Arc::new(
+            AppConfig::from_lookup(|name| match name {
+                "DATABASE_URL" => Some("postgres://example".to_string()),
+                "REDIS_URL" => Some("redis://localhost:1".to_string()),
+                "SEPOLIA_RPC_URL" => Some("http://127.0.0.1:8545".to_string()),
+                "RELAYER_PRIVATE_KEY" => Some(
+                    "0x59c6995e998f97a5a0044966f094538fef40b1dbb44b67533a5edb8f6bbd2a65"
+                        .to_string(),
+                ),
+                "OWNER_PRIVATE_KEY" => Some(
+                    "0x59c6995e998f97a5a0044966f094538fef40b1dbb44b67533a5edb8f6bbd2a65"
+                        .to_string(),
+                ),
+                _ => None,
+            })
+            .unwrap(),
+        );
+        let state = AppState {
+            pg: zkvote_db::connect_lazy(&config.database_url).unwrap(),
+            redis: RedisClient::open(config.redis_url.as_str()).unwrap(),
+            auth: None,
+            relay_lock: Arc::new(tokio::sync::Mutex::new(())),
+            config,
+        };
+        let vote_end = (OffsetDateTime::now_utc() + Duration::hours(1))
+            .format(&Rfc3339)
+            .unwrap();
+
+        let result = finalize(
+            State(state),
+            AdminUser(CurrentUser {
+                id: Uuid::new_v4(),
+                email: Some("admin@example.com".to_string()),
+            }),
+            Path(Uuid::new_v4()),
+            Json(FinalizeBody {
+                vote_end_time: Some(vote_end),
+                confirm_extended_duration: false,
+            }),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("equal OWNER_PRIVATE_KEY and RELAYER_PRIVATE_KEY must fail closed");
+        };
+
+        assert!(matches!(
+            err,
+            ApiError::Coded {
+                status: 503,
+                code: "CHAIN_CONFIG_INVALID",
                 ..
             }
         ));

@@ -379,7 +379,7 @@ pub async fn is_admin_or_promote(pool: &PgPool, user: &CurrentUser) -> Result<bo
         // rolling back the whole transaction (DB-AUTH-1): an explicit
         // `DELETE FROM admins` would need a privilege `zkvote_app` deliberately
         // lacks (db/roles.sql keeps `admins` append-only), which 500s every
-        // ordinary voter's /api/me under the two-role production posture. A
+        // ordinary voter's /api/me under the production least-privilege posture. A
         // concurrent first-login may still have promoted this user via its own
         // invitation, so re-check on the pool after the rollback.
         tx.rollback().await.map_err(zkvote_db::DbError::from)?;

@@ -3,8 +3,8 @@
 //! `/proof` (authenticated): Merkle path + a single-use ticket bound to the
 //! election and root only — the server never learns a nullifier here
 //! (AR-H5). `/submit` (anonymous by design — NO auth extractor): 4-signal
-//! validation, on-chain nullifier preflight, validate-then-consume ticket
-//! (audit M1), serialized relaying (AR-M5), and front-run reconciliation
+//! validation, claim-then-preflight ticket handling, serialized relaying
+//! (AR-M5), and front-run reconciliation
 //! (AR-L8).
 
 use crate::auth::CurrentUser;
@@ -403,6 +403,24 @@ fn submit_rejection(rejection: SubmitRejection) -> ApiError {
     coded(status, code, rejection.to_string())
 }
 
+async fn restore_claimed_ticket(
+    state: &AppState,
+    ticket_token: &str,
+    payload: Option<&TicketPayload>,
+    reason: &'static str,
+) {
+    let Some(payload) = payload else {
+        return;
+    };
+    if let Err(restore_err) = tickets::restore(&state.redis, ticket_token, payload).await {
+        tracing::warn!(
+            error = %restore_err,
+            reason,
+            "failed to restore claimed submission ticket"
+        );
+    }
+}
+
 pub async fn submit(
     State(state): State<AppState>,
     Path(election_id): Path<Uuid>,
@@ -430,24 +448,7 @@ pub async fn submit(
         .and_then(|addr| addr.parse().ok())
         .ok_or_else(|| ApiError::Internal("contract address invalid".to_string()))?;
 
-    // Peek (non-destructive): the ticket survives every later rejection
-    // except a successful (or front-run-completed) relay (audit M1).
-    let ticket = tickets::read(&state.redis, ticket_token)
-        .await
-        .map_err(map_ticket_error)?
-        .ok_or_else(invalid_ticket)?;
-
     let merkle_root = election.merkle_root.as_deref().unwrap_or_default();
-    check_submission(&SubmitCheck {
-        public_signals: &body.public_signals,
-        route_election_id: election_id,
-        ticket_election_id: ticket.election_id,
-        election_merkle_root: merkle_root,
-        ticket_merkle_root: &ticket.merkle_root,
-        num_candidates: election.num_candidates.max(0) as u64,
-    })
-    .map_err(submit_rejection)?;
-
     let rpc_url = state
         .config
         .rpc_url
@@ -462,16 +463,68 @@ pub async fn submit(
         relayer_private_key: relayer_key,
     };
 
+    // Claim the bearer ticket before any chain/RPC preflight work so one valid
+    // ticket cannot fan out concurrent `eth_call` load. Cheap local validation
+    // restores the payload on failure; permanent verifier rejection below only
+    // restores until the per-ticket failure cap is reached.
+    let ticket = tickets::consume(&state.redis, ticket_token)
+        .await
+        .map_err(map_ticket_error)?
+        .ok_or_else(invalid_ticket)?;
+    let mut consumed_payload = Some(ticket);
+    if let Err(rejection) = check_submission(&SubmitCheck {
+        public_signals: &body.public_signals,
+        route_election_id: election_id,
+        ticket_election_id: consumed_payload
+            .as_ref()
+            .expect("claimed ticket is present")
+            .election_id,
+        election_merkle_root: merkle_root,
+        ticket_merkle_root: &consumed_payload
+            .as_ref()
+            .expect("claimed ticket is present")
+            .merkle_root,
+        num_candidates: election.num_candidates.max(0) as u64,
+    }) {
+        restore_claimed_ticket(
+            &state,
+            ticket_token,
+            consumed_payload.as_ref(),
+            "cheap_submit_validation_failed",
+        )
+        .await;
+        return Err(submit_rejection(rejection));
+    }
+
     let nullifier = args.signals[PUBLIC_SIGNAL_NULLIFIER_INDEX];
     let expected_chain_id = state.config.chain_id as u64;
-    let onchain = connect_election(&chain, expected_chain_id, contract_address)
-        .await
-        .map_err(|err| ApiError::Internal(format!("chain connect failed: {err}")))?;
-    if onchain
-        .nullifier_used(nullifier)
-        .await
-        .map_err(chain_unavailable)?
-    {
+    let onchain = match connect_election(&chain, expected_chain_id, contract_address).await {
+        Ok(onchain) => onchain,
+        Err(err) => {
+            restore_claimed_ticket(
+                &state,
+                ticket_token,
+                consumed_payload.as_ref(),
+                "chain_connect_failed",
+            )
+            .await;
+            return Err(ApiError::Internal(format!("chain connect failed: {err}")));
+        }
+    };
+    let nullifier_used = match onchain.nullifier_used(nullifier).await {
+        Ok(used) => used,
+        Err(err) => {
+            restore_claimed_ticket(
+                &state,
+                ticket_token,
+                consumed_payload.as_ref(),
+                "nullifier_preflight_failed",
+            )
+            .await;
+            return Err(chain_unavailable(err));
+        }
+    };
+    if nullifier_used {
         return Err(coded(
             409,
             "VOTE_ALREADY_CAST",
@@ -479,9 +532,9 @@ pub async fn submit(
         ));
     }
 
-    // Run the contract's view/static preflight before GETDEL.
-    // Permanent verifier/contract rejections must not burn the one-use ticket;
-    // the actual send path still rechecks after consumption to handle races.
+    // Run the contract's view/static preflight after claiming the ticket.
+    // Permanent verifier/contract rejections restore the ticket only until the
+    // bounded failure cap; retryable transport failures always restore it.
     if let Err(err) = preflight_submit_tally(
         &chain,
         expected_chain_id,
@@ -503,17 +556,23 @@ pub async fn submit(
                     );
                     1
                 });
-            if failures >= tickets::MAX_PREFLIGHT_FAILURES_PER_TICKET {
-                if let Err(consume_err) = tickets::consume(&state.redis, ticket_token)
-                    .await
-                    .map_err(map_ticket_error)
-                {
-                    tracing::warn!(
-                        error = %consume_err,
-                        "failed to consume repeatedly rejected submission ticket"
-                    );
-                }
+            if failures < tickets::MAX_PREFLIGHT_FAILURES_PER_TICKET {
+                restore_claimed_ticket(
+                    &state,
+                    ticket_token,
+                    consumed_payload.as_ref(),
+                    "permanent_preflight_rejection_under_cap",
+                )
+                .await;
             }
+        } else {
+            restore_claimed_ticket(
+                &state,
+                ticket_token,
+                consumed_payload.as_ref(),
+                "retryable_preflight_failure",
+            )
+            .await;
         }
         return Err(chain_unavailable(err));
     }
@@ -525,41 +584,39 @@ pub async fn submit(
     // takes the same `chain-relayer:tx` lease, so the two never race the nonce.
     // (Holding both through receipt-wait is acceptable locally; staging splits
     // send/wait.)
-    let relayer_lease = leases::acquire(
+    let relayer_lease = match leases::acquire(
         &state.redis,
         leases::RELAYER_LEASE_KEY.to_string(),
         leases::RELAYER_LEASE_SECONDS,
         "RELAYER_BUSY",
         "The relayer is processing another transaction. Retry shortly.",
     )
-    .await?;
-    // Keep the consumed payload so a genuinely-never-landed transient failure
-    // can restore the single-use ticket (L-ticket-burn) instead of burning it.
-    let mut consumed_payload: Option<TicketPayload> = None;
+    .await
+    {
+        Ok(lease) => lease,
+        Err(err) => {
+            restore_claimed_ticket(
+                &state,
+                ticket_token,
+                consumed_payload.as_ref(),
+                "relayer_lease_unavailable",
+            )
+            .await;
+            return Err(err);
+        }
+    };
     let relay_outcome: Result<Result<String, ChainError>, ApiError> = {
         let _serialized = state.relay_lock.lock().await;
-        // Consume the ticket only once everything else has passed; the relay
-        // itself is the last fallible step.
-        match tickets::consume(&state.redis, ticket_token)
-            .await
-            .map_err(map_ticket_error)
-        {
-            Err(err) => Err(err),
-            Ok(None) => Err(invalid_ticket()),
-            Ok(Some(payload)) => {
-                consumed_payload = Some(payload);
-                Ok(submit_tally(
-                    &chain,
-                    expected_chain_id,
-                    contract_address,
-                    args.a,
-                    args.b,
-                    args.c,
-                    args.signals,
-                )
-                .await)
-            }
-        }
+        Ok(submit_tally(
+            &chain,
+            expected_chain_id,
+            contract_address,
+            args.a,
+            args.b,
+            args.c,
+            args.signals,
+        )
+        .await)
     };
     if let Err(err) = leases::release(&state.redis, &relayer_lease).await {
         tracing::warn!(error = %err, "failed to release relayer redis lease");

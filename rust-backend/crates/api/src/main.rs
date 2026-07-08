@@ -795,7 +795,7 @@ mod tests {
             .unwrap();
     }
 
-    /// DB-AUTH-1 regression: under the production two-role posture, the API runs
+    /// DB-AUTH-1 regression: under the production least-privilege role posture, the API runs
     /// as `zkvote_app`, which has SELECT/INSERT/UPDATE on `admins` but NO DELETE
     /// (db/roles.sql:44). A non-admin with no pending invitation must resolve to
     /// `Ok(false)` — NOT a permission-denied 500. The old non-invited rollback
@@ -855,7 +855,7 @@ mod tests {
         let result = auth::is_admin_or_promote(&app_pool, &user).await;
         assert!(
             matches!(result, Ok(false)),
-            "non-admin role lookup under the two-role app grant must be Ok(false), \
+            "non-admin role lookup under the restricted app grant must be Ok(false), \
              not a permission-denied error; got {result:?}"
         );
 
@@ -1953,16 +1953,15 @@ mod tests {
         };
         let token = tickets::issue(&client, &payload).await.unwrap();
         assert!(tickets::consume(&client, &token).await.unwrap().is_some());
-        assert!(tickets::read(&client, &token).await.unwrap().is_none());
+        assert!(tickets::consume(&client, &token).await.unwrap().is_none());
 
         tickets::restore(&client, &token, &payload).await.unwrap();
-        let restored = tickets::read(&client, &token).await.unwrap().unwrap();
+        let restored = tickets::consume(&client, &token).await.unwrap().unwrap();
         assert_eq!(restored.merkle_root, "123");
         assert_eq!(
             restored.issued_at.as_deref(),
             Some("2026-06-23T00:00:00.000Z")
         );
-        let _ = tickets::consume(&client, &token).await;
     }
 
     #[tokio::test]

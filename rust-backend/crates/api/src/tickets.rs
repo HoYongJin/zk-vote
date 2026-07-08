@@ -5,7 +5,6 @@
 //! authenticated `/proof` caller to the anonymous `/submit` nullifier.
 
 use crate::error::ApiError;
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -80,14 +79,9 @@ pub async fn restore(
     Ok(())
 }
 
-/// Non-destructive read (validate-then-consume, audit M1).
-pub async fn read(client: &redis::Client, token: &str) -> Result<Option<TicketPayload>, ApiError> {
-    let mut conn = connection(client).await?;
-    let raw: Option<String> = conn.get(key(token)).await.map_err(ApiError::from)?;
-    parse(raw)
-}
-
-/// Destructive consume (GETDEL) — call only after every validation passed.
+/// Destructive consume (GETDEL). `/submit` claims the bearer token before
+/// chain/RPC preflight, then restores the same payload only for allowed retry
+/// paths.
 pub async fn consume(
     client: &redis::Client,
     token: &str,

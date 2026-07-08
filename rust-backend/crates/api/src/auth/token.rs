@@ -3,8 +3,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Claims the API relies on. The IdP's access tokens carry the external
-/// subject in `sub` and the e-mail in `email`; verification status appears
-/// top-level and/or in `user_metadata.email_verified`.
+/// subject in `sub` and the e-mail in `email`; GCIP's app-layer trust anchor is
+/// the top-level `email_verified` claim.
 #[derive(Debug, Deserialize)]
 pub struct Claims {
     pub sub: String,
@@ -13,22 +13,14 @@ pub struct Claims {
     pub email: Option<String>,
     #[serde(default)]
     pub email_verified: Option<bool>,
-    #[serde(default)]
-    pub user_metadata: Option<UserMetadata>,
     #[allow(dead_code)]
     pub exp: usize,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct UserMetadata {
-    #[serde(default)]
-    pub email_verified: Option<bool>,
-}
-
 impl Claims {
     /// True only when the token explicitly proves the email is verified
-    /// (top-level `email_verified` or `user_metadata.email_verified`).
-    /// Absent verification is not enough for email-authority joins.
+    /// through the top-level GCIP `email_verified` claim. Absent verification
+    /// and nested metadata are not enough for email-authority joins.
     pub fn email_is_verified(&self) -> bool {
         self.email_verified_claim() == Some(true)
     }
@@ -36,12 +28,10 @@ impl Claims {
     /// True when the token explicitly marks the e-mail unverified.
     pub fn email_explicitly_unverified(&self) -> bool {
         self.email_verified == Some(false)
-            || self.user_metadata.as_ref().and_then(|m| m.email_verified) == Some(false)
     }
 
     pub fn email_verified_claim(&self) -> Option<bool> {
         self.email_verified
-            .or_else(|| self.user_metadata.as_ref().and_then(|m| m.email_verified))
     }
 }
 
@@ -330,17 +320,32 @@ mod tests {
     }
 
     #[test]
-    fn user_metadata_email_verified_false_is_detected() {
-        let claims = Claims {
-            sub: SUB.to_string(),
-            iss: Some(TEST_ISSUER.to_string()),
-            email: Some("v@example.com".to_string()),
-            email_verified: None,
-            user_metadata: Some(UserMetadata {
-                email_verified: Some(false),
-            }),
-            exp: 0,
-        };
+    fn nested_user_metadata_email_verified_is_not_authoritative() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub": SUB,
+            "iss": TEST_ISSUER,
+            "email": "v@example.com",
+            "user_metadata": { "email_verified": true },
+            "exp": 0
+        }))
+        .unwrap();
+
+        assert_eq!(claims.email_verified_claim(), None);
+        assert!(!claims.email_is_verified());
+        assert!(!claims.email_explicitly_unverified());
+
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub": SUB,
+            "iss": TEST_ISSUER,
+            "email": "v@example.com",
+            "email_verified": false,
+            "user_metadata": { "email_verified": true },
+            "exp": 0
+        }))
+        .unwrap();
+
+        assert_eq!(claims.email_verified_claim(), Some(false));
+        assert!(!claims.email_is_verified());
         assert!(claims.email_explicitly_unverified());
     }
 
