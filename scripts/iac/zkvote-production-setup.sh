@@ -269,12 +269,26 @@ retry gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --role roles/storage.objectViewer \
   --quiet >/dev/null
 
-for role in roles/firebasehosting.admin roles/firebase.admin roles/serviceusage.serviceUsageConsumer; do
+for role in \
+  roles/firebasehosting.admin \
+  roles/firebase.admin \
+  roles/serviceusage.serviceUsageConsumer \
+  roles/run.admin \
+  roles/cloudbuild.builds.editor \
+  roles/artifactregistry.writer \
+  roles/cloudsql.viewer \
+  roles/secretmanager.secretAccessor \
+  roles/iam.serviceAccountUser \
+  roles/storage.objectViewer; do
   retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member "serviceAccount:${FIREBASE_DEPLOY_SERVICE_ACCOUNT}" \
     --role "${role}" \
     --quiet >/dev/null
 done
+retry gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
+  --member "serviceAccount:${FIREBASE_DEPLOY_SERVICE_ACCOUNT}" \
+  --role roles/storage.objectAdmin \
+  --quiet >/dev/null
 
 ACTIVE_ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n1)"
 if [[ -n "${ACTIVE_ACCOUNT}" ]]; then

@@ -1,0 +1,89 @@
+name: Deploy Production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-production:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: gcp-production
+    env:
+      CI: "true"
+      CONFIRM_COSTS: "yes"
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'zkvote-prod-hhyyj' }}
+      GCP_REGION: ${{ secrets.GCP_REGION || 'asia-northeast3' }}
+      MAX_INSTANCES: "1"
+      MIN_INSTANCES: "1"
+      CI_DEPLOY_EXISTING_INFRA_ONLY: "yes"
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+      FIREBASE_CLI_DISABLE_UPDATE_CHECK: "true"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      - uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix frontend
+      - name: Production preflight
+        run: node --import tsx scripts/verify/preflight-production.ts
+      - name: Deploy backend to Cloud Run
+        run: bash scripts/cicd/deploy-production-api.sh
+      - name: Resolve deployed API URL
+        run: |
+          api_url="$(gcloud run services describe zkvote-prod-api \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --format='value(status.url)')"
+          test -n "${api_url}"
+          echo "VITE_API_BASE_URL=${api_url}" >> "${GITHUB_ENV}"
+          echo "VERIFY_BASE_URL=${api_url}" >> "${GITHUB_ENV}"
+      - name: Build frontend
+        run: npm run build --prefix frontend
+      - name: Render Firebase Hosting config
+        run: node --import tsx scripts/cicd/render-firebase-config.ts
+        env:
+          FIREBASE_CONFIG_OUTPUT: firebase.generated.json
+      - name: Deploy frontend to Firebase Hosting
+        run: npm exec --prefix frontend -- firebase deploy --only hosting --project "${GCP_PROJECT_ID}" --config firebase.generated.json --non-interactive
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/firebase-cli-config
+      - name: Verify production API
+        run: bash scripts/verify/verify-production.sh
+      - name: Install Playwright Chrome
+        run: npm exec --prefix frontend -- playwright install --with-deps chrome
+      - name: Browser smoke
+        run: node --import tsx scripts/verify/browser-smoke-production.ts

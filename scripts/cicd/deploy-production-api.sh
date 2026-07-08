@@ -33,6 +33,7 @@ RELAYER_PRIVATE_KEY_SECRET="${RELAYER_PRIVATE_KEY_SECRET:-zkvote-prod-relayer-pr
 OWNER_PRIVATE_KEY_SECRET="${OWNER_PRIVATE_KEY_SECRET:-zkvote-prod-owner-private-key}"
 MIN_INSTANCES="${MIN_INSTANCES:-1}"
 MAX_INSTANCES="${MAX_INSTANCES:-1}"
+CI_DEPLOY_EXISTING_INFRA_ONLY="${CI_DEPLOY_EXISTING_INFRA_ONLY:-no}"
 
 if [[ "${CONFIRM_COSTS:-}" != "yes" ]]; then
   echo "Refusing to run: set CONFIRM_COSTS=yes after explicit approval (Cloud Build/Artifact Registry/Cloud Run are billable)." >&2
@@ -83,34 +84,39 @@ if [[ "${OWNER_PRIVATE_KEY_VALUE}" == "${RELAYER_PRIVATE_KEY_VALUE}" ]]; then
 fi
 unset OWNER_PRIVATE_KEY_VALUE RELAYER_PRIVATE_KEY_VALUE
 
-for secret_name in "${OWNER_PRIVATE_KEY_SECRET}" "${RELAYER_PRIVATE_KEY_SECRET}"; do
-  gcloud secrets add-iam-policy-binding "${secret_name}" \
-    --project "${PROJECT_ID}" \
-    --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
-    --role roles/secretmanager.secretAccessor \
-    --quiet >/dev/null
-done
-
-gcloud artifacts repositories describe "${REPO}" --location "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1 \
-  || gcloud artifacts repositories create "${REPO}" --repository-format=docker --location "${REGION}" --project "${PROJECT_ID}" --quiet
-
-gcloud iam service-accounts describe "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
-  --project "${PROJECT_ID}" >/dev/null 2>&1 \
-  || gcloud iam service-accounts create "${CLOUD_BUILD_SERVICE_ACCOUNT}" \
+if [[ "${CI_DEPLOY_EXISTING_INFRA_ONLY}" == "yes" ]]; then
+  gcloud artifacts repositories describe "${REPO}" --location "${REGION}" --project "${PROJECT_ID}" >/dev/null
+  gcloud iam service-accounts describe "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" --project "${PROJECT_ID}" >/dev/null
+else
+  for secret_name in "${OWNER_PRIVATE_KEY_SECRET}" "${RELAYER_PRIVATE_KEY_SECRET}"; do
+    gcloud secrets add-iam-policy-binding "${secret_name}" \
       --project "${PROJECT_ID}" \
-      --display-name "zk-vote production Cloud Build" \
-      --quiet
+      --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+      --role roles/secretmanager.secretAccessor \
+      --quiet >/dev/null
+  done
 
-for cloud_build_role in roles/cloudbuild.builds.builder roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  gcloud artifacts repositories describe "${REPO}" --location "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1 \
+    || gcloud artifacts repositories create "${REPO}" --repository-format=docker --location "${REGION}" --project "${PROJECT_ID}" --quiet
+
+  gcloud iam service-accounts describe "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
+    --project "${PROJECT_ID}" >/dev/null 2>&1 \
+    || gcloud iam service-accounts create "${CLOUD_BUILD_SERVICE_ACCOUNT}" \
+        --project "${PROJECT_ID}" \
+        --display-name "zk-vote production Cloud Build" \
+        --quiet
+
+  for cloud_build_role in roles/cloudbuild.builds.builder roles/storage.objectViewer roles/artifactregistry.writer roles/logging.logWriter; do
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+      --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
+      --role "${cloud_build_role}" \
+      --quiet >/dev/null
+  done
+  gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
     --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
-    --role "${cloud_build_role}" \
+    --role roles/storage.objectViewer \
     --quiet >/dev/null
-done
-gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
-  --member "serviceAccount:${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
-  --role roles/storage.objectViewer \
-  --quiet >/dev/null
+fi
 
 gcloud builds submit . \
   --config scripts/cicd/cloudbuild-staging-api.yaml \

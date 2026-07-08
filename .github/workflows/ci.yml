@@ -128,6 +128,7 @@ jobs:
           psql -h 127.0.0.1 -U zkvote -d zkvote -v ON_ERROR_STOP=1 \
             -v migrator_password=ci_migrator_password \
             -v app_password=ci_app_password \
+            -v readonly_password=ci_readonly_password \
             -f rust-backend/db/roles.sql
           psql -h 127.0.0.1 -U zkvote -d zkvote -v ON_ERROR_STOP=1 <<'SQL'
           BEGIN;
