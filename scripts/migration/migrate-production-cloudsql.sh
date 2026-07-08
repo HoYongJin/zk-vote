@@ -17,12 +17,15 @@ SQL_CONNECTION_NAME="${SQL_CONNECTION_NAME:-$(gcloud sql instances describe "${S
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(gcloud secrets versions access latest --secret zkvote-prod-postgres-password --project "${PROJECT_ID}")}"
 APP_DATABASE_URL="$(gcloud secrets versions access latest --secret zkvote-prod-database-url --project "${PROJECT_ID}")"
 MIGRATOR_DATABASE_URL="$(gcloud secrets versions access latest --secret zkvote-prod-migrator-database-url --project "${PROJECT_ID}")"
+READONLY_DATABASE_URL="$(gcloud secrets versions access latest --secret zkvote-prod-readonly-database-url --project "${PROJECT_ID}")"
 APP_PASSWORD="${APP_PASSWORD:-$(database_password_from_url "${APP_DATABASE_URL}")}"
 MIGRATOR_PASSWORD="${MIGRATOR_PASSWORD:-$(database_password_from_url "${MIGRATOR_DATABASE_URL}")}"
+READONLY_PASSWORD="${READONLY_PASSWORD:-$(database_password_from_url "${READONLY_DATABASE_URL}")}"
 
 SQL_CONNECTION_NAME="${SQL_CONNECTION_NAME}" \
 ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
 APP_PASSWORD="${APP_PASSWORD}" \
 MIGRATOR_PASSWORD="${MIGRATOR_PASSWORD}" \
+READONLY_PASSWORD="${READONLY_PASSWORD}" \
 SQL_DATABASE="${SQL_DATABASE}" \
   bash "${PROJECT_ROOT}/scripts/migration/migrate-cloudsql.sh"

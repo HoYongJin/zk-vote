@@ -29,6 +29,7 @@ SQL_STORAGE_SIZE="${SQL_STORAGE_SIZE:-20}"
 SQL_BACKUP_START_TIME="${SQL_BACKUP_START_TIME:-19:00}"
 SQL_APP_USER="${SQL_APP_USER:-zkvote_app}"
 SQL_MIGRATOR_USER="${SQL_MIGRATOR_USER:-zkvote_migrator}"
+SQL_READONLY_USER="${SQL_READONLY_USER:-zkvote_readonly}"
 REDIS_INSTANCE="${REDIS_INSTANCE:-zkvote-prod-redis}"
 REDIS_SIZE="${REDIS_SIZE:-1}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-prod-vpc}"
@@ -93,7 +94,7 @@ private services   : ${PRIVATE_SERVICE_RANGE} /${PRIVATE_SERVICE_PREFIX_LENGTH} 
 runtime SA         : ${SERVICE_ACCOUNT_EMAIL}
 Cloud Build SA     : ${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}
 Firebase deploy SA : ${FIREBASE_DEPLOY_SERVICE_ACCOUNT}
-secrets            : zkvote-prod-* only; staging secrets are not reused
+secrets            : zkvote-prod-* only; staging secrets are not reused; readback uses readonly DB
 
 Would create/link/enable project, seed GCS artifacts, create Cloud SQL/Redis/VPC,
 write production secrets, and prepare Firebase/GCIP via setup-production-firebase.ts.
@@ -287,6 +288,7 @@ fi
 ensure_secret zkvote-prod-postgres-password
 ensure_secret zkvote-prod-database-url
 ensure_secret zkvote-prod-migrator-database-url
+ensure_secret zkvote-prod-readonly-database-url
 ensure_secret zkvote-prod-redis-url
 ensure_secret zkvote-prod-auth-jwks-url
 ensure_secret zkvote-prod-sepolia-rpc-url
@@ -374,6 +376,13 @@ if [[ -z "${SQL_MIGRATOR_PASSWORD}" && "$(secret_has_enabled_version zkvote-prod
 fi
 SQL_MIGRATOR_PASSWORD="${SQL_MIGRATOR_PASSWORD:-$(random_password)}"
 
+SQL_READONLY_PASSWORD="${SQL_READONLY_PASSWORD:-${READONLY_PASSWORD:-}}"
+if [[ -z "${SQL_READONLY_PASSWORD}" && "$(secret_has_enabled_version zkvote-prod-readonly-database-url; echo $?)" == "0" ]]; then
+  existing_url="$(secret_value zkvote-prod-readonly-database-url)"
+  SQL_READONLY_PASSWORD="$(node -e 'const u=new URL(process.argv[1]); process.stdout.write(decodeURIComponent(u.password));' "${existing_url}")"
+fi
+SQL_READONLY_PASSWORD="${SQL_READONLY_PASSWORD:-$(random_password)}"
+
 if sql_user_exists "${SQL_APP_USER}"; then
   gcloud sql users set-password "${SQL_APP_USER}" \
     --instance "${SQL_INSTANCE}" \
@@ -402,9 +411,24 @@ else
     --quiet
 fi
 
+if sql_user_exists "${SQL_READONLY_USER}"; then
+  gcloud sql users set-password "${SQL_READONLY_USER}" \
+    --instance "${SQL_INSTANCE}" \
+    --project "${PROJECT_ID}" \
+    --password "${SQL_READONLY_PASSWORD}" \
+    --quiet
+else
+  gcloud sql users create "${SQL_READONLY_USER}" \
+    --instance "${SQL_INSTANCE}" \
+    --project "${PROJECT_ID}" \
+    --password "${SQL_READONLY_PASSWORD}" \
+    --quiet
+fi
+
 CONNECTION_NAME="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
 add_secret_version zkvote-prod-database-url "$(cloud_sql_database_url "${SQL_APP_USER}" "${SQL_APP_PASSWORD}" "${CONNECTION_NAME}")"
 add_secret_version zkvote-prod-migrator-database-url "$(cloud_sql_database_url "${SQL_MIGRATOR_USER}" "${SQL_MIGRATOR_PASSWORD}" "${CONNECTION_NAME}")"
+add_secret_version zkvote-prod-readonly-database-url "$(cloud_sql_database_url "${SQL_READONLY_USER}" "${SQL_READONLY_PASSWORD}" "${CONNECTION_NAME}")"
 
 if ! gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud redis instances create "${REDIS_INSTANCE}" \
@@ -470,6 +494,7 @@ for secret_name in \
   zkvote-prod-postgres-password \
   zkvote-prod-database-url \
   zkvote-prod-migrator-database-url \
+  zkvote-prod-readonly-database-url \
   zkvote-prod-redis-url \
   zkvote-prod-auth-jwks-url \
   zkvote-prod-sepolia-rpc-url \
@@ -496,6 +521,7 @@ Region: ${REGION}
 Bucket: gs://${BUCKET}
 Cloud SQL instance: ${SQL_INSTANCE}
 Cloud SQL connection: ${CONNECTION_NAME}
+Cloud SQL readonly user: ${SQL_READONLY_USER}
 Redis instance: ${REDIS_INSTANCE}
 Runtime service account: ${SERVICE_ACCOUNT_EMAIL}
 Firebase deploy service account: ${FIREBASE_DEPLOY_SERVICE_ACCOUNT}

@@ -167,6 +167,7 @@ async function main(): Promise<void> {
     const secretNames = [
         "zkvote-prod-database-url",
         "zkvote-prod-migrator-database-url",
+        "zkvote-prod-readonly-database-url",
         "zkvote-prod-redis-url",
         "zkvote-prod-auth-jwks-url",
         "zkvote-prod-sepolia-rpc-url",

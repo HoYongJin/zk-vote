@@ -18,6 +18,7 @@ SQL_INSTANCE="${SQL_INSTANCE:-zkvote-staging-pg}"
 SQL_DATABASE="${SQL_DATABASE:-zkvote}"
 SQL_APP_USER="${SQL_APP_USER:-${SQL_USER:-zkvote_app}}"
 SQL_MIGRATOR_USER="${SQL_MIGRATOR_USER:-zkvote_migrator}"
+SQL_READONLY_USER="${SQL_READONLY_USER:-zkvote_readonly}"
 REDIS_INSTANCE="${REDIS_INSTANCE:-zkvote-staging-redis}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-zkvote-staging-vpc}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-staging-api}"
@@ -90,7 +91,7 @@ Would idempotently ensure, in order:
    1. enable APIs              : ${required_apis[*]}
    2. GCS bucket + versioning + lifecycle, then seed-artifacts.sh
    3. runtime service account + least-privilege IAM
-   4. Cloud SQL + database '${SQL_DATABASE}' + app/migrator users (URL-safe passwords)
+   4. Cloud SQL + database '${SQL_DATABASE}' + app/migrator/readonly users (URL-safe passwords)
    5. ${redis_step}
    6. secrets w/ per-secret IAM: database-url, redis-url, auth-jwks-url (fixed GCIP endpoint),
       sepolia-rpc-url, relayer/owner private keys, artifact-bucket
@@ -130,6 +131,11 @@ secret_has_enabled_version() {
   [[ -n "${version}" ]]
 }
 
+secret_value() {
+  local secret_name="$1"
+  gcloud secrets versions access latest --secret "${secret_name}" --project "${PROJECT_ID}"
+}
+
 sql_user_exists() {
   local user_name="$1"
   local users
@@ -156,6 +162,15 @@ cloud_sql_database_url() {
   assert_database_url_safe_password "${password}" "${user_name} password"
   printf "postgres://%s:%s@localhost/%s?host=/cloudsql/%s" \
     "${user_name}" "${password}" "${SQL_DATABASE}" "${connection_name}"
+}
+
+assert_external_redis_url() {
+  local redis_url="$1"
+  local source_name="$2"
+  if [[ "${redis_url}" != rediss://* ]]; then
+    echo "Refusing ${source_name}: REDIS_BACKEND=external requires a TLS Redis URL beginning with rediss://." >&2
+    exit 1
+  fi
 }
 
 echo "Using project=${PROJECT_ID}, region=${REGION}"
@@ -264,12 +279,16 @@ fi
 
 SQL_APP_PASSWORD="${SQL_APP_PASSWORD:-${DB_PASSWORD:-}}"
 SQL_MIGRATOR_PASSWORD="${SQL_MIGRATOR_PASSWORD:-}"
+SQL_READONLY_PASSWORD="${SQL_READONLY_PASSWORD:-}"
 SQL_APP_USER_CREATED="false"
 SQL_MIGRATOR_USER_CREATED="false"
+SQL_READONLY_USER_CREATED="false"
 APP_DATABASE_URL_SECRET_WRITTEN="false"
 MIGRATOR_DATABASE_URL_SECRET_WRITTEN="false"
+READONLY_DATABASE_URL_SECRET_WRITTEN="false"
 ensure_secret zkvote-staging-database-url
 ensure_secret zkvote-staging-migrator-database-url
+ensure_secret zkvote-staging-readonly-database-url
 if sql_user_exists "${SQL_APP_USER}"; then
   if [[ -n "${SQL_APP_PASSWORD}" ]]; then
     gcloud sql users set-password "${SQL_APP_USER}" \
@@ -318,6 +337,30 @@ else
   MIGRATOR_DATABASE_URL_SECRET_WRITTEN="true"
 fi
 
+if sql_user_exists "${SQL_READONLY_USER}"; then
+  if [[ -n "${SQL_READONLY_PASSWORD}" ]]; then
+    gcloud sql users set-password "${SQL_READONLY_USER}" \
+      --instance "${SQL_INSTANCE}" \
+      --project "${PROJECT_ID}" \
+      --password "${SQL_READONLY_PASSWORD}" \
+      --quiet
+    CONNECTION_NAME_FOR_SECRET="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
+    add_secret_version zkvote-staging-readonly-database-url "$(cloud_sql_database_url "${SQL_READONLY_USER}" "${SQL_READONLY_PASSWORD}" "${CONNECTION_NAME_FOR_SECRET}")"
+    READONLY_DATABASE_URL_SECRET_WRITTEN="true"
+  fi
+else
+  SQL_READONLY_PASSWORD="${SQL_READONLY_PASSWORD:-$(openssl rand -hex 24)}"
+  gcloud sql users create "${SQL_READONLY_USER}" \
+    --instance "${SQL_INSTANCE}" \
+    --project "${PROJECT_ID}" \
+    --password "${SQL_READONLY_PASSWORD}" \
+    --quiet
+  SQL_READONLY_USER_CREATED="true"
+  CONNECTION_NAME_FOR_SECRET="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
+  add_secret_version zkvote-staging-readonly-database-url "$(cloud_sql_database_url "${SQL_READONLY_USER}" "${SQL_READONLY_PASSWORD}" "${CONNECTION_NAME_FOR_SECRET}")"
+  READONLY_DATABASE_URL_SECRET_WRITTEN="true"
+fi
+
 CONNECTION_NAME="$(gcloud sql instances describe "${SQL_INSTANCE}" --project "${PROJECT_ID}" --format='value(connectionName)')"
 
 if [[ "${REDIS_BACKEND}" == "memorystore" ]]; then
@@ -351,6 +394,7 @@ else
   # the secret below); the deploy must then OMIT --vpc-connector (REDIS_BACKEND=external).
   echo "REDIS_BACKEND=external — skipping Memorystore + VPC connector (deploy omits --vpc-connector)."
   REDIS_URL="${REDIS_URL:-}"
+  [[ -z "${REDIS_URL}" ]] || assert_external_redis_url "${REDIS_URL}" "REDIS_URL"
 fi
 
 if [[ -n "${RELAYER_PRIVATE_KEY:-}" && -n "${OWNER_PRIVATE_KEY:-}" && "${RELAYER_PRIVATE_KEY}" == "${OWNER_PRIVATE_KEY}" ]]; then
@@ -360,6 +404,7 @@ fi
 
 secrets=(
   zkvote-staging-database-url
+  zkvote-staging-readonly-database-url
   zkvote-staging-redis-url
   zkvote-staging-supabase-url
   zkvote-staging-auth-jwks-url
@@ -397,6 +442,14 @@ if [[ "${MIGRATOR_DATABASE_URL_SECRET_WRITTEN}" == "false" && "${SQL_MIGRATOR_US
     exit 1
   fi
 fi
+if [[ "${READONLY_DATABASE_URL_SECRET_WRITTEN}" == "false" && "${SQL_READONLY_USER_CREATED}" == "false" ]]; then
+  if secret_has_enabled_version zkvote-staging-readonly-database-url; then
+    echo "Keeping existing readonly database-url secret version for existing ${SQL_READONLY_USER}."
+  else
+    echo "Refusing to continue: ${SQL_READONLY_USER} already exists but zkvote-staging-readonly-database-url has no enabled version. Provide SQL_READONLY_PASSWORD so the script can write the readonly DATABASE_URL secret." >&2
+    exit 1
+  fi
+fi
 # memorystore: REDIS_URL is computed above (always non-empty). external: the
 # operator must supply REDIS_URL (or have a prior enabled secret version).
 if [[ -n "${REDIS_URL}" ]]; then
@@ -404,6 +457,9 @@ if [[ -n "${REDIS_URL}" ]]; then
 elif ! secret_has_enabled_version zkvote-staging-redis-url; then
   echo "Refusing to continue: REDIS_BACKEND=external but no REDIS_URL provided and zkvote-staging-redis-url has no enabled version. Export REDIS_URL (e.g. an Upstash rediss:// endpoint)." >&2
   exit 1
+else
+  existing_redis_url="$(secret_value zkvote-staging-redis-url)"
+  assert_external_redis_url "${existing_redis_url}" "existing zkvote-staging-redis-url"
 fi
 add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 
@@ -412,10 +468,10 @@ add_secret_version zkvote-staging-artifact-bucket "${BUCKET}"
 # The GCIP JWKS endpoint is a FIXED public constant (PROJECT_PLAN §18 + §8), not a
 # per-deploy secret value. Write it UNCONDITIONALLY so deploy's `--set-secrets
 # AUTH_JWKS_URL=zkvote-staging-auth-jwks-url:latest` always resolves to an
-# enabled version. An exported AUTH_JWKS_URL, or legacy SUPABASE_JWKS_URL, still
-# overrides it.
+# enabled GCIP value. Do not inherit AUTH_JWKS_URL/SUPABASE_JWKS_URL here: a
+# stale Supabase JWKS would silently break the GCIP trust boundary.
 GCIP_JWKS_DEFAULT="https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
-AUTH_JWKS_URL="${AUTH_JWKS_URL:-${SUPABASE_JWKS_URL:-$GCIP_JWKS_DEFAULT}}"
+AUTH_JWKS_URL="${GCIP_JWKS_DEFAULT}"
 if [[ -z "${AUTH_JWKS_URL// /}" ]]; then
   echo "Refusing: AUTH_JWKS_URL is empty (would mount an empty JWKS and break token verification)." >&2
   exit 1
@@ -443,5 +499,6 @@ echo "Bucket: gs://${BUCKET}"
 echo "Cloud SQL instance: ${SQL_INSTANCE}"
 echo "Cloud SQL runtime user: ${SQL_APP_USER}"
 echo "Cloud SQL migrator user: ${SQL_MIGRATOR_USER}"
+echo "Cloud SQL readonly user: ${SQL_READONLY_USER}"
 echo "Redis instance: ${REDIS_INSTANCE}"
 echo "Service account: ${SERVICE_ACCOUNT_EMAIL}"

@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { isAllowedExternalRedisUrl } from "./redisSecurity";
 
 const execFile = promisify(execFileCallback);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -29,12 +30,13 @@ const SECRET_FALLBACKS: Record<string, string> = {
     E2E_SUPERADMIN_PASSWORD: "zkvote-staging-e2e-superadmin-password",
     E2E_VOTER_EMAIL: "zkvote-staging-e2e-voter-email",
     E2E_VOTER_PASSWORD: "zkvote-staging-e2e-voter-password",
-    E2E_DATABASE_URL: "zkvote-staging-migrator-database-url",
+    E2E_DATABASE_URL: "zkvote-staging-readonly-database-url",
 };
 const POST_INFRA_SECRET_SUBSTITUTES: Record<string, string> = {
     ADMIN_PASSWORD: "zkvote-staging-postgres-password",
     MIGRATOR_PASSWORD: "zkvote-staging-migrator-database-url",
     APP_PASSWORD: "zkvote-staging-database-url",
+    READONLY_PASSWORD: "zkvote-staging-readonly-database-url",
 };
 
 type Status = "ok" | "warn" | "fail";
@@ -262,6 +264,7 @@ async function checkEnv(evidence: Evidence): Promise<void> {
         "ADMIN_PASSWORD",
         "MIGRATOR_PASSWORD",
         "APP_PASSWORD",
+        "READONLY_PASSWORD",
         "CORS_ALLOWED_ORIGINS",
         "OWNER_PRIVATE_KEY_SECRET",
         "STAGING_BASE_URL",
@@ -306,14 +309,23 @@ async function checkEnv(evidence: Evidence): Promise<void> {
     }
     if (optionalEnv("REDIS_BACKEND") === "external") {
         const redisUrl = optionalEnv("REDIS_URL");
-        const redisSecret = redisUrl ? true : await secretHasEnabledVersion(evidence.projectId, "zkvote-staging-redis-url");
+        const redisSecretName = "zkvote-staging-redis-url";
+        const redisSecret = redisUrl ? undefined : await secretValue(evidence.projectId, redisSecretName);
+        const resolvedRedisUrl = redisUrl ?? redisSecret;
         envChecks.REDIS_URL = redisUrl
-            ? { status: "set", source: "env" }
+            ? { status: "set", source: "env", scheme: isAllowedExternalRedisUrl(redisUrl) ? "rediss" : "invalid" }
             : redisSecret
-              ? { status: "set", source: "secret-manager", secret: "zkvote-staging-redis-url" }
+              ? {
+                    status: "set",
+                    source: "secret-manager",
+                    secret: redisSecretName,
+                    scheme: isAllowedExternalRedisUrl(redisSecret) ? "rediss" : "invalid",
+                }
               : { status: "missing", source: "env-or-secret" };
-        if (!redisUrl && !redisSecret) {
+        if (!resolvedRedisUrl) {
             addFinding(evidence, "fail", "REDIS_BACKEND=external requires REDIS_URL");
+        } else if (!isAllowedExternalRedisUrl(resolvedRedisUrl)) {
+            addFinding(evidence, "fail", "REDIS_BACKEND=external requires REDIS_URL/secret to begin with rediss://");
         }
     }
     for (const name of optionalButImportant) {

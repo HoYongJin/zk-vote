@@ -4,12 +4,14 @@ set -euo pipefail
 PROJECT_ID="${GCP_PROJECT_ID:-zkvote-staging-hhyyj}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-HoYongJin/zk-vote}"
 GITHUB_ENVIRONMENT="${GITHUB_ENVIRONMENT:-gcp-staging}"
+GITHUB_REF="${GITHUB_REF:-refs/heads/main}"
+GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF:-${GITHUB_REPOSITORY}/.github/workflows/deploy-frontend-firebase.yml@${GITHUB_REF}}"
 POOL_ID="${WIF_POOL_ID:-zkvote-github}"
 PROVIDER_ID="${WIF_PROVIDER_ID:-github}"
 SERVICE_ACCOUNT="${FIREBASE_DEPLOY_SERVICE_ACCOUNT:-zkvote-staging-firebase-admin@${PROJECT_ID}.iam.gserviceaccount.com}"
 LOCATION="global"
 
-echo "Using project=${PROJECT_ID}, repository=${GITHUB_REPOSITORY}, environment=${GITHUB_ENVIRONMENT}"
+echo "Using project=${PROJECT_ID}, repository=${GITHUB_REPOSITORY}, environment=${GITHUB_ENVIRONMENT}, ref=${GITHUB_REF}"
 
 gcloud services enable \
   iam.googleapis.com \
@@ -21,8 +23,8 @@ gcloud services enable \
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)")"
 PROVIDER_RESOURCE="projects/${PROJECT_NUMBER}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}"
 MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/attribute.repository/${GITHUB_REPOSITORY}"
-ATTRIBUTE_MAPPING="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment"
-ATTRIBUTE_CONDITION="assertion.repository == '${GITHUB_REPOSITORY}' && assertion.environment == '${GITHUB_ENVIRONMENT}'"
+ATTRIBUTE_MAPPING="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment,attribute.workflow_ref=assertion.job_workflow_ref"
+ATTRIBUTE_CONDITION="assertion.repository == '${GITHUB_REPOSITORY}' && assertion.environment == '${GITHUB_ENVIRONMENT}' && assertion.ref == '${GITHUB_REF}' && assertion.job_workflow_ref == '${GITHUB_WORKFLOW_REF}'"
 
 if ! gcloud iam workload-identity-pools describe "${POOL_ID}" \
   --project "${PROJECT_ID}" \
@@ -75,4 +77,6 @@ workload_identity_provider=${PROVIDER_RESOURCE}
 service_account=${SERVICE_ACCOUNT}
 repository=${GITHUB_REPOSITORY}
 required_environment=${GITHUB_ENVIRONMENT}
+required_ref=${GITHUB_REF}
+required_workflow_ref=${GITHUB_WORKFLOW_REF}
 EOF
