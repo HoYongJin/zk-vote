@@ -5,7 +5,7 @@
 #
 # Honors the AR-M3 least-privilege role model on Cloud SQL, working around two Cloud SQL
 # behaviours the local docker model never hits (both verified live on
-# zkvote-staging):
+# zkvote-prod-hhyyj):
 #   1. `gcloud sql users create` users join the cloudsqlsuperuser role AND get
 #      CREATEDB/CREATEROLE — db/roles.sql now strips both (a NO-OP locally).
 #   2. cloudsqlsuperuser (the `postgres` user) is NOT a real superuser, so to

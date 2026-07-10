@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Seeds the byte-exact zk proving artifacts into the GCS artifact bucket so the
-# staging/prod API (ARTIFACT_STORE=gcs) can stream wasm/zkey to the browser prover.
+# production API (ARTIFACT_STORE=gcs) can stream wasm/zkey to the browser prover.
 #
 # >>> Writes to a billable GCS bucket (negligible cost) — gated like the rest of
 #     the standup. Run under the OPERATOR's gcloud credentials, NOT the runtime
@@ -21,8 +21,8 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
 
-PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-staging-hhyyj}}"
-BUCKET="${BUCKET:-${ARTIFACT_BUCKET:-zkvote-staging-artifacts-${PROJECT_ID}}}"
+PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-zkvote-prod-hhyyj}}"
+BUCKET="${BUCKET:-${ARTIFACT_BUCKET:-zkvote-prod-artifacts-${PROJECT_ID}}}"
 BUILD_DIRS=("build_4_10" "build_6_10" "build_8_10" "build_10_10")
 ARTIFACT_FILES=(
   "circuit_final.zkey"
@@ -45,7 +45,7 @@ sha256_of() {
 }
 
 if ! gcloud storage buckets describe "gs://${BUCKET}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  echo "Refusing to seed: bucket gs://${BUCKET} does not exist (run zkvote-staging-setup.sh first)." >&2
+  echo "Refusing to seed: bucket gs://${BUCKET} does not exist (run zkvote-production-setup.sh first)." >&2
   exit 1
 fi
 

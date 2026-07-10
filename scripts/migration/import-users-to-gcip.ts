@@ -32,7 +32,7 @@
  *   SOURCE_DATABASE_URL  Supabase Postgres DSN with read access to the `auth`
  *                        schema (auth.users, auth.identities). REQUIRED — the
  *                        REST/JS admin API does NOT expose password hashes.
- *   GCIP_PROJECT_ID      Target GCIP/Firebase project id (e.g. zkvote-staging-hhyyj).
+ *   GCIP_PROJECT_ID      Target GCIP/Firebase project id (e.g. zkvote-prod-hhyyj).
  *   GOOGLE_APPLICATION_CREDENTIALS  Path to the Firebase Admin service-account
  *                        JSON (gitignored — never commit it).
  *   CONFIRM_COSTS=yes    Required for a real import (creates GCIP identities /
@@ -44,8 +44,8 @@
  *     node scripts/migration/import-users-to-gcip.js --dry-run
  *
  *   # real import (after explicit approval):
- *   CONFIRM_COSTS=yes GCIP_PROJECT_ID=zkvote-staging-hhyyj \
- *   GOOGLE_APPLICATION_CREDENTIALS=/secure/zkvote-staging-admin.json \
+ *   CONFIRM_COSTS=yes GCIP_PROJECT_ID=zkvote-prod-hhyyj \
+ *   GOOGLE_APPLICATION_CREDENTIALS=/secure/zkvote-prod-admin.json \
  *   SOURCE_DATABASE_URL=postgres://...supabase... \
  *     node scripts/migration/import-users-to-gcip.js
  */

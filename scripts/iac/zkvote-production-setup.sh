@@ -6,12 +6,16 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/../.." >/dev/null 2>&1 && pwd)
+EXTERNAL_CONFIRM_COSTS="${CONFIRM_COSTS:-}"
 
 if [[ -f "${PROJECT_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
   source "${PROJECT_ROOT}/.env"
   set +a
+fi
+if [[ -n "${EXTERNAL_CONFIRM_COSTS}" ]]; then
+  CONFIRM_COSTS="${EXTERNAL_CONFIRM_COSTS}"
 fi
 
 PRIMARY_PROJECT_ID="${GCP_PROJECT_ID:-zkvote-prod-hhyyj}"
@@ -43,9 +47,9 @@ SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-zkvote-prod-api}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
 CLOUD_BUILD_SERVICE_ACCOUNT="${CLOUD_BUILD_SERVICE_ACCOUNT:-zkvote-prod-cloud-build}"
 CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL="${CLOUD_BUILD_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
-FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME="${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME:-zkvote-prod-firebase-admin}"
-FIREBASE_DEPLOY_SERVICE_ACCOUNT_OVERRIDE="${FIREBASE_DEPLOY_SERVICE_ACCOUNT:-}"
-FIREBASE_DEPLOY_SERVICE_ACCOUNT="${FIREBASE_DEPLOY_SERVICE_ACCOUNT_OVERRIDE:-${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com}"
+CI_DEPLOY_SERVICE_ACCOUNT_NAME="${CI_DEPLOY_SERVICE_ACCOUNT_NAME:-zkvote-prod-ci-deployer}"
+CI_DEPLOY_SERVICE_ACCOUNT_OVERRIDE="${GCP_CI_DEPLOY_SERVICE_ACCOUNT:-}"
+CI_DEPLOY_SERVICE_ACCOUNT="${CI_DEPLOY_SERVICE_ACCOUNT_OVERRIDE:-${CI_DEPLOY_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com}"
 
 is_dry_run() {
   [[ -n "${DRY_RUN:-}" && "${DRY_RUN}" != "false" && "${DRY_RUN}" != "0" && "${DRY_RUN}" != "no" ]]
@@ -93,8 +97,8 @@ artifact bucket    : gs://${BUCKET}
 private services   : ${PRIVATE_SERVICE_RANGE} /${PRIVATE_SERVICE_PREFIX_LENGTH} on ${NETWORK}
 runtime SA         : ${SERVICE_ACCOUNT_EMAIL}
 Cloud Build SA     : ${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}
-Firebase deploy SA : ${FIREBASE_DEPLOY_SERVICE_ACCOUNT}
-secrets            : zkvote-prod-* only; staging secrets are not reused; readback uses readonly DB
+CI deploy SA       : ${CI_DEPLOY_SERVICE_ACCOUNT}
+secrets            : zkvote-prod-* only; readback uses readonly DB
 
 Would create/link/enable project, seed GCS artifacts, create Cloud SQL/Redis/VPC,
 write production secrets, and prepare Firebase/GCIP via setup-production-firebase.ts.
@@ -139,7 +143,7 @@ fi
 
 BUCKET="${ARTIFACT_BUCKET:-zkvote-prod-artifacts-${PROJECT_ID}}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com"
-FIREBASE_DEPLOY_SERVICE_ACCOUNT="${FIREBASE_DEPLOY_SERVICE_ACCOUNT_OVERRIDE:-${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com}"
+CI_DEPLOY_SERVICE_ACCOUNT="${CI_DEPLOY_SERVICE_ACCOUNT_OVERRIDE:-${CI_DEPLOY_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com}"
 
 echo "Using production project=${PROJECT_ID}, region=${REGION}"
 
@@ -237,7 +241,7 @@ gcloud storage buckets update "gs://${BUCKET}" \
 PROJECT_ID="${PROJECT_ID}" BUCKET="${BUCKET}" CONFIRM_COSTS="${CONFIRM_COSTS}" \
   bash "${PROJECT_ROOT}/scripts/cicd/seed-artifacts.sh"
 
-for account in "${SERVICE_ACCOUNT}" "${CLOUD_BUILD_SERVICE_ACCOUNT}" "${FIREBASE_DEPLOY_SERVICE_ACCOUNT_NAME}"; do
+for account in "${SERVICE_ACCOUNT}" "${CLOUD_BUILD_SERVICE_ACCOUNT}" "${CI_DEPLOY_SERVICE_ACCOUNT_NAME}"; do
   email="${account}@${PROJECT_ID}.iam.gserviceaccount.com"
   if ! gcloud iam service-accounts describe "${email}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
     gcloud iam service-accounts create "${account}" \
@@ -271,28 +275,37 @@ retry gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
 
 for role in \
   roles/firebasehosting.admin \
-  roles/firebase.admin \
+  roles/firebase.viewer \
   roles/serviceusage.serviceUsageConsumer \
   roles/run.admin \
   roles/cloudbuild.builds.editor \
-  roles/artifactregistry.writer \
-  roles/cloudsql.viewer \
-  roles/secretmanager.secretAccessor \
-  roles/iam.serviceAccountUser \
-  roles/storage.objectViewer; do
+  roles/cloudsql.viewer; do
   retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member "serviceAccount:${FIREBASE_DEPLOY_SERVICE_ACCOUNT}" \
+    --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
     --role "${role}" \
     --quiet >/dev/null
 done
+retry gcloud artifacts repositories add-iam-policy-binding "zkvote-prod" \
+  --location "${REGION}" \
+  --project "${PROJECT_ID}" \
+  --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
+  --role roles/artifactregistry.writer \
+  --quiet >/dev/null
 retry gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
-  --member "serviceAccount:${FIREBASE_DEPLOY_SERVICE_ACCOUNT}" \
+  --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
   --role roles/storage.objectAdmin \
   --quiet >/dev/null
+for service_account in "${SERVICE_ACCOUNT_EMAIL}" "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}"; do
+  retry gcloud iam service-accounts add-iam-policy-binding "${service_account}" \
+    --project "${PROJECT_ID}" \
+    --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
+    --role roles/iam.serviceAccountUser \
+    --quiet >/dev/null
+done
 
 ACTIVE_ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n1)"
 if [[ -n "${ACTIVE_ACCOUNT}" ]]; then
-  retry gcloud iam service-accounts add-iam-policy-binding "${FIREBASE_DEPLOY_SERVICE_ACCOUNT}" \
+  retry gcloud iam service-accounts add-iam-policy-binding "${CI_DEPLOY_SERVICE_ACCOUNT}" \
     --project "${PROJECT_ID}" \
     --member "user:${ACTIVE_ACCOUNT}" \
     --role roles/iam.serviceAccountTokenCreator \
@@ -524,9 +537,25 @@ done
 
 GCP_PROJECT_ID="${PROJECT_ID}" \
 GCP_REGION="${REGION}" \
-FIREBASE_DEPLOY_SERVICE_ACCOUNT="${FIREBASE_DEPLOY_SERVICE_ACCOUNT}" \
+GCP_CI_DEPLOY_SERVICE_ACCOUNT="${CI_DEPLOY_SERVICE_ACCOUNT}" \
 CONFIRM_COSTS="${CONFIRM_COSTS}" \
   node --import tsx "${PROJECT_ROOT}/scripts/iac/setup-production-firebase.ts"
+
+# GitHub Actions reads only the exact secrets needed to validate the chain,
+# deploy the API, and run the post-deploy browser smoke. Runtime secrets remain
+# mounted only to the Cloud Run runtime service account above.
+for secret_name in \
+  zkvote-prod-owner-private-key \
+  zkvote-prod-relayer-private-key \
+  zkvote-prod-sepolia-rpc-url \
+  zkvote-prod-e2e-voter-email \
+  zkvote-prod-e2e-voter-password; do
+  retry gcloud secrets add-iam-policy-binding "${secret_name}" \
+    --project "${PROJECT_ID}" \
+    --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
+    --role roles/secretmanager.secretAccessor \
+    --quiet >/dev/null
+done
 
 cat <<DONE
 Production infrastructure setup complete.
@@ -538,7 +567,7 @@ Cloud SQL connection: ${CONNECTION_NAME}
 Cloud SQL readonly user: ${SQL_READONLY_USER}
 Redis instance: ${REDIS_INSTANCE}
 Runtime service account: ${SERVICE_ACCOUNT_EMAIL}
-Firebase deploy service account: ${FIREBASE_DEPLOY_SERVICE_ACCOUNT}
+CI deploy service account: ${CI_DEPLOY_SERVICE_ACCOUNT}
 
 Next:
   GCP_PROJECT_ID=${PROJECT_ID} bash scripts/migration/migrate-production-cloudsql.sh

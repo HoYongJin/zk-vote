@@ -197,7 +197,7 @@ mod tests {
     fn parses_gcs_artifact_bucket() {
         let config = AppConfig::from_lookup(|name| match name {
             "ARTIFACT_STORE" => Some("gcs".to_string()),
-            "ARTIFACT_BUCKET" => Some(" zkvote-staging-artifacts ".to_string()),
+            "ARTIFACT_BUCKET" => Some(" zkvote-test-artifacts ".to_string()),
             "GCS_STORAGE_BASE_URL" => Some("http://127.0.0.1:9000".to_string()),
             "GCS_METADATA_TOKEN_URL" => Some("http://127.0.0.1:9000/token".to_string()),
             other => base(other),
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(config.artifact_store, "gcs");
         assert_eq!(
             config.artifact_bucket.as_deref(),
-            Some("zkvote-staging-artifacts")
+            Some("zkvote-test-artifacts")
         );
         assert_eq!(config.gcs_storage_base_url, "http://127.0.0.1:9000");
         assert_eq!(config.gcs_metadata_token_url, "http://127.0.0.1:9000/token");
@@ -218,7 +218,7 @@ mod tests {
         let config = AppConfig::from_lookup(|name| match name {
             "AUTH_JWKS_URL" => Some("https://idp.example/jwks".to_string()),
             "JWT_ISSUER" => Some("https://idp.example/issuer".to_string()),
-            "JWT_AUDIENCE" => Some("zkvote-staging".to_string()),
+            "JWT_AUDIENCE" => Some("zkvote-test".to_string()),
             "SUPABASE_JWKS_URL" => Some("https://legacy.example/jwks".to_string()),
             "SUPABASE_JWT_ISSUER" => Some("https://legacy.example/issuer".to_string()),
             "SUPABASE_JWT_AUDIENCE" => Some("legacy-audience".to_string()),
@@ -234,7 +234,7 @@ mod tests {
             config.jwt_issuer.as_deref(),
             Some("https://idp.example/issuer")
         );
-        assert_eq!(config.jwt_audience, "zkvote-staging");
+        assert_eq!(config.jwt_audience, "zkvote-test");
     }
 
     #[test]
@@ -321,14 +321,14 @@ mod tests {
     fn parses_multiple_cors_origins() {
         let config = AppConfig::from_lookup(|name| match name {
             "CORS_ALLOWED_ORIGINS" => {
-                Some("http://localhost:3000, https://staging.example.com".to_string())
+                Some("http://localhost:3000, https://preview.example.com".to_string())
             }
             other => base(other),
         })
         .unwrap();
         assert_eq!(
             config.cors_allowed_origins,
-            vec!["http://localhost:3000", "https://staging.example.com"]
+            vec!["http://localhost:3000", "https://preview.example.com"]
         );
     }
 }

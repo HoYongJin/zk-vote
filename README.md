@@ -18,21 +18,20 @@ React frontend
 The Rust backend implements the current route surface (22 routes, including the
 anonymous vote path and GOV-1 admin-governance routes). Phase 5–13 integration
 tests were verified green locally in the prior hardening pass (db repos + the
-real-proof vote pipeline E2E). Staging has since been stood up on GCP; production
-and cutover still need the gates in `docs/PRODUCTION_READINESS.md`.
+real-proof vote pipeline E2E). The active cloud deployment is production-only in
+`zkvote-prod-hhyyj`; deployment and verification gates are in `scripts/verify/`.
 
-**Frontend hosting:** Firebase Hosting (`firebase.json`,
-`.github/workflows/deploy-frontend-firebase.yml`), alongside the GCP backend. The
-legacy AWS S3/CloudFront CD has been removed. The deployed origin must be allowed
-in the Cloud Run `CORS_ALLOWED_ORIGINS`.
+**Deployment:** a successful CI run for `main` triggers
+`.github/workflows/deploy-production.yml`, which deploys both Cloud Run and
+Firebase Hosting in `zkvote-prod-hhyyj`. The deployed origin must be allowed in
+the Cloud Run `CORS_ALLOWED_ORIGINS`.
 
 ## Important Docs
 
 - `AGENTS.md`: repository map and working rules for agents.
 - `Architecture.md`: high-level source-backed architecture map.
 - `docs/E2E_FLOW.md`: current code-backed voting flow and route map.
-- `docs/RUNBOOK_PHASE18_STANDUP.md`: cost-gated GCP staging standup.
-- `docs/PRODUCTION_READINESS.md`: production readiness plan after staging/cutover.
+- `docs/PRODUCTION_READINESS.md`: production operational constraints and evidence.
 
 ## Local Infrastructure
 
@@ -137,4 +136,4 @@ cargo clippy --workspace -- -D warnings
   model, audit H2 / AR-H5).
 - Voter secrets are generated and kept client-side (localStorage); the server
   stores only the Poseidon commitment `H(secret)`.
-- Do not commit real secrets. Use `.env` locally and Secret Manager in staging.
+- Do not commit real secrets. Use `.env` locally and Secret Manager in production.

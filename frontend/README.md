@@ -68,8 +68,8 @@ Requires Node ≥ 20.19 (Vite 7).
 
 ## Hosting
 
-Primary target is **Firebase Hosting** (`../firebase.json`, deployed by
-`.github/workflows/deploy-frontend-firebase.yml`): SPA fallback to `index.html`, content-hashed
+Primary target is **Firebase Hosting** (`../firebase.json`, deployed together with the
+API by `.github/workflows/deploy-production.yml`): SPA fallback to `index.html`, content-hashed
 `/assets/**` cached immutably, `index.html` no-cache, and a security-header/CSP baseline tuned
 for the WASM proving worker + Firebase Auth popups. (The legacy AWS S3/CloudFront CD
 was removed.) The deployed origin must be allowed in the Cloud Run `CORS_ALLOWED_ORIGINS`.

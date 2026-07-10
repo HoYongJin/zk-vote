@@ -1,10 +1,10 @@
 #!/usr/bin/env tsx
 /**
- * Sync staging frontend build settings into the GitHub Actions environment.
+ * Sync production frontend build settings into the GitHub Actions environment.
  *
  * Source of truth:
  * - Firebase Management API for the Web app config
- * - Cloud Run for the staged API URL
+ * - Cloud Run for the production API URL
  *
  * Secret values are passed to `gh secret set` via stdin, not command-line args.
  */
@@ -142,7 +142,7 @@ async function firebaseWebConfig(token: string, projectId: string): Promise<Fire
         ? apps.find((candidate) => candidate.appId === configuredAppId)
         : apps.length === 1
           ? apps[0]
-          : apps.find((candidate) => candidate.displayName?.toLowerCase().includes("staging"));
+          : apps.find((candidate) => candidate.displayName?.toLowerCase().includes("production"));
     if (!app) {
         throw new Error(
             `Firebase project ${projectId} has ${apps.length} Web apps; set FIREBASE_WEB_APP_ID`
@@ -170,11 +170,11 @@ function redacted(value: string): Record<string, unknown> {
 
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
-    const projectId = env("GCP_PROJECT_ID", "zkvote-staging-hhyyj");
+    const projectId = env("GCP_PROJECT_ID", "zkvote-prod-hhyyj");
     const region = env("GCP_REGION", "asia-northeast3");
-    const service = env("CLOUD_RUN_SERVICE", "zkvote-staging-api");
+    const service = env("CLOUD_RUN_SERVICE", "zkvote-prod-api");
     const repo = env("GITHUB_REPOSITORY", "HoYongJin/zk-vote");
-    const environment = env("GITHUB_ENVIRONMENT", "gcp-staging");
+    const environment = env("GITHUB_ENVIRONMENT", "gcp-production");
     const evidencePath =
         optionalEnv("GITHUB_FRONTEND_ENV_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `github-frontend-env-${runId}.json`);
@@ -211,8 +211,8 @@ async function main(): Promise<void> {
         if (!serviceUrl) throw new Error(`Cloud Run service URL not found for ${service}`);
         const apiBaseUrl = `${serviceUrl.replace(/\/$/, "")}/api`;
         const wifProvider = optionalEnv("GCP_WORKLOAD_IDENTITY_PROVIDER");
-        const firebaseDeployServiceAccount = optionalEnv("GCP_FIREBASE_DEPLOY_SERVICE_ACCOUNT")
-            ?? optionalEnv("FIREBASE_DEPLOY_SERVICE_ACCOUNT");
+        const ciDeployServiceAccount = optionalEnv("GCP_CI_DEPLOY_SERVICE_ACCOUNT")
+            ?? `zkvote-prod-ci-deployer@${projectId}.iam.gserviceaccount.com`;
         const siteId = optionalEnv("FIREBASE_SITE_ID") ?? projectId;
         const values = {
             VITE_API_BASE_URL: apiBaseUrl,
@@ -222,9 +222,7 @@ async function main(): Promise<void> {
             GCP_PROJECT_ID: projectId,
             FIREBASE_SITE_ID: siteId,
             ...(wifProvider ? { GCP_WORKLOAD_IDENTITY_PROVIDER: wifProvider } : {}),
-            ...(firebaseDeployServiceAccount
-                ? { GCP_FIREBASE_DEPLOY_SERVICE_ACCOUNT: firebaseDeployServiceAccount }
-                : {}),
+            GCP_CI_DEPLOY_SERVICE_ACCOUNT: ciDeployServiceAccount,
         };
         await ensureGithubEnvironment(repo, environment);
         for (const [name, value] of Object.entries(values)) {
@@ -244,7 +242,7 @@ async function main(): Promise<void> {
             },
             deployIdentity: {
                 wifProvider: wifProvider ? "set" : "not-set",
-                firebaseDeployServiceAccount: firebaseDeployServiceAccount ? "set" : "not-set",
+                ciDeployServiceAccount: "set",
                 siteId,
             },
             githubSecrets: Object.fromEntries(

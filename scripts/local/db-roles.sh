@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Applies the least-privilege role model (AR-M3) to the local docker-compose
-# Postgres. Idempotent. Local-only default passwords; staging must inject real
+# Postgres. Idempotent. Local-only default passwords; production must inject real
 # ones via ZKVOTE_MIGRATOR_PASSWORD / ZKVOTE_APP_PASSWORD /
 # ZKVOTE_READONLY_PASSWORD.
 set -euo pipefail

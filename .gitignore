@@ -5,8 +5,8 @@ node_modules
 
 # Service-account / credential material — NEVER commit. The GCIP import script
 # (scripts/migration/import-users-to-gcip.js) and the Firebase Hosting CD
-# (.github/workflows/deploy-frontend-firebase.yml) instruct operators to supply a
-# Firebase Admin / deployer SA JSON; these patterns make that promise real so a
+# (.github/workflows/deploy-production.yml) uses Workload Identity Federation;
+# these patterns ensure a stray local Firebase Admin JSON cannot be staged by a
 # stray `git add .` cannot stage a live GCP credential.
 *-admin.json
 service-account*.json

@@ -675,8 +675,7 @@ mod tests {
                     .to_string(),
             ),
             zkey_uri: Some(
-                "gs://zkvote-staging-artifacts/circuits/votecheck/v1/circuit_final.zkey"
-                    .to_string(),
+                "gs://zkvote-test-artifacts/circuits/votecheck/v1/circuit_final.zkey".to_string(),
             ),
             manifest: Some(json!({
                 "wasmSha256": "a".repeat(64),
@@ -685,7 +684,7 @@ mod tests {
             })),
         };
 
-        let err = artifact_info_response(row, Some("zkvote-staging-artifacts"))
+        let err = artifact_info_response(row, Some("zkvote-test-artifacts"))
             .expect_err("wrong GCS bucket must fail closed");
 
         assert!(format!("{err:?}").contains("ARTIFACT_PATH_UNSAFE"));
@@ -720,11 +719,11 @@ mod tests {
             merkle_tree_depth: 5,
             num_candidates: 4,
             wasm_uri: Some(
-                "gs://zkvote-staging-artifacts/circuits/votecheck/v1/VoteCheck_temp_js/VoteCheck_temp.wasm"
+                "gs://zkvote-test-artifacts/circuits/votecheck/v1/VoteCheck_temp_js/VoteCheck_temp.wasm"
                     .to_string(),
             ),
             zkey_uri: Some(
-                "gs://zkvote-staging-artifacts/circuits/votecheck/v1/circuit_final.zkey"
+                "gs://zkvote-test-artifacts/circuits/votecheck/v1/circuit_final.zkey"
                     .to_string(),
             ),
             manifest: Some(json!({
@@ -734,7 +733,7 @@ mod tests {
             })),
         };
 
-        let response = artifact_info_response(row, Some("zkvote-staging-artifacts")).unwrap();
+        let response = artifact_info_response(row, Some("zkvote-test-artifacts")).unwrap();
 
         assert_eq!(
             response.wasm_path,

@@ -107,7 +107,7 @@ echo "-> Contributing to the ceremony..."
 # A single operator-run contribution lets whoever knows its entropy forge
 # proofs. Finalizing with a PUBLIC beacon value (e.g. a published drand round
 # or a future block hash, supplied as BEACON_HEX) removes that trust:
-# anyone can re-verify the transcript. Staging/production elections MUST be
+# anyone can re-verify the transcript. Production elections MUST be
 # generated with BEACON_HEX set; local dev may omit it, and the artifact
 # manifest records which mode produced the zkey.
 if [ -n "${BEACON_HEX:-}" ]; then
@@ -118,7 +118,7 @@ if [ -n "${BEACON_HEX:-}" ]; then
         "${BEACON_HEX}" 10 -n="Final beacon"
     echo "{\"finalizedWithBeacon\": true, \"beaconHex\": \"${BEACON_HEX}\"}" > "${BUILD_DIR}/ceremony.json"
 else
-    echo "-> WARNING: no BEACON_HEX set — dev-only zkey (NOT acceptable for staging/production, AR-H1)."
+    echo "-> WARNING: no BEACON_HEX set — dev-only zkey (NOT acceptable for production, AR-H1)."
     mv "${BUILD_DIR}/circuit_0001.zkey" "${BUILD_DIR}/circuit_final.zkey"
     echo '{"finalizedWithBeacon": false}' > "${BUILD_DIR}/ceremony.json"
 fi

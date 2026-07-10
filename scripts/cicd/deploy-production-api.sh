@@ -119,7 +119,7 @@ else
 fi
 
 gcloud builds submit . \
-  --config scripts/cicd/cloudbuild-staging-api.yaml \
+  --config scripts/cicd/cloudbuild-api.yaml \
   --substitutions "_IMAGE=${IMAGE}" \
   --service-account "projects/${PROJECT_ID}/serviceAccounts/${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}" \
   --project "${PROJECT_ID}"

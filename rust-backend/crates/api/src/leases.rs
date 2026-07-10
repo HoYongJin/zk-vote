@@ -11,7 +11,7 @@
 //! covers the VOTE path (on-chain nullifier uniqueness makes a redundant relay
 //! revert harmlessly); the DEPLOY path is the residual gap — two sends + receipt
 //! waits with no nullifier-style reconciliation, so a TTL-expiry nonce collision
-//! there can orphan a contract. AR-M5 is NOT enforced in code (the staging
+//! there can orphan a contract. AR-M5 is NOT enforced in code (the production
 //! deploy script defaults to max-instances=1 but is overridable); if AR-M5 is
 //! ever relaxed to multi-instance, real fencing tokens become load-bearing here.
 

@@ -582,7 +582,7 @@ pub async fn submit(
     // single-writer. The cross-instance Redis lease covers multi-instance; the
     // in-process mutex covers concurrency within one process. The deploy path
     // takes the same `chain-relayer:tx` lease, so the two never race the nonce.
-    // (Holding both through receipt-wait is acceptable locally; staging splits
+    // (Holding both through receipt-wait is acceptable locally; production splits
     // send/wait.)
     let relayer_lease = match leases::acquire(
         &state.redis,

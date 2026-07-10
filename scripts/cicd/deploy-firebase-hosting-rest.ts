@@ -184,11 +184,11 @@ async function uploadGzip(token: string, uploadUrl: string, hash: string, bytes:
 
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
-    const projectId = env("GCP_PROJECT_ID", "zkvote-staging-hhyyj");
+    const projectId = env("GCP_PROJECT_ID", "zkvote-prod-hhyyj");
     const siteId = env("FIREBASE_SITE_ID", projectId);
     const serviceAccount = env(
-        "FIREBASE_DEPLOY_SERVICE_ACCOUNT",
-        `zkvote-staging-firebase-admin@${projectId}.iam.gserviceaccount.com`
+        "GCP_CI_DEPLOY_SERVICE_ACCOUNT",
+        `zkvote-prod-ci-deployer@${projectId}.iam.gserviceaccount.com`
     );
     const publicDir = path.resolve(PROJECT_ROOT, optionalEnv("FIREBASE_PUBLIC_DIR") ?? "frontend/build");
     const firebaseJsonPath = path.resolve(PROJECT_ROOT, optionalEnv("FIREBASE_CONFIG_PATH") ?? "firebase.json");

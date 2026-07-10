@@ -90,7 +90,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE zkvote_migrator IN SCHEMA public
     GRANT SELECT ON TABLES TO zkvote_readonly;
 
 -- Cloud SQL hardening (NO-OP on local docker Postgres). Verified live on
--- zkvote-staging: `gcloud sql users create` grants every new user membership in
+-- zkvote-prod-hhyyj: `gcloud sql users create` grants every new user membership in
 -- the `cloudsqlsuperuser` role AND the CREATEDB/CREATEROLE attributes. That
 -- silently defeats AR-M3 — the app inherits CREATE on schema public + role/DB
 -- creation despite the explicit REVOKEs above. Where cloudsqlsuperuser exists,

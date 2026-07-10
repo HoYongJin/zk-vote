@@ -3,8 +3,8 @@
  * Render a Firebase Hosting config with environment-specific CSP origins.
  *
  * firebase.json stays a checked-in baseline. Deploy jobs render this file so
- * staging and production can keep exact connect-src origins without committing
- * a different firebase.json for each environment.
+ * production keeps exact connect-src origins without committing generated
+ * Firebase configuration.
  */
 import fs from "node:fs";
 import path from "node:path";

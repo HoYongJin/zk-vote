@@ -15,24 +15,29 @@ describe("security hardening regressions", function () {
         delete process.env.E2E_CLOUD_SQL_PROXY_BIN;
     });
 
-    it("pins GitHub WIF to repository, environment, main branch, and Firebase deploy workflow", function () {
-        const wif = read("scripts/iac/setup-github-wif.sh");
+    it("pins GitHub WIF to repository, production environment, main branch, and deploy workflow", function () {
+        const wif = read("scripts/iac/setup-production-github-wif.sh");
 
         expect(wif).toContain("attribute.workflow_ref=assertion.job_workflow_ref");
         expect(wif).toContain("assertion.repository == '${GITHUB_REPOSITORY}'");
         expect(wif).toContain("assertion.environment == '${GITHUB_ENVIRONMENT}'");
         expect(wif).toContain("assertion.ref == '${GITHUB_REF}'");
         expect(wif).toContain("assertion.job_workflow_ref == '${GITHUB_WORKFLOW_REF}'");
-        expect(wif).toContain(".github/workflows/deploy-frontend-firebase.yml@${GITHUB_REF}");
+        expect(wif).toContain(".github/workflows/deploy-production.yml@${GITHUB_REF}");
     });
 
-    it("uses fixed GCIP JWKS in staging setup instead of inherited Supabase/Auth overrides", function () {
-        const stagingSetup = read("scripts/iac/zkvote-staging-setup.sh");
+    it("uses the dedicated production GCIP JWKS secret", function () {
+        const deployment = read("scripts/cicd/deploy-production-api.sh");
 
-        expect(stagingSetup).toContain('AUTH_JWKS_URL="${GCIP_JWKS_DEFAULT}"');
-        expect(stagingSetup).not.toContain(
-            'AUTH_JWKS_URL="${AUTH_JWKS_URL:-${SUPABASE_JWKS_URL:-$GCIP_JWKS_DEFAULT}}"'
-        );
+        expect(deployment).toContain('AUTH_JWKS_URL=zkvote-prod-auth-jwks-url:latest');
+        expect(deployment).toContain('SUPABASE_JWKS_URL=zkvote-prod-auth-jwks-url:latest');
+    });
+
+    it("preserves explicit cost approval when loading the local env file", function () {
+        const productionSetup = read("scripts/iac/zkvote-production-setup.sh");
+
+        expect(productionSetup).toContain('EXTERNAL_CONFIRM_COSTS="${CONFIRM_COSTS:-}"');
+        expect(productionSetup).toContain('CONFIRM_COSTS="${EXTERNAL_CONFIRM_COSTS}"');
     });
 
     it("defaults production DB readback to the readonly database secret", function () {
@@ -54,19 +59,17 @@ describe("security hardening regressions", function () {
         expect(isAllowedExternalRedisUrl("redis://127.0.0.1:6379")).toBe(false);
         expect(isAllowedExternalRedisUrl("http://redis.example")).toBe(false);
 
-        const stagingSetup = read("scripts/iac/zkvote-staging-setup.sh");
-        const stagingPreflight = read("scripts/verify/preflight-staging.ts");
-        expect(stagingSetup).toContain("assert_external_redis_url");
-        expect(stagingPreflight).toContain("isAllowedExternalRedisUrl");
+        const productionSetup = read("scripts/iac/zkvote-production-setup.sh");
+        expect(productionSetup).toContain("STANDARD_HA");
     });
 
     it("does not use shared /tmp proxy defaults or pass Cloud SQL proxy OAuth tokens in argv", function () {
         const hardenedProxyScripts = [
-            "scripts/iac/bootstrap-staging-superadmin.sh",
+            "scripts/iac/bootstrap-production-superadmin.sh",
             "scripts/migration/migrate-cloudsql.sh",
-            "scripts/verify/e2e-staging.ts",
-            "scripts/verify/reconcile-staging-tally.ts",
-            "scripts/verify/verify-contracts-etherscan.ts",
+            "scripts/verify/e2e-production.ts",
+            "scripts/verify/reconcile-production-tally.ts",
+            "scripts/verify/verify-production-contracts-etherscan.ts",
         ];
 
         for (const script of hardenedProxyScripts) {
@@ -99,8 +102,8 @@ describe("security hardening regressions", function () {
         expect(cloudSqlMigration).not.toMatch(/-v\s+\w*password=/);
     });
 
-    it("verifies Firebase ID token claims before bootstrapping the staging superadmin", function () {
-        const bootstrap = read("scripts/iac/bootstrap-staging-superadmin.sh");
+    it("verifies Firebase ID token claims before bootstrapping the production superadmin", function () {
+        const bootstrap = read("scripts/iac/bootstrap-production-superadmin.sh");
 
         expect(bootstrap).toContain("claims.email_verified !== true");
         expect(bootstrap).toContain("claims.sub");

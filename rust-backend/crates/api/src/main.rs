@@ -168,7 +168,7 @@ mod tests {
                 "DATABASE_URL" => Some("postgres://localhost:1/unreachable".to_string()),
                 "REDIS_URL" => Some("redis://localhost:1".to_string()),
                 "ARTIFACT_STORE" => Some("gcs".to_string()),
-                "ARTIFACT_BUCKET" => Some("zkvote-staging-artifacts".to_string()),
+                "ARTIFACT_BUCKET" => Some("zkvote-test-artifacts".to_string()),
                 "GCS_STORAGE_BASE_URL" => Some(gcs_base_url.clone()),
                 "GCS_METADATA_TOKEN_URL" => Some(token_url.clone()),
                 _ => None,
@@ -216,7 +216,7 @@ mod tests {
             axum::extract::Path((bucket, object)): axum::extract::Path<(String, String)>,
             headers: axum::http::HeaderMap,
         ) -> impl axum::response::IntoResponse {
-            assert_eq!(bucket, "zkvote-staging-artifacts");
+            assert_eq!(bucket, "zkvote-test-artifacts");
             assert_eq!(
                 headers
                     .get(axum::http::header::AUTHORIZATION)

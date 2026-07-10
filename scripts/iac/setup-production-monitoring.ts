@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Idempotent Cloud Monitoring / Logging setup for the staging project.
+ * Idempotent Cloud Monitoring / Logging setup for the production project.
  *
  * The script does not read application secrets. It obtains a short-lived gcloud
  * access token in-process so live tokens are not placed on a curl command line.
@@ -37,8 +37,16 @@ interface Evidence {
 
 interface MetricDescriptor {
     type: string;
+    metricKind?: string;
+    valueType?: string;
     unit?: string;
     labels?: Array<{ key: string }>;
+}
+
+function boolGaugeAligner(descriptor: MetricDescriptor): string {
+    return descriptor.metricKind === "GAUGE" && descriptor.valueType === "BOOL"
+        ? "ALIGN_FRACTION_TRUE"
+        : "ALIGN_MEAN";
 }
 
 interface NotificationChannel {
@@ -239,7 +247,7 @@ async function ensureNotificationChannel(
         evidence.caveats.push("ALERT_EMAIL is missing and no active gcloud account was found; policies were created without notification channels.");
         return [];
     }
-    const displayName = "[staging] zk-vote primary email";
+    const displayName = "[production] zk-vote primary email";
     const channels = await listAll<NotificationChannel>(
         MONITORING_ORIGIN,
         token,
@@ -274,10 +282,10 @@ async function ensureNotificationChannel(
         {
             type: "email",
             displayName,
-            description: "Primary staging alert contact for zk-vote.",
+            description: "Primary production alert contact for zk-vote.",
             labels: { email_address: email },
             enabled: true,
-            userLabels: { app: "zkvote", env: "staging", managed_by: "codex" },
+            userLabels: { app: "zkvote", env: "production", managed_by: "codex" },
         }
     );
     evidence.checks.notificationChannel = {
@@ -326,7 +334,7 @@ async function ensureUptimeCheck(
     apiUrl: string,
     evidence: Evidence
 ): Promise<UptimeCheckConfig> {
-    const displayName = "[staging] zk-vote API /readyz";
+    const displayName = "[production] zk-vote API /readyz";
     const existing = (
         await listAll<UptimeCheckConfig>(
             MONITORING_ORIGIN,
@@ -365,7 +373,7 @@ async function ensureUptimeCheck(
             period: "60s",
             timeout: "10s",
             selectedRegions: ["ASIA_PACIFIC", "EUROPE", "USA"],
-            userLabels: { app: "zkvote", env: "staging", managed_by: "codex" },
+            userLabels: { app: "zkvote", env: "production", managed_by: "codex" },
         }
     );
     evidence.checks.uptimeCheck = { status: "created", name: created.name };
@@ -419,7 +427,7 @@ function alertPolicy(
             mimeType: "text/markdown",
         },
         enabled: true,
-        userLabels: { app: "zkvote", env: "staging", managed_by: "codex" },
+        userLabels: { app: "zkvote", env: "production", managed_by: "codex" },
     };
 }
 
@@ -433,7 +441,13 @@ async function maybePolicy(
     const descriptor = await metricDescriptor(token, projectId, metricType);
     const metricChecks = (evidence.checks.metricDescriptors as Record<string, unknown> | undefined) ?? {};
     metricChecks[metricType] = descriptor
-        ? { status: "exists", unit: descriptor.unit ?? "", labels: (descriptor.labels ?? []).map((label) => label.key) }
+        ? {
+            status: "exists",
+            metricKind: descriptor.metricKind ?? "",
+            valueType: descriptor.valueType ?? "",
+            unit: descriptor.unit ?? "",
+            labels: (descriptor.labels ?? []).map((label) => label.key),
+        }
         : { status: "missing" };
     evidence.checks.metricDescriptors = metricChecks;
     if (!descriptor) {
@@ -447,9 +461,9 @@ async function maybePolicy(
 
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
-    const projectId = env("GCP_PROJECT_ID", "zkvote-staging-hhyyj");
+    const projectId = env("GCP_PROJECT_ID", "zkvote-prod-hhyyj");
     const region = env("GCP_REGION", "asia-northeast3");
-    const service = env("CLOUD_RUN_SERVICE", "zkvote-staging-api");
+    const service = env("CLOUD_RUN_SERVICE", "zkvote-prod-api");
     const activeAccount = await runGcloud([
         "auth",
         "list",
@@ -458,7 +472,7 @@ async function main(): Promise<void> {
     ]).catch(() => "");
     const alertEmail = optionalEnv("ALERT_EMAIL") ?? activeAccount.split("\n").find(Boolean);
     const serviceUrl =
-        optionalEnv("STAGING_BASE_URL") ??
+        optionalEnv("PRODUCTION_BASE_URL") ??
         (await runGcloud([
             "run",
             "services",
@@ -473,7 +487,7 @@ async function main(): Promise<void> {
     const apiUrl = serviceUrl.replace(/\/$/, "");
     const evidencePath =
         optionalEnv("MONITORING_EVIDENCE_PATH") ??
-        path.join(PROJECT_ROOT, "docs", "evidence", `staging-monitoring-${runId}.json`);
+        path.join(PROJECT_ROOT, "docs", "evidence", `production-monitoring-${runId}.json`);
     const evidence: Evidence = {
         status: "running",
         runId,
@@ -498,12 +512,12 @@ async function main(): Promise<void> {
 
         const runResource = resourceFilter("cloud_run_revision", { service_name: service, location: region });
         const sqlResource = resourceFilter("cloudsql_database", {
-            database_id: `${projectId}:zkvote-staging-pg`,
+            database_id: `${projectId}:zkvote-prod-pg`,
         });
         const redisResource = resourceFilter("redis_instance", {
             project_id: projectId,
             region,
-            instance_id: "zkvote-staging-redis",
+            instance_id: "zkvote-prod-redis",
         });
 
         const logMetrics = [
@@ -542,8 +556,8 @@ async function main(): Promise<void> {
                     'metric.labels.response_code_class="5xx"',
                 ]);
                 return alertPolicy(
-                    "[staging] zk-vote Cloud Run 5xx",
-                    thresholdCondition("[staging] 5xx request rate > 0", filter, 0, {
+                    "[production] zk-vote Cloud Run 5xx",
+                    thresholdCondition("[production] 5xx request rate > 0", filter, 0, {
                         perSeriesAligner: "ALIGN_RATE",
                         crossSeriesReducer: "REDUCE_SUM",
                         groupByFields: ["resource.label.service_name"],
@@ -570,15 +584,15 @@ async function main(): Promise<void> {
                     `metric.labels.${responseLabel}="${responseValue}"`,
                 ]);
                 return alertPolicy(
-                    "[staging] zk-vote auth/4xx spike",
-                    thresholdCondition("[staging] auth-related request rate > 0.1/s", filter, 0.1, {
+                    "[production] zk-vote auth/4xx spike",
+                    thresholdCondition("[production] auth-related request rate > 0.1/s", filter, 0.1, {
                         duration: "300s",
                         perSeriesAligner: "ALIGN_RATE",
                         crossSeriesReducer: "REDUCE_SUM",
                         groupByFields: ["resource.label.service_name"],
                     }),
                     notificationChannels,
-                    "Staging API is seeing sustained 401s or 4xx responses. Treat this as a GCIP/audience/CORS regression signal, then confirm from logs."
+                    "Production API is seeing sustained 401s or 4xx responses. Treat this as a GCIP/audience/CORS regression signal, then confirm from logs."
                 );
             },
             evidence
@@ -591,9 +605,9 @@ async function main(): Promise<void> {
             (descriptor) => {
                 const threshold = descriptor.unit === "s" ? 2.5 : 2500;
                 return alertPolicy(
-                    "[staging] zk-vote Cloud Run p95 latency",
+                    "[production] zk-vote Cloud Run p95 latency",
                     thresholdCondition(
-                        `[staging] p95 latency > ${descriptor.unit === "s" ? "2.5s" : "2500ms"}`,
+                        `[production] p95 latency > ${descriptor.unit === "s" ? "2.5s" : "2500ms"}`,
                         metricFilter("run.googleapis.com/request_latencies", runResource),
                         threshold,
                         {
@@ -604,7 +618,7 @@ async function main(): Promise<void> {
                         }
                     ),
                     notificationChannels,
-                    "Cloud Run p95 latency is above the staging threshold. Check DB, Redis, RPC, and proof artifact serving."
+                    "Cloud Run p95 latency is above the production threshold. Check DB, Redis, RPC, and proof artifact serving."
                 );
             },
             evidence
@@ -614,11 +628,11 @@ async function main(): Promise<void> {
             token,
             projectId,
             "monitoring.googleapis.com/uptime_check/check_passed",
-            () =>
+            (descriptor) =>
                 alertPolicy(
-                    "[staging] zk-vote /readyz uptime",
+                    "[production] zk-vote /readyz uptime",
                     thresholdCondition(
-                        "[staging] uptime check failing",
+                        "[production] uptime check failing",
                         metricFilter("monitoring.googleapis.com/uptime_check/check_passed", [
                             'resource.type="uptime_url"',
                             `metric.labels.check_id="${uptimeCheckId}"`,
@@ -628,12 +642,12 @@ async function main(): Promise<void> {
                             comparison: "COMPARISON_LT",
                             duration: "300s",
                             alignmentPeriod: "300s",
-                            perSeriesAligner: "ALIGN_MEAN",
+                            perSeriesAligner: boolGaugeAligner(descriptor),
                             crossSeriesReducer: "REDUCE_MEAN",
                         }
                     ),
                     notificationChannels,
-                    "The public `/readyz` uptime check is failing for the staged API."
+                    "The public `/readyz` uptime check is failing for the production API."
                 ),
             evidence
         );
@@ -642,22 +656,22 @@ async function main(): Promise<void> {
             token,
             projectId,
             "cloudsql.googleapis.com/database/up",
-            () =>
+            (descriptor) =>
                 alertPolicy(
-                    "[staging] zk-vote Cloud SQL unavailable",
+                    "[production] zk-vote Cloud SQL unavailable",
                     thresholdCondition(
-                        "[staging] Cloud SQL up < 1",
+                        "[production] Cloud SQL up < 1",
                         metricFilter("cloudsql.googleapis.com/database/up", sqlResource),
                         1,
                         {
                             comparison: "COMPARISON_LT",
                             duration: "300s",
                             alignmentPeriod: "300s",
-                            perSeriesAligner: "ALIGN_MEAN",
+                            perSeriesAligner: boolGaugeAligner(descriptor),
                         }
                     ),
                     notificationChannels,
-                    "Cloud SQL is not reporting healthy for the staging database instance."
+                    "Cloud SQL is not reporting healthy for the production database instance."
                 ),
             evidence
         );
@@ -668,9 +682,9 @@ async function main(): Promise<void> {
             "cloudsql.googleapis.com/database/cpu/utilization",
             () =>
                 alertPolicy(
-                    "[staging] zk-vote Cloud SQL CPU high",
+                    "[production] zk-vote Cloud SQL CPU high",
                     thresholdCondition(
-                        "[staging] Cloud SQL CPU > 80%",
+                        "[production] Cloud SQL CPU > 80%",
                         metricFilter("cloudsql.googleapis.com/database/cpu/utilization", sqlResource),
                         0.8
                     ),
@@ -686,9 +700,9 @@ async function main(): Promise<void> {
             "cloudsql.googleapis.com/database/disk/utilization",
             () =>
                 alertPolicy(
-                    "[staging] zk-vote Cloud SQL disk high",
+                    "[production] zk-vote Cloud SQL disk high",
                     thresholdCondition(
-                        "[staging] Cloud SQL disk > 80%",
+                        "[production] Cloud SQL disk > 80%",
                         metricFilter("cloudsql.googleapis.com/database/disk/utilization", sqlResource),
                         0.8
                     ),
@@ -704,9 +718,9 @@ async function main(): Promise<void> {
             "redis.googleapis.com/stats/memory/usage_ratio",
             () =>
                 alertPolicy(
-                    "[staging] zk-vote Redis memory high",
+                    "[production] zk-vote Redis memory high",
                     thresholdCondition(
-                        "[staging] Redis memory > 80%",
+                        "[production] Redis memory > 80%",
                         metricFilter("redis.googleapis.com/stats/memory/usage_ratio", redisResource),
                         0.8
                     ),
@@ -722,9 +736,9 @@ async function main(): Promise<void> {
             "redis.googleapis.com/server/uptime",
             () =>
                 alertPolicy(
-                    "[staging] zk-vote Redis metric absent",
+                    "[production] zk-vote Redis metric absent",
                     absenceCondition(
-                        "[staging] Redis uptime metric absent",
+                        "[production] Redis uptime metric absent",
                         metricFilter("redis.googleapis.com/server/uptime", redisResource)
                     ),
                     notificationChannels,
@@ -738,9 +752,9 @@ async function main(): Promise<void> {
                 token,
                 projectId,
                 alertPolicy(
-                    `[staging] ${metric.displayName}`,
+                    `[production] ${metric.displayName}`,
                     thresholdCondition(
-                        `[staging] ${metric.displayName} > 0`,
+                        `[production] ${metric.displayName} > 0`,
                         metricFilter(`logging.googleapis.com/user/${metric.name}`, [
                             'resource.type="cloud_run_revision"',
                             `resource.labels.service_name="${service}"`,
@@ -762,7 +776,7 @@ async function main(): Promise<void> {
         evidence.status = "passed";
         evidence.finishedAt = new Date().toISOString();
         writeEvidence(evidencePath, evidence);
-        console.log(`staging monitoring setup PASSED; evidence=${evidencePath}`);
+        console.log(`production monitoring setup PASSED; evidence=${evidencePath}`);
     } catch (error) {
         evidence.status = "failed";
         evidence.finishedAt = new Date().toISOString();
