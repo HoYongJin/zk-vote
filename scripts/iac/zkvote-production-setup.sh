@@ -279,7 +279,8 @@ for role in \
   roles/serviceusage.serviceUsageConsumer \
   roles/run.admin \
   roles/cloudbuild.builds.editor \
-  roles/cloudsql.viewer; do
+  roles/cloudsql.viewer \
+  roles/redis.viewer; do
   retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
     --role "${role}" \
@@ -294,6 +295,10 @@ retry gcloud artifacts repositories add-iam-policy-binding "zkvote-prod" \
 retry gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
   --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
   --role roles/storage.objectAdmin \
+  --quiet >/dev/null
+retry gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
+  --role roles/storage.objectViewer \
   --quiet >/dev/null
 for service_account in "${SERVICE_ACCOUNT_EMAIL}" "${CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL}"; do
   retry gcloud iam service-accounts add-iam-policy-binding "${service_account}" \
@@ -541,9 +546,30 @@ GCP_CI_DEPLOY_SERVICE_ACCOUNT="${CI_DEPLOY_SERVICE_ACCOUNT}" \
 CONFIRM_COSTS="${CONFIRM_COSTS}" \
   node --import tsx "${PROJECT_ROOT}/scripts/iac/setup-production-firebase.ts"
 
-# GitHub Actions reads only the exact secrets needed to validate the chain,
-# deploy the API, and run the post-deploy browser smoke. Runtime secrets remain
-# mounted only to the Cloud Run runtime service account above.
+# GitHub Actions receives secret metadata only for the exact preflight surface.
+# It receives secret values only for chain validation, deploy key-separation, and
+# browser smoke. Runtime secrets remain mounted only to the Cloud Run service account.
+for secret_name in \
+  zkvote-prod-database-url \
+  zkvote-prod-migrator-database-url \
+  zkvote-prod-readonly-database-url \
+  zkvote-prod-redis-url \
+  zkvote-prod-auth-jwks-url \
+  zkvote-prod-sepolia-rpc-url \
+  zkvote-prod-owner-private-key \
+  zkvote-prod-relayer-private-key \
+  zkvote-prod-artifact-bucket \
+  zkvote-prod-firebase-web-api-key \
+  zkvote-prod-e2e-superadmin-email \
+  zkvote-prod-e2e-superadmin-password \
+  zkvote-prod-e2e-voter-email \
+  zkvote-prod-e2e-voter-password; do
+  retry gcloud secrets add-iam-policy-binding "${secret_name}" \
+    --project "${PROJECT_ID}" \
+    --member "serviceAccount:${CI_DEPLOY_SERVICE_ACCOUNT}" \
+    --role roles/secretmanager.viewer \
+    --quiet >/dev/null
+done
 for secret_name in \
   zkvote-prod-owner-private-key \
   zkvote-prod-relayer-private-key \
