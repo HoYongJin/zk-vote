@@ -304,7 +304,7 @@ async function verifyCloudRunScale(projectId: string, region: string, service: s
 }
 
 async function readDbEvidence(databaseUrl: string, electionId: string, nullifier: string): Promise<Json> {
-    const attempts = Number(optionalEnv("E2E_DB_READBACK_ATTEMPTS") ?? "3");
+    const attempts = Number(optionalEnv("E2E_DB_READBACK_ATTEMPTS") ?? "6");
     assert(Number.isInteger(attempts) && attempts >= 1, "E2E_DB_READBACK_ATTEMPTS must be a positive integer");
     let lastError: unknown;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -331,10 +331,15 @@ async function readDbEvidence(databaseUrl: string, electionId: string, nullifier
         } catch (error) {
             lastError = error;
             const code = (error as { code?: string }).code;
-            if (!(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"] as string[]).includes(code ?? "") || attempt === attempts) {
+            const retryable =
+                (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"] as string[]).includes(code ?? "") ||
+                /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection terminated unexpectedly)\b/i.test(
+                    String(error)
+                );
+            if (!retryable || attempt === attempts) {
                 throw error;
             }
-            await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+            await new Promise((resolve) => setTimeout(resolve, Math.min(5_000, 500 * 2 ** (attempt - 1))));
         } finally {
             await client.end().catch(() => undefined);
         }

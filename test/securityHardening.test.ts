@@ -45,6 +45,8 @@ describe("security hardening regressions", function () {
 
         expect(e2e).toContain('E2E_DB_READBACK_ATTEMPTS');
         expect(e2e).toContain('"ECONNRESET"');
+        expect(e2e).toContain("connection terminated unexpectedly");
+        expect(e2e).toContain('?? "6"');
         expect(e2e).not.toContain("response: submit.json,\n            nullifier,");
     });
 
