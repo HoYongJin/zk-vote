@@ -304,29 +304,42 @@ async function verifyCloudRunScale(projectId: string, region: string, service: s
 }
 
 async function readDbEvidence(databaseUrl: string, electionId: string, nullifier: string): Promise<Json> {
-    const client = new Client({
-        connectionString: databaseUrl,
-        ssl: process.env.E2E_DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
-    });
-    await client.connect();
-    try {
-        const election = await client.query(
-            "SELECT id::text, state, completed, contract_address, verifier_address, merkle_root::text, voting_end_time FROM elections WHERE id = $1",
-            [electionId]
-        );
-        const submissions = await client.query(
-            "SELECT status, tx_hash FROM vote_submissions WHERE election_id = $1 AND nullifier_hash = $2",
-            [electionId, nullifier]
-        );
-        assert(election.rowCount === 1, "DB readback did not find the test election");
-        assert(submissions.rowCount === 1, "DB readback did not find exactly one vote submission");
-        return {
-            election: election.rows[0] as Json,
-            voteSubmission: submissions.rows[0] as Json,
-        };
-    } finally {
-        await client.end();
+    const attempts = Number(optionalEnv("E2E_DB_READBACK_ATTEMPTS") ?? "3");
+    assert(Number.isInteger(attempts) && attempts >= 1, "E2E_DB_READBACK_ATTEMPTS must be a positive integer");
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const client = new Client({
+            connectionString: databaseUrl,
+            ssl: process.env.E2E_DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
+        });
+        try {
+            await client.connect();
+            const election = await client.query(
+                "SELECT id::text, state, completed, contract_address, verifier_address, merkle_root::text, voting_end_time FROM elections WHERE id = $1",
+                [electionId]
+            );
+            const submissions = await client.query(
+                "SELECT status, tx_hash FROM vote_submissions WHERE election_id = $1 AND nullifier_hash = $2",
+                [electionId, nullifier]
+            );
+            assert(election.rowCount === 1, "DB readback did not find the test election");
+            assert(submissions.rowCount === 1, "DB readback did not find exactly one vote submission");
+            return {
+                election: election.rows[0] as Json,
+                voteSubmission: submissions.rows[0] as Json,
+            };
+        } catch (error) {
+            lastError = error;
+            const code = (error as { code?: string }).code;
+            if (!(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"] as string[]).includes(code ?? "") || attempt === attempts) {
+                throw error;
+            }
+            await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+        } finally {
+            await client.end().catch(() => undefined);
+        }
     }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function cloudSqlInstanceFromDatabaseUrl(databaseUrl: string): string | undefined {
@@ -791,7 +804,6 @@ async function main(): Promise<void> {
         evidence.checks.submit = {
             anonymousAuthorizationHeader: "omitted",
             response: submit.json,
-            nullifier,
         };
 
         const replay = await apiRequest<Json>(

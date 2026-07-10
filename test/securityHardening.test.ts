@@ -40,6 +40,14 @@ describe("security hardening regressions", function () {
         expect(productionSetup).toContain('CONFIRM_COSTS="${EXTERNAL_CONFIRM_COSTS}"');
     });
 
+    it("keeps the production E2E nullifier out of persisted evidence and retries proxy resets", function () {
+        const e2e = read("scripts/verify/e2e-production.ts");
+
+        expect(e2e).toContain('E2E_DB_READBACK_ATTEMPTS');
+        expect(e2e).toContain('"ECONNRESET"');
+        expect(e2e).not.toContain("response: submit.json,\n            nullifier,");
+    });
+
     it("defaults production DB readback to the readonly database secret", function () {
         const productionReadbackScripts = [
             "scripts/verify/e2e-production.ts",
