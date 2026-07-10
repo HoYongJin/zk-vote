@@ -3,7 +3,7 @@ steps:
     args:
       - build
       - -f
-      - scripts/verify/cloud-run-db-dump.Dockerfile
+      - infra/gcp/production-migrate.Dockerfile
       - -t
       - ${_IMAGE}
       - .

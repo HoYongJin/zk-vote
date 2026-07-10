@@ -14,7 +14,7 @@ tools. Runtime code must not depend on these paths.
 - `iac/setup-production-monitoring.ts`: configures production Monitoring and
   Logging resources.
 - `iac/bootstrap-production-superadmin.sh`: one-time synthetic superadmin
-  bootstrap for E2E.
+  bootstrap through an ephemeral private-network Cloud Run Job.
 
 ## cicd
 
@@ -27,7 +27,8 @@ tools. Runtime code must not depend on these paths.
   local operator use.
 - `cicd/render-firebase-config.ts`: renders production CSP from the deployed
   API and Firebase Auth origins.
-- `cicd/cloudbuild-api.yaml`: Cloud Build image recipe.
+- `cicd/cloudbuild-api.yaml`: Cloud Build API image recipe.
+- `cicd/cloudbuild-production-migrate.yaml`: immutable migration-job image recipe.
 
 ## verify
 
@@ -45,5 +46,5 @@ tools. Runtime code must not depend on these paths.
 
 ## migration and local
 
-`migration/` is retained for Cloud SQL migration and GCIP import recovery.
-`local/` contains local developer bootstrap and DB verification only.
+`migration/` runs Cloud SQL migrations through an ephemeral private-network Job;
+it never requires a workstation database tunnel. `local/` contains local developer bootstrap and DB verification only.

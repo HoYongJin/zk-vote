@@ -1,7 +1,6 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { prepareCloudSqlProxyBinary } from "../scripts/verify/cloudSqlProxy";
 import { isAllowedExternalRedisUrl } from "../scripts/verify/redisSecurity";
 
 const PROJECT_ROOT = process.cwd();
@@ -11,10 +10,6 @@ function read(relPath: string): string {
 }
 
 describe("security hardening regressions", function () {
-    afterEach(function () {
-        delete process.env.E2E_CLOUD_SQL_PROXY_BIN;
-    });
-
     it("pins GitHub WIF to repository, production environment, main branch, and deploy workflow", function () {
         const wif = read("scripts/iac/setup-production-github-wif.sh");
 
@@ -91,44 +86,41 @@ describe("security hardening regressions", function () {
         expect(productionSetup).toContain("STANDARD_HA");
     });
 
-    it("does not use shared /tmp proxy defaults or pass Cloud SQL proxy OAuth tokens in argv", function () {
-        const hardenedProxyScripts = [
+    it("runs every production database operation inside Cloud Run jobs", function () {
+        const productionDatabaseScripts = [
             "scripts/iac/bootstrap-production-superadmin.sh",
-            "scripts/migration/migrate-cloudsql.sh",
+            "scripts/migration/migrate-production-cloudsql.sh",
             "scripts/verify/e2e-production.ts",
             "scripts/verify/reconcile-production-tally.ts",
             "scripts/verify/verify-production-contracts-etherscan.ts",
         ];
 
-        for (const script of hardenedProxyScripts) {
+        for (const script of productionDatabaseScripts) {
             const source = read(script);
-            expect(source).not.toContain("/tmp/cloud-sql-proxy");
-            expect(source).not.toContain("print-access-token");
-            expect(source).not.toContain("--token");
+            expect(source).not.toContain("cloud-sql-proxy");
         }
-
-        const helper = read("scripts/lib/cloud-sql-proxy.sh");
-        expect(helper).toContain("mktemp -d");
-        expect(helper).toContain("Refusing PROXY_BIN under a shared temporary directory");
-        expect(helper).not.toContain("print-access-token");
-        expect(helper).not.toContain("--token");
-
-        process.env.E2E_CLOUD_SQL_PROXY_BIN = "/tmp/cloud-sql-proxy";
-        expect(() => prepareCloudSqlProxyBinary()).toThrow(/shared temporary directory/);
+        const migration = read("scripts/migration/migrate-production-cloudsql.sh");
+        expect(migration).toContain("gcloud run jobs deploy");
+        expect(migration).toContain("gcloud run jobs delete");
+        expect(migration).toContain("--set-cloudsql-instances");
+        expect(migration).toContain("dirty working tree");
+        expect(read("infra/gcp/production-migrate.Dockerfile")).toContain("@sha256:");
     });
 
-    it("keeps role passwords off psql argv and adds a readonly DB role", function () {
+    it("keeps role passwords off psql argv and keeps recovery jobs from parsing database URLs", function () {
         const rolesSql = read("rust-backend/db/roles.sql");
         const localRoles = read("scripts/local/db-roles.sh");
-        const cloudSqlMigration = read("scripts/migration/migrate-cloudsql.sh");
+        const migrationEntrypoint = read("infra/gcp/production-migrate-entrypoint.sh");
         const productionGrantRepair = read("scripts/iac/apply-production-readonly-grants.sh");
 
         expect(rolesSql).toContain("zkvote_readonly");
         expect(rolesSql).toContain("GRANT SELECT ON");
         expect(localRoles).toContain("set_config('zkvote.readonly_password'");
-        expect(cloudSqlMigration).toContain("set_config('zkvote.readonly_password'");
+        expect(migrationEntrypoint).toContain("missing expected Cloud SQL roles");
+        expect(migrationEntrypoint).not.toContain("database_password_from_url");
+        expect(migrationEntrypoint).not.toContain("MIGRATOR_PASSWORD");
         expect(localRoles).not.toMatch(/-v\s+\w*password=/);
-        expect(cloudSqlMigration).not.toMatch(/-v\s+\w*password=/);
+        expect(migrationEntrypoint).not.toMatch(/-v\s+\w*password=/);
         expect(productionGrantRepair).toContain("zkvote-prod-postgres-password:latest");
         expect(productionGrantRepair).toContain("gcloud run jobs delete");
         expect(productionGrantRepair).toContain("gcloud secrets remove-iam-policy-binding");
@@ -139,12 +131,15 @@ describe("security hardening regressions", function () {
 
     it("verifies Firebase ID token claims before bootstrapping the production superadmin", function () {
         const bootstrap = read("scripts/iac/bootstrap-production-superadmin.sh");
+        const entrypoint = read("infra/gcp/production-superadmin-bootstrap-entrypoint.sh");
 
         expect(bootstrap).toContain("claims.email_verified !== true");
         expect(bootstrap).toContain("claims.sub");
         expect(bootstrap).toContain("claims.email");
         expect(bootstrap).toContain("claims.iss");
         expect(bootstrap).toContain("claims.aud");
-        expect(bootstrap).toContain("email_verified, last_seen_at");
+        expect(bootstrap).toContain("--data-binary @-");
+        expect(bootstrap).toContain("gcloud run jobs delete");
+        expect(entrypoint).toContain("email_verified, last_seen_at");
     });
 });

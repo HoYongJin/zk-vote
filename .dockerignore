@@ -9,5 +9,7 @@
 !out/**
 !scripts/
 !scripts/verify/
-!scripts/verify/cloud-run-db-dump.Dockerfile
-!scripts/verify/cloud-run-db-dump.sh
+!infra/
+!infra/gcp/
+!infra/gcp/production-migrate.Dockerfile
+!infra/gcp/production-migrate-entrypoint.sh

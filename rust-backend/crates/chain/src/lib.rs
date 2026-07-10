@@ -325,8 +325,8 @@ impl<P: Provider + Clone> ElectionOnChain<P> {
 
 /// Relays a vote transaction. The caller MUST serialize calls per relayer
 /// wallet (AR-M5): concurrent sends from one wallet race on nonces. A
-/// preflight `eth_call` classifies permanent rejections before any gas is
-/// spent or the single-use ticket is consumed.
+/// The API route owns submission-ticket lifecycle. This helper only sends the
+/// already-admitted relay transaction after independently checking chain id.
 pub async fn submit_tally(
     config: &ChainConfig,
     expected_chain_id: u64,
@@ -356,8 +356,8 @@ pub async fn submit_tally(
     Ok(format!("{:#x}", receipt.transaction_hash))
 }
 
-/// Preflight-only variant of submitTally — used to validate before the
-/// single-use ticket is consumed.
+/// Preflight-only variant of submitTally. The API route decides whether a
+/// claimed ticket is restored after this check.
 pub async fn preflight_submit_tally(
     config: &ChainConfig,
     expected_chain_id: u64,

@@ -3,8 +3,8 @@
  * Full production E2E gate for the deployed zk-vote Cloud Run API.
  *
  * This script intentionally drives the public API for the election/vote flow.
- * Direct DB access is used only for readback evidence. The first superadmin
- * bootstrap is handled by bootstrap-production-superadmin.sh.
+ * Readback evidence is queried by a fixed readonly Cloud Run Job. The first
+ * superadmin bootstrap also runs as an isolated production-side job.
  */
 import { execFile as execFileCallback } from "node:child_process";
 import crypto from "node:crypto";
