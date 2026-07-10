@@ -93,6 +93,7 @@ region             : ${REGION}
 Cloud SQL          : ${SQL_INSTANCE} POSTGRES_16 ENTERPRISE REGIONAL ${SQL_TIER} SSD ${SQL_STORAGE_SIZE}GB backup=${SQL_BACKUP_START_TIME} PITR deletion-protection
 Redis              : ${REDIS_INSTANCE} STANDARD_HA Redis 7 ${REDIS_SIZE}GB
 Cloud Run API      : zkvote-prod-api min=1 max=1
+Cloud Run DB check : zkvote-prod-db-readback readonly, production-side only
 artifact bucket    : gs://${BUCKET}
 private services   : ${PRIVATE_SERVICE_RANGE} /${PRIVATE_SERVICE_PREFIX_LENGTH} on ${NETWORK}
 runtime SA         : ${SERVICE_ACCOUNT_EMAIL}
@@ -523,9 +524,7 @@ fi
 unset owner_value relayer_value
 
 for secret_name in \
-  zkvote-prod-postgres-password \
   zkvote-prod-database-url \
-  zkvote-prod-migrator-database-url \
   zkvote-prod-readonly-database-url \
   zkvote-prod-redis-url \
   zkvote-prod-auth-jwks-url \
@@ -539,6 +538,23 @@ for secret_name in \
     --role roles/secretmanager.secretAccessor \
     --quiet >/dev/null
 done
+
+# The API identity needs its application URL and the read-only verifier URL,
+# but it must never retain bootstrap-admin or migrator credentials.
+for secret_name in zkvote-prod-postgres-password zkvote-prod-migrator-database-url; do
+  gcloud secrets remove-iam-policy-binding "${secret_name}" \
+    --project "${PROJECT_ID}" \
+    --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+    --role roles/secretmanager.secretAccessor \
+    --quiet >/dev/null 2>&1 || true
+done
+
+GCP_PROJECT_ID="${PROJECT_ID}" \
+GCP_REGION="${REGION}" \
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT}" \
+VPC_CONNECTOR="${VPC_CONNECTOR}" \
+CONFIRM_COSTS="${CONFIRM_COSTS}" \
+  bash "${PROJECT_ROOT}/scripts/iac/deploy-production-db-readback-job.sh"
 
 GCP_PROJECT_ID="${PROJECT_ID}" \
 GCP_REGION="${REGION}" \

@@ -6,21 +6,19 @@
  * Direct DB access is used only for readback evidence. The first superadmin
  * bootstrap is handled by bootstrap-production-superadmin.sh.
  */
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { Client } from "pg";
 import {
     formatProofForSolidity,
     fullProve,
     poseidonHash,
     verifyProof,
 } from "../../test/helpers/zkProof";
-import { prepareCloudSqlProxyBinary } from "./cloudSqlProxy";
+import { runProductionDbReadbackJob } from "./productionDbReadbackJob";
 
 const execFile = promisify(execFileCallback);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +33,6 @@ const DEFAULT_SECRET_NAMES = {
     voterEmail: "zkvote-prod-e2e-voter-email",
     voterPassword: "zkvote-prod-e2e-voter-password",
     sepoliaRpcUrl: "zkvote-prod-sepolia-rpc-url",
-    databaseUrl: "zkvote-prod-readonly-database-url",
 } as const;
 const CHAIN_ID = "11155111";
 const CIRCUIT_DEPTH = 4;
@@ -71,12 +68,6 @@ interface Evidence {
     checks: Record<string, unknown>;
     caveats: string[];
     failure?: string;
-}
-
-interface PreparedDatabaseUrl {
-    url: string;
-    connection: Json;
-    cleanup?: () => Promise<void>;
 }
 
 function env(name: string, fallback?: string): string {
@@ -303,171 +294,6 @@ async function verifyCloudRunScale(projectId: string, region: string, service: s
     return maxScale;
 }
 
-async function readDbEvidence(databaseUrl: string, electionId: string, nullifier: string): Promise<Json> {
-    const attempts = Number(optionalEnv("E2E_DB_READBACK_ATTEMPTS") ?? "6");
-    assert(Number.isInteger(attempts) && attempts >= 1, "E2E_DB_READBACK_ATTEMPTS must be a positive integer");
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        const client = new Client({
-            connectionString: databaseUrl,
-            ssl: process.env.E2E_DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
-        });
-        try {
-            await client.connect();
-            const election = await client.query(
-                "SELECT id::text, state, completed, contract_address, verifier_address, merkle_root::text, voting_end_time FROM elections WHERE id = $1",
-                [electionId]
-            );
-            const submissions = await client.query(
-                "SELECT status, tx_hash FROM vote_submissions WHERE election_id = $1 AND nullifier_hash = $2",
-                [electionId, nullifier]
-            );
-            assert(election.rowCount === 1, "DB readback did not find the test election");
-            assert(submissions.rowCount === 1, "DB readback did not find exactly one vote submission");
-            return {
-                election: election.rows[0] as Json,
-                voteSubmission: submissions.rows[0] as Json,
-            };
-        } catch (error) {
-            lastError = error;
-            const code = (error as { code?: string }).code;
-            const retryable =
-                (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"] as string[]).includes(code ?? "") ||
-                /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection terminated unexpectedly)\b/i.test(
-                    String(error)
-                );
-            if (!retryable || attempt === attempts) {
-                throw error;
-            }
-            await new Promise((resolve) => setTimeout(resolve, Math.min(5_000, 500 * 2 ** (attempt - 1))));
-        } finally {
-            await client.end().catch(() => undefined);
-        }
-    }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
-function cloudSqlInstanceFromDatabaseUrl(databaseUrl: string): string | undefined {
-    let parsed: URL;
-    try {
-        parsed = new URL(databaseUrl);
-    } catch {
-        return undefined;
-    }
-    const host = parsed.searchParams.get("host");
-    if (!host?.startsWith("/cloudsql/")) return undefined;
-    return host.slice("/cloudsql/".length);
-}
-
-function tcpDatabaseUrl(databaseUrl: string, port: number): string {
-    const parsed = new URL(databaseUrl);
-    parsed.hostname = "127.0.0.1";
-    parsed.port = String(port);
-    parsed.searchParams.delete("host");
-    return parsed.toString();
-}
-
-async function waitForTcp(port: number, timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-        try {
-            await new Promise<void>((resolve, reject) => {
-                const socket = net.createConnection({ host: "127.0.0.1", port });
-                socket.once("connect", () => {
-                    socket.destroy();
-                    resolve();
-                });
-                socket.once("error", reject);
-                socket.setTimeout(1_000, () => {
-                    socket.destroy();
-                    reject(new Error("tcp timeout"));
-                });
-            });
-            return;
-        } catch (error) {
-            if (Date.now() >= deadline) {
-                throw new Error(
-                    `Cloud SQL proxy did not become reachable on 127.0.0.1:${port}: ${String(error)}`
-                );
-            }
-            await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-    }
-}
-
-async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabaseUrl> {
-    const instance = cloudSqlInstanceFromDatabaseUrl(databaseUrl);
-    if (!instance) {
-        return { url: databaseUrl, connection: { mode: "direct" } };
-    }
-
-    const socketDir = `/cloudsql/${instance}`;
-    if (fs.existsSync(socketDir)) {
-        return { url: databaseUrl, connection: { mode: "cloud-sql-socket", instance } };
-    }
-
-    const proxyBinary = prepareCloudSqlProxyBinary();
-    const proxyBin = proxyBinary.path;
-    const proxyPort = Number(optionalEnv("E2E_CLOUD_SQL_PROXY_PORT") ?? "5434");
-    assert(
-        Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536,
-        "E2E_CLOUD_SQL_PROXY_PORT must be a valid TCP port"
-    );
-
-    let proxyOutput = "";
-    const proxy = spawn(proxyBin, ["--address", "127.0.0.1", "--port", String(proxyPort), instance], {
-        stdio: ["ignore", "pipe", "pipe"],
-    });
-    proxy.stdout.on("data", (chunk) => {
-        proxyOutput += String(chunk);
-    });
-    proxy.stderr.on("data", (chunk) => {
-        proxyOutput += String(chunk);
-    });
-
-    const exitBeforeReady = new Promise<never>((_resolve, reject) => {
-        proxy.once("exit", (code, signal) => {
-            reject(
-                new Error(
-                    `Cloud SQL proxy exited before ready (code=${code ?? "null"}, signal=${signal ?? "null"}): ${proxyOutput.trim()}`
-                )
-            );
-        });
-    });
-    await Promise.race([waitForTcp(proxyPort, 15_000), exitBeforeReady]);
-
-    return {
-        url: tcpDatabaseUrl(databaseUrl, proxyPort),
-        connection: { mode: "cloud-sql-proxy", instance, proxyPort },
-        cleanup: async () => {
-            await new Promise<void>((resolve) => {
-                let settled = false;
-                let timer: NodeJS.Timeout;
-                const finish = () => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timer);
-                    proxy.stdout.destroy();
-                    proxy.stderr.destroy();
-                    resolve();
-                };
-
-                timer = setTimeout(() => {
-                    proxy.kill("SIGKILL");
-                    finish();
-                }, 2_000);
-                proxy.once("exit", finish);
-                if (proxy.exitCode !== null || proxy.signalCode !== null) {
-                    finish();
-                    return;
-                }
-                proxy.kill("SIGTERM");
-            });
-            proxyBinary.cleanup?.();
-        },
-    };
-}
-
 async function completeAfterWindow(
     baseUrl: string,
     adminToken: string,
@@ -582,11 +408,6 @@ async function main(): Promise<void> {
         "SEPOLIA_RPC_URL",
         DEFAULT_SECRET_NAMES.sepoliaRpcUrl
     );
-    const databaseUrl = await optionalEnvOrSecret(
-        projectId,
-        "E2E_DATABASE_URL",
-        DEFAULT_SECRET_NAMES.databaseUrl
-    );
     const evidencePath =
         optionalEnv("E2E_EVIDENCE_PATH") ??
         path.join(PROJECT_ROOT, "docs", "evidence", `production-e2e-${runId}.json`);
@@ -604,8 +425,6 @@ async function main(): Promise<void> {
         checks: {},
         caveats: [],
     };
-    let dbCleanup: (() => Promise<void>) | undefined;
-
     try {
         assert(
             Number.isFinite(voteWindowSeconds) && voteWindowSeconds >= 1,
@@ -846,16 +665,38 @@ async function main(): Promise<void> {
             evidence.checks.onchainReadback = { voteCount, nullifierUsed };
         }
 
-        if (databaseUrl) {
-            const preparedDb = await prepareDatabaseUrl(databaseUrl);
-            dbCleanup = preparedDb.cleanup;
-            evidence.checks.dbConnection = preparedDb.connection;
-            evidence.checks.dbReadback = await readDbEvidence(preparedDb.url, electionId, nullifier);
-        } else if (process.env.ALLOW_DB_READBACK_SKIP === "yes") {
-            evidence.caveats.push("E2E_DATABASE_URL absent; DB readback skipped by ALLOW_DB_READBACK_SKIP=yes.");
-        } else {
-            throw new Error("Set E2E_DATABASE_URL for DB readback evidence.");
-        }
+        const dbReadback = await runProductionDbReadbackJob({
+            projectId,
+            region,
+            mode: "e2e",
+            electionId,
+        });
+        assert(dbReadback.result && typeof dbReadback.result === "object", "DB readback returned malformed JSON");
+        const dbResult = dbReadback.result as Json;
+        const dbElection = dbResult.election as Json | undefined;
+        const dbSubmission = dbResult.submission as Json | undefined;
+        assert(dbElection?.id === electionId, "DB readback did not find the test election");
+        assert(dbSubmission, "DB readback did not return submission data");
+        assert(Number(dbSubmission?.total) === 1, "DB readback did not find exactly one vote submission");
+        assert(Number(dbSubmission?.confirmed) === 1, "DB readback did not confirm the vote submission");
+        const transactionHashes = dbSubmission?.transactionHashes;
+        assert(
+            Array.isArray(transactionHashes) && transactionHashes.includes(submitTxHash),
+            "DB readback did not contain the submitted transaction hash"
+        );
+        evidence.checks.dbConnection = {
+            mode: "cloud-run-job",
+            job: dbReadback.job,
+            execution: dbReadback.execution,
+        };
+        evidence.checks.dbReadback = {
+            election: dbElection,
+            submission: {
+                total: dbSubmission.total,
+                confirmed: dbSubmission.confirmed,
+                transactionHashes,
+            },
+        };
 
         const completion = await completeAfterWindow(
             baseUrl,
@@ -883,8 +724,6 @@ async function main(): Promise<void> {
         evidence.failure = error instanceof Error ? error.message : String(error);
         writeEvidence(evidencePath, evidence);
         throw error;
-    } finally {
-        await dbCleanup?.();
     }
 }
 

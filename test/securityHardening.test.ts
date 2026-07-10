@@ -35,22 +35,27 @@ describe("security hardening regressions", function () {
 
     it("preserves explicit cost approval when loading the local env file", function () {
         const productionSetup = read("scripts/iac/zkvote-production-setup.sh");
+        const dbReadbackJob = read("scripts/iac/deploy-production-db-readback-job.sh");
 
         expect(productionSetup).toContain('EXTERNAL_CONFIRM_COSTS="${CONFIRM_COSTS:-}"');
         expect(productionSetup).toContain('CONFIRM_COSTS="${EXTERNAL_CONFIRM_COSTS}"');
+        expect(dbReadbackJob).toContain('EXTERNAL_CONFIRM_COSTS="${CONFIRM_COSTS:-}"');
+        expect(dbReadbackJob).toContain('CONFIRM_COSTS="${EXTERNAL_CONFIRM_COSTS}"');
     });
 
-    it("keeps the production E2E nullifier out of persisted evidence and retries proxy resets", function () {
+    it("keeps the production E2E nullifier out of persisted evidence and uses a production-side DB readback", function () {
         const e2e = read("scripts/verify/e2e-production.ts");
+        const readbackJob = read("scripts/iac/deploy-production-db-readback-job.sh");
 
-        expect(e2e).toContain('E2E_DB_READBACK_ATTEMPTS');
-        expect(e2e).toContain('"ECONNRESET"');
-        expect(e2e).toContain("connection terminated unexpectedly");
-        expect(e2e).toContain('?? "6"');
+        expect(e2e).toContain("runProductionDbReadbackJob");
+        expect(e2e).not.toContain("E2E_DATABASE_URL");
         expect(e2e).not.toContain("response: submit.json,\n            nullifier,");
+        expect(readbackJob).toContain("postgres:16.14-alpine3.24@sha256:");
+        expect(readbackJob).toContain("zkvote-prod-readonly-database-url:latest");
+        expect(read("infra/gcp/production-db-readback-entrypoint.sh")).toContain("invalid READBACK_ELECTION_ID");
     });
 
-    it("defaults production DB readback to the readonly database secret", function () {
+    it("routes production DB readback through the fixed readonly Cloud Run Job", function () {
         const productionReadbackScripts = [
             "scripts/verify/e2e-production.ts",
             "scripts/verify/reconcile-production-tally.ts",
@@ -59,9 +64,22 @@ describe("security hardening regressions", function () {
 
         for (const script of productionReadbackScripts) {
             const source = read(script);
-            expect(source).toContain('"zkvote-prod-readonly-database-url"');
+            expect(source).toContain("runProductionDbReadbackJob");
             expect(source).not.toContain('"zkvote-prod-migrator-database-url"');
         }
+        expect(read("scripts/iac/deploy-production-db-readback-job.sh")).toContain(
+            "zkvote-prod-readonly-database-url:latest"
+        );
+        const productionSetup = read("scripts/iac/zkvote-production-setup.sh");
+        const runtimeGrantStart = productionSetup.indexOf("for secret_name in \\\n  zkvote-prod-database-url");
+        const runtimeGrantBlock = productionSetup.slice(
+            runtimeGrantStart,
+            productionSetup.indexOf("\n\n# The API identity", runtimeGrantStart)
+        );
+        expect(runtimeGrantBlock).not.toContain("zkvote-prod-postgres-password");
+        expect(runtimeGrantBlock).not.toContain("zkvote-prod-migrator-database-url");
+        expect(productionSetup).toContain("The API identity needs its application URL");
+        expect(productionSetup).toContain("gcloud secrets remove-iam-policy-binding");
     });
 
     it("requires TLS for external Redis URLs", function () {
@@ -103,6 +121,7 @@ describe("security hardening regressions", function () {
         const rolesSql = read("rust-backend/db/roles.sql");
         const localRoles = read("scripts/local/db-roles.sh");
         const cloudSqlMigration = read("scripts/migration/migrate-cloudsql.sh");
+        const productionGrantRepair = read("scripts/iac/apply-production-readonly-grants.sh");
 
         expect(rolesSql).toContain("zkvote_readonly");
         expect(rolesSql).toContain("GRANT SELECT ON");
@@ -110,6 +129,12 @@ describe("security hardening regressions", function () {
         expect(cloudSqlMigration).toContain("set_config('zkvote.readonly_password'");
         expect(localRoles).not.toMatch(/-v\s+\w*password=/);
         expect(cloudSqlMigration).not.toMatch(/-v\s+\w*password=/);
+        expect(productionGrantRepair).toContain("zkvote-prod-postgres-password:latest");
+        expect(productionGrantRepair).toContain("gcloud run jobs delete");
+        expect(productionGrantRepair).toContain("gcloud secrets remove-iam-policy-binding");
+        expect(productionGrantRepair).toContain("gcloud projects remove-iam-policy-binding");
+        expect(productionGrantRepair).toContain("gcloud iam service-accounts delete");
+        expect(productionGrantRepair).not.toContain("zkvote-prod-api@");
     });
 
     it("verifies Firebase ID token claims before bootstrapping the production superadmin", function () {

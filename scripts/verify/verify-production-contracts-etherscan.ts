@@ -8,17 +8,15 @@
  * constructor args from DB state, then submits source verification with
  * `forge verify-contract`.
  */
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs";
-import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import dotenv from "dotenv";
 import { keccak256 } from "@ethersproject/keccak256";
 import { SigningKey } from "@ethersproject/signing-key";
-import { Client } from "pg";
-import { prepareCloudSqlProxyBinary } from "./cloudSqlProxy";
+import { runProductionDbReadbackJob } from "./productionDbReadbackJob";
 
 const execFile = promisify(execFileCallback);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -27,7 +25,6 @@ dotenv.config({ path: path.join(PROJECT_ROOT, ".env"), override: false, quiet: t
 const DEFAULT_SECRET_NAMES = {
     etherscanApiKey: "zkvote-prod-etherscan-api-key",
     ownerPrivateKey: "zkvote-prod-owner-private-key",
-    databaseUrl: "zkvote-prod-readonly-database-url",
 } as const;
 
 type Json = Record<string, unknown>;
@@ -43,12 +40,6 @@ interface DeploymentRow {
     chain_id: string | null;
     zk_artifact_id: string | null;
     verifier_num_candidates: number | null;
-}
-
-interface PreparedDatabaseUrl {
-    url: string;
-    connection: Json;
-    cleanup?: () => Promise<void>;
 }
 
 interface VerifyResult {
@@ -169,165 +160,24 @@ async function envOrSecret(
     throw new Error(`Set ${envName}${secretName ? ` or create Secret Manager secret ${secretName}` : ""}`);
 }
 
-function cloudSqlInstanceFromDatabaseUrl(databaseUrl: string): string | undefined {
-    let parsed: URL;
-    try {
-        parsed = new URL(databaseUrl);
-    } catch {
-        return undefined;
-    }
-    const host = parsed.searchParams.get("host");
-    if (!host?.startsWith("/cloudsql/")) return undefined;
-    return host.slice("/cloudsql/".length);
-}
-
-function tcpDatabaseUrl(databaseUrl: string, port: number): string {
-    const parsed = new URL(databaseUrl);
-    parsed.hostname = "127.0.0.1";
-    parsed.port = String(port);
-    parsed.searchParams.delete("host");
-    return parsed.toString();
-}
-
-async function waitForTcp(port: number, timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-        try {
-            await new Promise<void>((resolve, reject) => {
-                const socket = net.createConnection({ host: "127.0.0.1", port });
-                socket.once("connect", () => {
-                    socket.destroy();
-                    resolve();
-                });
-                socket.once("error", reject);
-                socket.setTimeout(1_000, () => {
-                    socket.destroy();
-                    reject(new Error("tcp timeout"));
-                });
-            });
-            return;
-        } catch (error) {
-            if (Date.now() >= deadline) {
-                throw new Error(`Cloud SQL proxy did not become reachable on 127.0.0.1:${port}: ${String(error)}`);
-            }
-            await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-    }
-}
-
-async function prepareDatabaseUrl(databaseUrl: string): Promise<PreparedDatabaseUrl> {
-    const instance = cloudSqlInstanceFromDatabaseUrl(databaseUrl);
-    if (!instance) return { url: databaseUrl, connection: { mode: "direct" } };
-    if (fs.existsSync(`/cloudsql/${instance}`)) {
-        return { url: databaseUrl, connection: { mode: "cloud-sql-socket", instance } };
-    }
-
-    const proxyBinary = prepareCloudSqlProxyBinary();
-    const proxyBin = proxyBinary.path;
-    const proxyPort = Number(optionalEnv("ETHERSCAN_VERIFY_CLOUD_SQL_PROXY_PORT") ?? "5436");
-    assert(Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536, "invalid proxy port");
-
-    let proxyOutput = "";
-    const proxyArgs = ["--address", "127.0.0.1", "--port", String(proxyPort), instance];
-    if (optionalEnv("E2E_CLOUD_SQL_PROXY_PRIVATE_IP") === "true") {
-        proxyArgs.unshift("--private-ip");
-    }
-    const proxy = spawn(proxyBin, proxyArgs, {
-        stdio: ["ignore", "pipe", "pipe"],
-    });
-    proxy.stdout.on("data", (chunk) => {
-        proxyOutput += String(chunk);
-    });
-    proxy.stderr.on("data", (chunk) => {
-        proxyOutput += String(chunk);
-    });
-    const exitBeforeReady = new Promise<never>((_resolve, reject) => {
-        proxy.once("exit", (code, signal) => {
-            reject(new Error(`Cloud SQL proxy exited before ready (code=${code}, signal=${signal}): ${proxyOutput.trim()}`));
-        });
-    });
-    await Promise.race([waitForTcp(proxyPort, 15_000), exitBeforeReady]);
-    return {
-        url: tcpDatabaseUrl(databaseUrl, proxyPort),
-        connection: { mode: "cloud-sql-proxy", instance, proxyPort },
-        cleanup: async () => {
-            await new Promise<void>((resolve) => {
-                let settled = false;
-                let timer: NodeJS.Timeout;
-                const finish = () => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timer);
-                    proxy.stdout.destroy();
-                    proxy.stderr.destroy();
-                    resolve();
-                };
-                timer = setTimeout(() => {
-                    proxy.kill("SIGKILL");
-                    finish();
-                }, 2_000);
-                proxy.once("exit", finish);
-                if (proxy.exitCode !== null || proxy.signalCode !== null) {
-                    finish();
-                    return;
-                }
-                proxy.kill("SIGTERM");
-            });
-            proxyBinary.cleanup?.();
-        },
-    };
-}
-
-async function readDeployment(databaseUrl: string): Promise<DeploymentRow> {
+async function readDeployment(projectId: string, region: string): Promise<{ row: DeploymentRow; connection: Json }> {
     const electionId = optionalEnv("VERIFY_ELECTION_ID") ?? optionalEnv("ELECTION_ID");
     const electionName = optionalEnv("VERIFY_ELECTION_NAME");
-    const where = [
-        "e.contract_address IS NOT NULL",
-        "e.verifier_address IS NOT NULL",
-        "e.superseded_at IS NULL",
-    ];
-    const params: string[] = [];
-    if (electionId) {
-        params.push(electionId);
-        where.push(`e.id = $${params.length}::uuid`);
-    }
-    if (electionName) {
-        params.push(electionName);
-        where.push(`e.name = $${params.length}`);
-    }
-
-    const client = new Client({
-        connectionString: databaseUrl,
-        ssl: process.env.E2E_DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
+    assert(!electionName || electionId, "VERIFY_ELECTION_NAME requires VERIFY_ELECTION_ID for production DB readback");
+    const readback = await runProductionDbReadbackJob({
+        projectId,
+        region,
+        mode: electionId ? "deployment" : "latest-deployment",
+        electionId,
     });
-    await client.connect();
-    try {
-        const result = await client.query<DeploymentRow>(
-            `SELECT
-                e.id::text,
-                e.name,
-                e.merkle_tree_depth,
-                e.num_candidates,
-                e.contract_address,
-                e.verifier_address,
-                cd.deploy_tx_hash,
-                cd.chain_id::text,
-                cd.zk_artifact_id::text,
-                za.num_candidates AS verifier_num_candidates
-             FROM elections e
-             LEFT JOIN contract_deployments cd ON cd.election_id = e.id
-             LEFT JOIN zk_artifacts za ON za.id = cd.zk_artifact_id
-             WHERE ${where.join(" AND ")}
-             ORDER BY e.created_at DESC
-             LIMIT 1`,
-            params
-        );
-        const row = result.rows[0];
-        assert(row, `No deployed election found for ${electionId ? `id=${electionId}` : electionName ? `name=${electionName}` : "latest deployment"}`);
-        return row;
-    } finally {
-        await client.end();
-    }
+    assert(readback.result && typeof readback.result === "object", "deployment DB readback returned malformed JSON");
+    const row = readback.result as DeploymentRow;
+    assert(row.id, `No deployed election found for ${electionId ? `id=${electionId}` : "latest deployment"}`);
+    if (electionName) assert(row.name === electionName, `deployment name ${row.name} != ${electionName}`);
+    return {
+        row,
+        connection: { mode: "cloud-run-job", job: readback.job, execution: readback.execution },
+    };
 }
 
 function electionIdField(electionId: string): string {
@@ -474,6 +324,7 @@ async function forgeVerify(
 async function main(): Promise<void> {
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
     const projectId = env("GCP_PROJECT_ID", "zkvote-prod-hhyyj");
+    const region = env("GCP_REGION", "asia-northeast3");
     const chain = env("ETHERSCAN_CHAIN", "sepolia");
     const expectedChainId = env("CHAIN_ID", "11155111");
     const evidencePath =
@@ -494,7 +345,6 @@ async function main(): Promise<void> {
     };
     writeEvidence(evidencePath, evidence);
 
-    let cleanup: (() => Promise<void>) | undefined;
     try {
         const [apiKey, ownerPrivateKey] = await Promise.all([
             envOrSecret(projectId, "ETHERSCAN_API_KEY", optionalEnv("ETHERSCAN_API_KEY_SECRET") ?? DEFAULT_SECRET_NAMES.etherscanApiKey),
@@ -508,17 +358,9 @@ async function main(): Promise<void> {
             deployment = envDeployment;
             dbConnection = { mode: "env-override" };
         } else {
-            const rawDatabaseUrl = await envOrSecret(
-                projectId,
-                "E2E_DATABASE_URL",
-                optionalEnv("E2E_DATABASE_URL_SECRET") ?? DEFAULT_SECRET_NAMES.databaseUrl
-            );
-            secrets.push(rawDatabaseUrl);
-            const preparedDb = await prepareDatabaseUrl(rawDatabaseUrl);
-            secrets.push(preparedDb.url);
-            cleanup = preparedDb.cleanup;
-            deployment = await readDeployment(preparedDb.url);
-            dbConnection = preparedDb.connection;
+            const readback = await readDeployment(projectId, region);
+            deployment = readback.row;
+            dbConnection = readback.connection;
         }
         assert(deployment.chain_id === null || deployment.chain_id === expectedChainId, `deployment chain_id ${deployment.chain_id} != expected ${expectedChainId}`);
         assert(/^0x[0-9a-fA-F]{40}$/.test(deployment.contract_address), `invalid contract_address: ${deployment.contract_address}`);
@@ -609,8 +451,6 @@ async function main(): Promise<void> {
         evidence.failure = error instanceof Error ? error.message : String(error);
         writeEvidence(evidencePath, evidence);
         throw error;
-    } finally {
-        await cleanup?.();
     }
 }
 
